@@ -1,0 +1,298 @@
+/* 统一视觉变量；玻璃仅用于导航与引导面板，不模拟系统原生材质。 */
+:root {
+  font-family:
+    "Segoe UI Variable", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #243e35;
+  background: #edf2ef;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --muted: #5c7168;
+  --line: rgba(63, 94, 77, 0.13);
+  --accent: #36684e;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+}
+a {
+  color: inherit;
+}
+a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 5px;
+}
+::selection {
+  background: #c9e2d2;
+}
+.app-shell {
+  display: grid;
+  grid-template-columns: 224px 1fr;
+  min-height: 100vh;
+}
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  padding: 34px 24px 24px;
+  border-right: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.44);
+  backdrop-filter: blur(18px);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  font-size: 23px;
+  letter-spacing: -0.9px;
+}
+.brand-weight {
+  font-weight: 650;
+}
+.brand-symbol {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 36px;
+  border-radius: 11px;
+  color: #f4f7ed;
+  background: #284d3c;
+  font:
+    italic 30px Georgia,
+    serif;
+  padding-bottom: 5px;
+}
+.sidebar-body {
+  flex: 1;
+  padding-top: 65px;
+}
+.section-caption {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  padding-left: 12px;
+}
+.navigation-item {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 11px;
+  text-decoration: none;
+  font-size: 13px;
+  background: #e0e9e1;
+}
+.navigation-item span {
+  font-size: 19px;
+}
+.sidebar-note {
+  margin: 27px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.9;
+}
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  background: #6a8771;
+  border-radius: 50%;
+}
+.workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 28px 46px 0;
+  background:
+    radial-gradient(ellipse at 100% 0%, #d4e5df 0%, transparent 56%),
+    linear-gradient(150deg, #f9faf5, #edf2ef);
+}
+.workspace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.phase-badge {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 5px 10px;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+.welcome-content {
+  flex: 1;
+  width: 100%;
+  max-width: 680px;
+  margin: 48px auto 30px;
+}
+.eyebrow {
+  font:
+    10px/1.5 "Segoe UI",
+    sans-serif;
+  letter-spacing: 2.1px;
+  color: var(--muted);
+  margin: 0 0 20px;
+}
+h1 {
+  font-size: clamp(30px, 3.6vw, 46px);
+  font-weight: 550;
+  line-height: 1.45;
+  letter-spacing: -1.6px;
+  margin: 0;
+}
+h1 span {
+  color: #658072;
+}
+.intro {
+  font-size: 13px;
+  line-height: 1.95;
+  color: var(--muted);
+  margin: 18px 0 28px;
+}
+.foundation-panel {
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.61);
+  box-shadow:
+    0 12px 38px rgba(31, 64, 45, 0.045),
+    inset 0 1px 0 #fff;
+  padding: 23px 25px 17px;
+}
+.panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+.small-symbol {
+  font:
+    17px Georgia,
+    serif;
+  color: var(--accent);
+  background: #e3ece3;
+  border: 1px solid #d6e3d6;
+  border-radius: 12px;
+  padding: 14px;
+}
+h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.panel-heading p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 7px 0 0;
+}
+.installation-address {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin-top: 21px;
+  padding: 15px 0;
+  font-size: 11px;
+}
+.installation-address > span {
+  color: var(--muted);
+}
+.installation-address code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.panel-footnote {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.8;
+  margin: 13px 0 0;
+}
+.architecture-note {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 24px 2px 0;
+}
+.note-number {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.architecture-note p {
+  margin: 9px 0 0;
+  font-size: 12px;
+}
+.workspace-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+.workspace-footer p {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    padding: 18px 24px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .sidebar-body {
+    display: none;
+  }
+  .workspace {
+    padding: 24px 24px 0;
+  }
+  .welcome-content {
+    margin-top: 35px;
+  }
+  .installation-address {
+    flex-direction: column;
+  }
+  .architecture-note {
+    gap: 8px;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar,
+  .foundation-panel {
+    background: #f4f7f1;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

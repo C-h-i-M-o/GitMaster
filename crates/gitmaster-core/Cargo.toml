@@ -1,0 +1,9 @@
+[package]
+name = "gitmaster-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "gitMaster 独立业务核心，不依赖桌面框架"
+
+[dependencies]
+serde.workspace = true

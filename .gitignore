@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules/
+dist/
+target/
+src-tauri/gen/
+*.tsbuildinfo
+
+# 本地配置与日志
+.env
+.env.*
+!.env.example
+*.local
+*.log
+
+# 编辑器与操作系统
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# 签名材料不进入版本库
+*.p12
+*.pfx
+*.key

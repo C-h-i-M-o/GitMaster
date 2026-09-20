@@ -1,0 +1,18 @@
+[package]
+name = "gitmaster-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "gitMaster Tauri 桌面适配层"
+
+[lib]
+# 库名与可执行文件名分离，避免 Windows 构建产物重名。
+name = "gitmaster_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+gitmaster-core = { path = "../crates/gitmaster-core" }
