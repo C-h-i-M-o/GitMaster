@@ -2,7 +2,7 @@
 
 本清单区分开发者和最终用户。开发者安装编译工具；最终用户仅安装应用、系统 Git，以及 Windows 所需的 WebView2 Runtime。
 
-## 1. 本机只读检测记录
+## 1. 环境检测与安装记录
 
 2026-09-20，Windows 环境检测：
 
@@ -18,6 +18,18 @@
 | Windows SDK                   | 标准 Lib 目录未发现        | 随 C++ 工作负载安装并检查                      |
 
 “未检测到”不等于对全盘所有自定义安装路径作出不存在结论。
+
+2026-09-21，macOS 26.6.2 Apple Silicon 环境已完成安装和 M0 本机验收：
+
+| 软件                  | 实际版本与状态                                         |
+| --------------------- | ------------------------------------------------------ |
+| Node.js / pnpm        | 24.16.0 / 11.15.1，复用已有安装                        |
+| 系统 Git              | 2.49.0，复用已有安装                                   |
+| Rust / Cargo / rustup | 1.98.1 / 1.98.1 / 1.29.1，按用户授权安装               |
+| Rust 组件             | rustfmt、clippy 已安装，使用 aarch64-apple-darwin      |
+| Apple 编译环境        | Command Line Tools 和 macOS SDK 可用；未安装完整 Xcode |
+
+前端、Rust 检查、原生构建及真实窗口 IPC 已通过；平台和交互验收边界见[验证记录](verification.md)。上面的 Windows 检测属于历史记录，不代表已在 Windows 上完成原生验收。
 
 ## 2. Windows 安装顺序
 
@@ -39,7 +51,7 @@ rustc --version
 cargo --version
 ```
 
-工程工具链文件采用 stable 并包含 rustfmt/clippy。首次实际编译验证后再固定精确 Rust 版本，不伪造未经验证的最低 Rust 版本或 Cargo.lock。
+工程工具链文件采用 stable 并包含 rustfmt/clippy。当前已在 macOS 验证 Rust 1.98.1 并生成 Cargo.lock；编译器尚未精确锁定，stable 更新后需重新验证，不将此版本声明为最低 Rust 版本。
 
 ### 第三步：其余依赖
 
@@ -52,7 +64,7 @@ cargo --version
 
 若全新机器没有 pnpm，可按官网方式使用 `npm install --global pnpm@11.15.1`；这是用户自行执行的工具安装命令。本轮未执行全局安装。Node 不必都捆绑 Corepack，不把 Corepack 视作唯一安装方式。
 
-Tauri CLI 是项目 devDependency，`pnpm install` 后可调用，不需要再全局安装 cargo-tauri。M0 原生构建使用 `--no-bundle`。后续 Windows 打包默认规划为 NSIS；若改用 MSI，另按 Tauri 官方说明检查 VBScript 可选组件。
+Tauri CLI 是项目 devDependency，`pnpm install` 后可调用，不需要再全局安装 cargo-tauri。原生编译检查使用 `--no-bundle`；macOS 本机窗口验收也已使用 `--bundles app` 生成本地应用。后续 Windows 打包默认规划为 NSIS；若改用 MSI，另按 Tauri 官方说明检查 VBScript 可选组件。
 
 ## 3. macOS 环境
 
@@ -94,14 +106,14 @@ pnpm typecheck
 pnpm build
 pnpm format:check
 cargo fmt --all -- --check
-cargo test -p gitmaster-core
-cargo check -p gitmaster-desktop
+cargo test -p gitmaster-core --locked
+cargo check -p gitmaster-desktop --locked
 pnpm tauri build --no-bundle
 ```
 
 只有上述原生步骤和实机检查通过，才可声称当前平台桌面可用。构建产物位于根 workspace 的 `target/`；Web 产物位于 `dist/`。
 
-Tauri 工程、Node 包、Rust crate 的版本与锁文件分别管理。M0 先验证前端并生成 pnpm 锁文件；Rust 工具链尚未就绪时不手工伪造 Cargo 锁文件。
+Tauri 工程、Node 包、Rust crate 的版本与锁文件分别管理。仓库保留 pnpm-lock.yaml 和实际解析生成的 Cargo.lock；依赖更新需重新验证。macOS 本地应用可用 `pnpm tauri build --bundles app` 构建，产物为 `target/release/bundle/macos/gitMaster.app`，不代表已完成正式发布签名或公证。
 
 ## 6. 官方参考
 

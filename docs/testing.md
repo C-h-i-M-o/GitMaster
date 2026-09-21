@@ -13,7 +13,9 @@
 | 原生构建     | `pnpm tauri build --no-bundle`     | 当前机器的桌面可执行文件            |
 | 实机冒烟     | `pnpm tauri dev`                   | 窗口打开、AppInfo 真正通过 IPC 返回 |
 
-M0 只有元数据接口，不添加镜像实现的低价值单元测试。执行 `cargo test` 即使没有测试也只能说明编译/测试目标通过，应报告实际测试数量。首次原生验证后生成并保留 Cargo.lock。
+M0 只有元数据接口，不添加镜像实现的低价值单元测试。执行 `cargo test` 即使没有测试也只能说明编译/测试目标通过，应报告实际测试数量。Cargo.lock 已在 macOS 原生验证中生成并保留，依赖复现检查使用 `cargo test -p gitmaster-core --locked` 和 `cargo check -p gitmaster-desktop --locked`。
+
+截至 2026-09-21，本机 macOS Apple Silicon 的构建、真实应用信息 IPC、默认/最小窗口和键盘焦点已验证；浏览器缩放和减少动效仅完成辅助检查。Windows、Intel Mac、最低 macOS 版本及原生系统级可访问性设置等剩余项详见[验证记录](verification.md)，不将下列验收清单视为全部已通过。
 
 ## 前端人工验收
 

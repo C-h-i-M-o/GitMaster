@@ -4,6 +4,8 @@
 
 **当前状态：工程初始化（M0），尚未实现 Git 检测、仓库管理、提交、推送和冲突处理。** 中文名尚未确认。
 
+M0 已完成本机 macOS Apple Silicon 原生构建和窗口/接口验收；Windows、Intel Mac 及最低系统版本仍待实机验证。完整结果见[验证记录](docs/verification.md)。
+
 ## 技术方案
 
 - 桌面：Tauri 2。
@@ -46,7 +48,7 @@ pnpm tauri dev
 pnpm tauri build --no-bundle
 ```
 
-首次 Cargo 命令会解析下载 Rust 依赖并生成 `Cargo.lock`；首次原生验证完成后应保留锁文件。Node 依赖使用已生成的 pnpm 锁文件；可用 `pnpm install --frozen-lockfile` 验证复现。
+macOS 本地原生构建已通过，Rust 依赖锁定在 `Cargo.lock`；首次构建仍需下载依赖。Node 依赖使用已生成的 pnpm 锁文件；可用 `pnpm install --frozen-lockfile` 验证复现。具体环境和验收边界见[验证记录](docs/verification.md)。
 
 ## 工程结构
 

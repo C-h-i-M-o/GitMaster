@@ -2,6 +2,8 @@
 
 本项目面向 Git 初学者，提供 Windows/macOS 图形化桌面客户端。英文品牌为 **gitMaster**，中文名尚未最终确认。
 
+当前 M0 已完成 macOS Apple Silicon 本机收尾：环境、构建、真实窗口和应用信息 IPC 已验证；其他平台及未测场景见验证记录。M1 及后续 Git 功能仍为规划。
+
 ## 阅读顺序
 
 1. [需求与实施计划](spec-plan.md)：唯一的需求、范围、阶段和验收基线，合并 spec 与 plan。
@@ -11,7 +13,7 @@
 5. [开发与编译环境](development.md)：Windows/macOS 安装软件、官网和常用命令。
 6. [测试与验收](testing.md)：初始化验证与未来 Git 操作测试。
 7. [发布与安全边界](release-security.md)：系统 Git、凭据、打包、签名、更新。
-8. [初始化验证记录](verification.md)：本轮实际执行结果及未验证项。
+8. [初始化与 M0 收尾验证记录](verification.md)：分阶段记录实际执行结果及未验证项。
 
 ## 文档维护
 
