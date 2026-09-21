@@ -43,3 +43,26 @@ M0 只有元数据接口，不添加镜像实现的低价值单元测试。执�
 | 操作时切换项目         | 旧响应不覆盖新项目                       |
 
 发布测试另见 [发布与安全边界](release-security.md)。本轮实际结果另见 [初始化验证记录](verification.md)。
+
+## M1 自动化检查
+
+在仓库根目录执行：
+
+```sh
+cargo test -p gitmaster-core --locked
+cargo test -p gitmaster-desktop --locked
+node --test --experimental-strip-types tests/m1/*.test.ts
+pnpm typecheck
+pnpm build
+pnpm format:check
+cargo fmt --all -- --check
+cargo check -p gitmaster-desktop --locked
+pnpm tauri build --no-bundle
+```
+
+- 核心模块内测试覆盖真实临时仓库的 unborn/detached/worktree、MM/重命名/删除/冲突/子模块、只读字节比较、差异侧、编码/二进制/截断、进程超时和双管道、禁用扩展程序及 promisor 缺失对象。
+- `process_fixture` 是带 `#[ignore]` 的子进程入口，由父测试显式启动；不代表跳过超时验证。
+- 桌面层测试覆盖设置缺失/损坏/替换和环境/仓库请求代次；不替代系统选择器实测。
+- `tests/m1/` 使用 Node 原生测试执行器，覆盖错误文案、文件分组及受控异步竞态；按项目约定默认本地保留，是否提交长期测试另由用户决定。
+- macOS APFS 不接受非法 UTF-8 文件名，真实文件名用例仅在其他 Unix 启用；本机字节解析用例仍验证 `UNSUPPORTED_PATH_ENCODING`。
+- 性能限制是有界保护，不等于性能指标：未声称 60fps 或达到固定耗时目标。测试不触碰用户真实仓库、远端或全局 Git 配置。

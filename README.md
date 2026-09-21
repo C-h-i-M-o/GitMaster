@@ -2,9 +2,9 @@
 
 面向 Git 初学者的 Windows/macOS 图形化桌面工具。用清晰的操作流程、流畅动效与克制的玻璃质感，让版本管理更容易理解。
 
-**当前状态：工程初始化（M0），尚未实现 Git 检测、仓库管理、提交、推送和冲突处理。** 中文名尚未确认。
+**当前状态：M1 环境与仓库只读阶段已完成；按用户决定暂时跳过 Windows 实机验收。** 支持 Git 检测/路径设置、打开已有工作区、查看状态及单文件差异；提交、推送和冲突处理尚未实现。中文名尚未确认。
 
-M0 已完成本机 macOS Apple Silicon 原生构建和窗口/接口验收；Windows、Intel Mac 及最低系统版本仍待实机验证。完整结果见[验证记录](docs/verification.md)。
+M1 已在本机 macOS Apple Silicon 验证真实窗口、Git 检测、状态与差异 IPC；Windows、Intel Mac 及最低系统/Git 版本仍待实机验证。完整结果见[验证记录](docs/verification.md)。
 
 ## 技术方案
 
@@ -65,10 +65,14 @@ AGENTS.md                Agent 协作规范
 
 ## 当前限制
 
-- 起始页及应用元数据接口用于验证分层，不代表 Git 功能已经可用。
+- 仓库操作仅限只读；不执行 init、clone、add、commit、fetch、push 或切换分支。
+- 暂定 Git 最低版本为 2.39；支持普通工作树与 linked worktree，拒绝 bare 仓库。
+- 状态最多 10,000 条 / 8 MiB；差异最多 1 MiB / 5,000 行，超限明确提示。
+- 子模块只展示 gitlink 变化；冲突、二进制、未跟踪符号链接及非 UTF-8 内容不提供普通文本差异。
+- Git 路径设置保存在应用配置目录的 settings.json，不保存凭据或最近仓库。
 - 当前样式是 Web 玻璃风格，未接入 Apple 原生 Liquid Glass。
 - 图标来自官方初始化模板，应用标识用于开发；正式发布前需要确定品牌资源和签名配置。
-- Windows/macOS 兼容、原生构建及安装包发布需分别验证，具体结果记录在[初始化验证记录](docs/verification.md)。
+- Windows/macOS 兼容、原生构建及安装包发布需分别验证，具体结果记录在[分阶段验收记录](docs/verification.md)。
 
 ## 许可证
 

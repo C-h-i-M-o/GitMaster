@@ -296,3 +296,128 @@ h2 {
     scroll-behavior: auto !important;
   }
 }
+/* M1 工作区保持阅读区域清晰，差异仅在局部滚动。 */
+.m1-content {
+  flex: 1;
+  min-width: 0;
+  margin: 35px 0;
+}
+.m1-content h1 {
+  font-size: clamp(26px, 3vw, 36px);
+}
+button {
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8faf5;
+  padding: 9px 13px;
+}
+button:hover:not(:disabled) {
+  background: #e1ebe1;
+}
+button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.git-ready {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 15px;
+  align-items: baseline;
+  margin-top: 18px;
+}
+.git-ready code {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.repository-panel {
+  margin-top: 24px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 22px;
+  background: #fafcf8;
+}
+.repo-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.repo-header > div {
+  min-width: 0;
+}
+.repo-header h2 {
+  overflow-wrap: anywhere;
+}
+.repo-header p {
+  color: var(--muted);
+  font-size: 12px;
+}
+.change-groups {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 12px 0 24px;
+}
+.change-groups h3 {
+  font-size: 13px;
+}
+.change-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.change-item small {
+  color: var(--muted);
+}
+.diff-panel {
+  min-width: 0;
+}
+.diff-panel h3 {
+  font-size: 14px;
+}
+.diff-panel p {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.diff-panel pre {
+  max-height: 480px;
+  overflow: auto;
+  background: #eef3ec;
+  padding: 16px;
+  border-radius: 8px;
+  font:
+    12px/1.7 ui-monospace,
+    monospace;
+  tab-size: 4;
+}
+.stale-note,
+[role="alert"] {
+  color: #865229;
+  font-size: 13px;
+  line-height: 1.7;
+}
+@media (max-width: 760px) {
+  .repo-header {
+    flex-direction: column;
+  }
+  .change-groups {
+    grid-template-columns: 1fr;
+  }
+}

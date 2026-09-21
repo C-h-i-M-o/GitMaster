@@ -16,7 +16,7 @@
 - Tauri 2 + React + TypeScript + Rust；用户自行安装系统 Git，应用不附带、不下载、不自动安装 Git。
 - 保留 macOS SwiftUI 演进可能；独立 Rust 核心不得依赖 Tauri、React 或窗口生命周期。
 - Web 玻璃效果不得宣传为 Apple 原生 Liquid Glass。
-- 当前为 M0 工程骨架，后续 Git 功能需单独授权和验收。
+- 当前为 M1 仓库只读实现；跨平台验收状态见 docs/verification.md。M2 及后续 Git 写功能需单独授权和验收。
 
 ## 目录与代码规则
 

@@ -1,4 +1,5 @@
-//! gitMaster 的独立核心；当前仅提供应用元数据，不执行 Git 或文件写入。
+//! gitMaster 的独立核心，提供应用信息和系统 Git 只读业务。
+pub mod git;
 
 use serde::Serialize;
 
