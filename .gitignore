@@ -1,5 +1,5 @@
 # 依赖与构建产物
-node_modules/
+node_modules
 dist/
 target/
 src-tauri/gen/
@@ -23,3 +23,6 @@ Thumbs.db
 *.p12
 *.pfx
 *.key
+
+# 临时验收测试默认仅在本机保留
+/tests/

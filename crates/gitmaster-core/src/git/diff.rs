@@ -114,7 +114,10 @@ fn diff_args(change: &FileChange, side: DiffSide, stats: bool) -> Vec<OsString> 
 }
 
 /// 在目录能力边界内读取普通文件，禁止符号链接及特殊文件。
-fn preview(repository: &RepositoryHandle, path: &str) -> Result<FileDiff, OperationError> {
+pub(crate) fn preview(
+    repository: &RepositoryHandle,
+    path: &str,
+) -> Result<FileDiff, OperationError> {
     if Path::new(path)
         .components()
         .any(|c| !matches!(c, Component::Normal(_)))
@@ -161,7 +164,10 @@ fn preview(repository: &RepositoryHandle, path: &str) -> Result<FileDiff, Operat
 }
 
 /// 检测二进制并无损解码，字节截断只允许舍弃末尾不完整字符。
-fn text_diff(mut bytes: Vec<u8>, mut truncated: bool) -> Result<FileDiff, OperationError> {
+pub(super) fn text_diff(
+    mut bytes: Vec<u8>,
+    mut truncated: bool,
+) -> Result<FileDiff, OperationError> {
     if bytes.contains(&0) {
         return Ok(FileDiff::Binary);
     }

@@ -4,6 +4,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
 };
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -19,8 +20,24 @@ pub(crate) fn query(
     args: &[&str],
     limit: usize,
 ) -> Result<Vec<u8>, OperationError> {
+    query_until(git, cwd, args, limit, None)
+}
+
+/// 同一次业务查询链共享期限；M1 的普通入口继续使用单进程读取上限。
+pub(crate) fn query_until(
+    git: &GitExecutable,
+    cwd: &Path,
+    args: &[&str],
+    limit: usize,
+    deadline: Option<Instant>,
+) -> Result<Vec<u8>, OperationError> {
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-    let out = run_git(git, cwd, &args, limit, false)?;
+    let out = match deadline {
+        Some(deadline) => {
+            super::process::run_git_read_until(git, cwd, &args, limit, false, deadline)?
+        }
+        None => run_git(git, cwd, &args, limit, false)?,
+    };
     if !out.success {
         return Err(command_error(&out.stderr));
     }
@@ -104,16 +121,35 @@ pub fn read_repository_state(
     git: &GitExecutable,
     repository: &RepositoryHandle,
 ) -> Result<RepositoryState, OperationError> {
-    let current_dir = git_path(query(
+    read_state_until(git, repository, None)
+}
+
+/// 写业务中的状态核验与调用方共享剩余时间预算。
+pub(crate) fn read_repository_state_until(
+    git: &GitExecutable,
+    repository: &RepositoryHandle,
+    deadline: Instant,
+) -> Result<RepositoryState, OperationError> {
+    read_state_until(git, repository, Some(deadline))
+}
+
+/// 复用同一解析流程，避免限时读取与 M1 展示发生语义分歧。
+fn read_state_until(
+    git: &GitExecutable,
+    repository: &RepositoryHandle,
+    deadline: Option<Instant>,
+) -> Result<RepositoryState, OperationError> {
+    let current_dir = git_path(query_until(
         git,
         &repository.root,
         &["rev-parse", "--absolute-git-dir"],
         65536,
+        deadline,
     )?)?;
     if current_dir != repository.git_dir {
         return Err(OperationError::new("STALE_REQUEST"));
     }
-    let bytes = query(
+    let bytes = query_until(
         git,
         &repository.root,
         &[
@@ -127,6 +163,7 @@ pub fn read_repository_state(
             "--ignore-submodules=dirty",
         ],
         8 * 1024 * 1024,
+        deadline,
     )?;
     let (head, changes) = parse_status(&bytes)?;
     let mut operations = Vec::new();

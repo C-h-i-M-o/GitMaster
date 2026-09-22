@@ -16,6 +16,15 @@ impl OperationError {
             retryable: matches!(
                 code,
                 "TIMEOUT"
+                    | "STALE_WRITE_PLAN"
+                    | "STALE_GRAPH"
+                    | "STALE_CONFLICT"
+                    | "OPERATION_IN_PROGRESS"
+                    | "QUEUE_FULL"
+                    | "REMOTE_CHANGED"
+                    | "AUTH_REQUIRED"
+                    | "NETWORK_FAILED"
+                    | "WRITE_OUTCOME_UNKNOWN"
                     | "STALE_REQUEST"
                     | "FILE_UNAVAILABLE"
                     | "GIT_EXECUTION_FAILED"

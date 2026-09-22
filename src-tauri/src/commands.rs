@@ -4,7 +4,16 @@ use gitmaster_core::git::{
     environment::{describe_git, resolve_git},
     *,
 };
+mod operations;
+mod readonly;
+mod resources;
+
+pub use operations::*;
+pub use readonly::*;
+pub use resources::*;
+
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -20,6 +29,24 @@ pub struct Session {
     epoch: u64,
     git: Option<GitExecutable>,
     active: Option<(RepositoryHandle, RepositoryState)>,
+    coordinator: git::coordinator::RepositoryCoordinator,
+    history: Option<Arc<Mutex<readonly::HistoryCache>>>,
+    branches: Option<Arc<git::branches::BranchSession>>,
+    project_files: Option<Arc<git::files::ProjectFilesSession>>,
+    history_request: u64,
+    branches_request: u64,
+    project_files_request: u64,
+    prepare_gate: Arc<Mutex<()>>,
+    write_request: u64,
+    preview: Option<operations::PreviewBinding>,
+    executed: VecDeque<(String, OperationHandle)>,
+    remotes: Option<Arc<git::remote::RemoteSession>>,
+    previous_remotes: Option<Arc<git::remote::RemoteSession>>,
+    conflicts: Option<Arc<git::conflicts::ConflictSession>>,
+    remotes_request: u64,
+    conflicts_request: u64,
+    clone_parent: Option<(String, PathBuf)>,
+    picker_request: u64,
 }
 /// 在异步阻塞任务间共享会话；Git 子进程期间不持有锁。
 #[derive(Clone, Default)]
@@ -47,16 +74,60 @@ impl Session {
         }
     }
     /// 安装已验证环境；实际改变时使旧仓库和在途请求失效。
-    fn install(&mut self, git: Option<GitExecutable>, force: bool) {
+    fn install(&mut self, git: Option<GitExecutable>, force: bool) -> Result<(), OperationError> {
         let changed = force
             || self.git.as_ref().map(|g| (&g.path, &g.version))
                 != git.as_ref().map(|g| (&g.path, &g.version));
         if changed {
+            self.coordinator.invalidate()?;
             self.epoch += 1;
             self.repository_request += 1;
             self.active = None;
+            self.clear_readonly();
+            self.previous_remotes = None;
+            self.clone_parent = None;
+            self.picker_request += 1;
         }
         self.git = git;
+        Ok(())
+    }
+    /// 环境或仓库刷新使全部模块缓存与在途初始化失效。
+    fn clear_readonly(&mut self) {
+        self.history_request += 1;
+        self.branches_request += 1;
+        self.project_files_request += 1;
+        self.history = None;
+        self.branches = None;
+        self.project_files = None;
+        self.remotes_request += 1;
+        self.conflicts_request += 1;
+        if let Some(remote) = self.remotes.take() {
+            self.previous_remotes = Some(remote);
+        }
+        self.conflicts = None;
+        self.write_request += 1;
+        self.preview = None;
+    }
+    /// 开始打开或刷新仓库；活动写任务期间不能作废正在使用的会话。
+    fn begin_repository_request(&mut self) -> Result<u64, OperationError> {
+        self.coordinator.invalidate()?;
+        self.repository_request += 1;
+        self.clear_readonly();
+        Ok(self.repository_request)
+    }
+    /// 发布完整仓库状态，同时拒绝刷新期间捕获旧快照的后台结果。
+    fn publish_repository(
+        &mut self,
+        epoch: u64,
+        token: u64,
+        handle: RepositoryHandle,
+        snapshot: RepositoryState,
+    ) -> Result<(), OperationError> {
+        self.check_repository(epoch, token)?;
+        self.repository_request += 1;
+        self.clear_readonly();
+        self.active = Some((handle, snapshot));
+        Ok(())
     }
     /// 仅接受当前环境下最后一次仓库读取的结果。
     fn check_repository(&self, epoch: u64, token: u64) -> Result<(), OperationError> {
@@ -102,11 +173,11 @@ pub async fn detect_git(
         match result {
             Ok(git) => {
                 let environment = describe_git(&git)?;
-                session.install(Some(git), false);
+                session.install(Some(git), false)?;
                 Ok(environment)
             }
             Err(error) => {
-                session.install(None, false);
+                session.install(None, false)?;
                 Ok(GitEnvironment::Unavailable { error })
             }
         }
@@ -147,8 +218,9 @@ pub async fn set_git_path(
         } else {
             None
         };
+        session.coordinator.invalidate()?;
         settings::save(&config, saved)?;
-        session.install(result.ok(), true);
+        session.install(result.ok(), true)?;
         Ok(environment)
     })
     .await
@@ -167,14 +239,13 @@ pub async fn open_repository(
             .git
             .clone()
             .ok_or_else(|| OperationError::new("GIT_NOT_FOUND"))?;
-        s.repository_request += 1;
+        s.begin_repository_request()?;
         (git, s.epoch, s.repository_request)
     };
     blocking(move || {
         let (handle, snapshot) = git::repository::open_repository(&git, Path::new(&path))?;
         let mut s = shared.lock()?;
-        s.check_repository(epoch, token)?;
-        s.active = Some((handle, snapshot.clone()));
+        s.publish_repository(epoch, token, handle, snapshot.clone())?;
         Ok(snapshot)
     })
     .await
@@ -199,14 +270,20 @@ pub async fn read_repository_state(
             .filter(|(h, _)| h.id == repository_id)
             .map(|(h, _)| h.clone())
             .ok_or_else(|| OperationError::new("STALE_REQUEST"))?;
-        s.repository_request += 1;
+        s.begin_repository_request()?;
         (git, handle, s.epoch, s.repository_request)
     };
     blocking(move || {
-        let snapshot = git::repository::read_repository_state(&git, &handle)?;
+        let coordinator = {
+            let s = shared.lock()?;
+            s.coordinator.clone()
+        };
+        let key = git::coordinator::CoordinationKey::repository(&handle)?;
+        let snapshot = coordinator.read(&key, || {
+            git::repository::read_repository_state(&git, &handle)
+        })?;
         let mut s = shared.lock()?;
-        s.check_repository(epoch, token)?;
-        s.active = Some((handle, snapshot.clone()));
+        s.publish_repository(epoch, token, handle, snapshot.clone())?;
         Ok(snapshot)
     })
     .await
@@ -222,7 +299,7 @@ pub async fn read_file_diff(
     side: DiffSide,
 ) -> Result<FileDiff, OperationError> {
     let shared = state.inner().clone();
-    let (git, handle, snapshot, epoch, token) = {
+    let (git, handle, snapshot, epoch, token, coordinator) = {
         let s = shared.lock()?;
         let git = s
             .git
@@ -239,10 +316,14 @@ pub async fn read_file_diff(
             snapshot.clone(),
             s.epoch,
             s.repository_request,
+            s.coordinator.clone(),
         )
     };
     blocking(move || {
-        let diff = git::diff::read_file_diff(&git, &handle, &snapshot, &change_id, side)?;
+        let key = git::coordinator::CoordinationKey::repository(&handle)?;
+        let diff = coordinator.read(&key, || {
+            git::diff::read_file_diff(&git, &handle, &snapshot, &change_id, side)
+        })?;
         shared.lock()?.check_repository(epoch, token)?;
         Ok(diff)
     })
@@ -319,7 +400,7 @@ mod tests {
         s.repository_request = 2;
         assert!(s.check_repository(0, 1).is_err());
         assert!(s.check_repository(0, 2).is_ok());
-        s.install(None, true);
+        s.install(None, true).unwrap();
         assert!(s.check_repository(0, 2).is_err());
     }
     /// 相同路径重新检测不使当前仓库无故失效，手动设置会作废。
@@ -331,11 +412,11 @@ mod tests {
             version: "2.49.0".into(),
             source: "path".into(),
         };
-        s.install(Some(g.clone()), false);
+        s.install(Some(g.clone()), false).unwrap();
         let epoch = s.epoch;
-        s.install(Some(g.clone()), false);
+        s.install(Some(g.clone()), false).unwrap();
         assert_eq!(s.epoch, epoch);
-        s.install(Some(g), true);
+        s.install(Some(g), true).unwrap();
         assert!(s.epoch > epoch);
     }
 }

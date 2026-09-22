@@ -1,9 +1,29 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+  BranchList,
+  CloneParent,
+  ClonePreview,
+  CloneRequest,
+  CommitDetail,
+  CommitFileList,
   DiffSide,
   FileDiff,
   GitEnvironment,
+  HistoryPage,
+  ConflictDocument,
+  ConflictState,
+  ConflictWriteRequest,
+  LocalWriteRequest,
+  OperationHandle,
+  OperationRecord,
+  ProjectFileList,
+  RemoteAssessment,
+  RemoteState,
+  RemoteWriteRequest,
   RepositoryState,
+  UiPreferences,
+  WriteContext,
+  WritePreview,
 } from "../types/git";
 
 import { normalizeOperationError } from "./gitErrors";
@@ -56,3 +76,129 @@ export const readFileDiff = (
   side: DiffSide,
 ): Promise<FileDiff> =>
   call("read_file_diff", { repositoryId, snapshotId, changeId, side });
+
+/** 建立历史快照或读取该快照下一页；null 游标明确重新加载图。 */
+export const readCommitHistory = (
+  repositoryId: string,
+  cursor: string | null,
+): Promise<HistoryPage> =>
+  call("read_commit_history", { repositoryId, cursor });
+
+/** 读取当前图已返回提交的完整身份和说明。 */
+export const readCommitDetail = (
+  repositoryId: string,
+  graphSnapshotId: string,
+  oid: string,
+): Promise<CommitDetail> =>
+  call("read_commit_detail", { repositoryId, graphSnapshotId, oid });
+
+/** 比较已返回提交及其直接父；null 使用第一父或根提交语义。 */
+export const readCommitFiles = (
+  repositoryId: string,
+  graphSnapshotId: string,
+  oid: string,
+  parentOid: string | null,
+): Promise<CommitFileList> =>
+  call("read_commit_files", { repositoryId, graphSnapshotId, oid, parentOid });
+
+/** 读取最近提交文件列表签发的差异 ID，不传任意路径。 */
+export const readCommitFileDiff = (
+  repositoryId: string,
+  graphSnapshotId: string,
+  fileId: string,
+): Promise<FileDiff> =>
+  call("read_commit_file_diff", { repositoryId, graphSnapshotId, fileId });
+
+/** 读取真实本地/远端分支与其他工作树占用状态。 */
+export const readBranches = (repositoryId: string): Promise<BranchList> =>
+  call("read_branches", { repositoryId });
+
+/** 为当前状态建立已跟踪及未忽略项目文件列表。 */
+export const readProjectFiles = (
+  repositoryId: string,
+  snapshotId: string,
+): Promise<ProjectFileList> =>
+  call("read_project_files", { repositoryId, snapshotId });
+
+/** 按后端文件 ID 读取项目文件内容，保持只读预览语义。 */
+export const readProjectFile = (
+  repositoryId: string,
+  snapshotId: string,
+  fileId: string,
+): Promise<FileDiff> =>
+  call("read_project_file", { repositoryId, snapshotId, fileId });
+
+/** 读取当前仓库快照的写入能力上下文。 */
+export const readWriteContext = (
+  repositoryId: string,
+  snapshotId: string,
+): Promise<WriteContext> =>
+  call("read_write_context", { repositoryId, snapshotId });
+/** 预览本地写入操作。 */
+export const prepareLocalWrite = (
+  repositoryId: string,
+  snapshotId: string,
+  request: LocalWriteRequest,
+): Promise<WritePreview> =>
+  call("prepare_local_write", { repositoryId, snapshotId, request });
+/** 预览远端写入操作。 */
+export const prepareRemoteWrite = (
+  repositoryId: string,
+  snapshotId: string,
+  request: RemoteWriteRequest,
+): Promise<WritePreview> =>
+  call("prepare_remote_write", { repositoryId, snapshotId, request });
+/** 预览冲突写入操作。 */
+export const prepareConflictWrite = (
+  repositoryId: string,
+  mergeSessionId: string,
+  request: ConflictWriteRequest,
+): Promise<WritePreview> =>
+  call("prepare_conflict_write", { repositoryId, mergeSessionId, request });
+/** 执行已确认的写入计划。 */
+export const executeWrite = (
+  repositoryId: string,
+  planId: string,
+): Promise<OperationHandle> => call("execute_write", { repositoryId, planId });
+/** 打开父目录选择器并读取后端签发的目录身份。 */
+export const chooseCloneParent = (): Promise<CloneParent | null> =>
+  call("choose_clone_parent");
+/** 预览仓库克隆操作。 */
+export const prepareClone = (request: CloneRequest): Promise<ClonePreview> =>
+  call("prepare_clone", { request });
+/** 执行已确认的克隆计划。 */
+export const executeClone = (planId: string): Promise<OperationHandle> =>
+  call("execute_clone", { planId });
+/** 查询当前会话中的操作记录；传 null 查询当前任务。 */
+export const readOperation = (
+  operationId: string | null,
+): Promise<OperationRecord | null> => call("read_operation", { operationId });
+/** 读取仓库远端状态。 */
+export const readRemotes = (repositoryId: string): Promise<RemoteState> =>
+  call("read_remotes", { repositoryId });
+/** 评估本地快照与远端分支的关系。 */
+export const assessRemote = (
+  repositoryId: string,
+  snapshotId: string,
+  remoteBranchId: string,
+): Promise<RemoteAssessment> =>
+  call("assess_remote", { repositoryId, snapshotId, remoteBranchId });
+/** 读取当前仓库冲突状态。 */
+export const readConflicts = (repositoryId: string): Promise<ConflictState> =>
+  call("read_conflicts", { repositoryId });
+/** 读取指定冲突文件的可编辑文档。 */
+export const readConflictDocument = (
+  repositoryId: string,
+  mergeSessionId: string,
+  conflictId: string,
+): Promise<ConflictDocument> =>
+  call("read_conflict_document", { repositoryId, mergeSessionId, conflictId });
+/** 读取当前界面偏好。 */
+export const readUiPreferences = (): Promise<UiPreferences> =>
+  call("read_ui_preferences");
+/** 保存并读取校验后的界面偏好。 */
+export const setUiPreferences = (
+  elasticity: number,
+  showLabels: boolean,
+): Promise<UiPreferences> =>
+  call("set_ui_preferences", { elasticity, showLabels });

@@ -8,6 +8,13 @@ description = "gitMaster 独立业务核心，不依赖桌面框架"
 [dependencies]
 serde.workspace = true
 cap-std = "=4.0.2"
+sha2 = "=0.10.9"
+tempfile = "=3.27.0"
+url = "=2.5.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+cap-primitives = "=4.0.3"
+windows-sys = { version = "=0.45.0", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_SystemServices"] }

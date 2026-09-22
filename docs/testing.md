@@ -25,7 +25,7 @@ M0 只有元数据接口，不添加镜像实现的低价值单元测试。执�
 - 没有假仓库、假提交、假进度或点击后无解释的主操作按钮。
 - 控制台无页面错误；纯浏览器预览不能替代 WebView2/WKWebView 测试。
 
-## 后续 Git 测试矩阵
+## Git 测试矩阵（具体执行状态见文末及 verification）
 
 全部在明确创建的临时测试仓库运行，不修改用户真实仓库、全局 Git 配置或远端。
 
@@ -74,3 +74,23 @@ pnpm tauri build --no-bundle
 - 本机默认并发首轮出现 3 项 `TIMEOUT`，同一版本串行复跑时通过；Windows 复现检查使用 `cargo test -p gitmaster-core --locked -- --test-threads=1`。这不证明默认并发稳定或所有机器性能达标，生产 10 秒超时保持不变。
 - 远端分支没有 `tests/m1/`，本机不具备历史 8 项前端测试，不能将 macOS 本地结果算作 Windows 重跑通过。
 - 原生窗口自动化工具本轮反复超时；进程启动、窗口标题和 HTTP 状态不能代替目录选择器、真实状态/差异 IPC、键盘、最小窗口及系统缩放交互验收。
+
+## M2/M3 检查入口与证据边界
+
+```sh
+pnpm --config.verify-deps-before-run=false build
+pnpm --config.verify-deps-before-run=false format:check
+cargo fmt --all -- --check
+cargo test -p gitmaster-core --locked --offline
+cargo test -p gitmaster-desktop --locked --offline
+cargo check -p gitmaster-desktop --locked --offline
+node --test tests/m2-m3/*.test.ts
+pnpm --config.verify-deps-before-run=false tauri build --no-bundle
+git diff --check
+```
+
+- 核心内置测试纳入源码版本管理：计划/队列、只读准备、确认字节暂存、完整索引提交、分支/ref 锁、分页、远端隔离和竞态、普通 merge、冲突保存部分失败及双亲提交。最新 macOS 结果为 193 通过、1 个父测试使用的 ignored 进程夹具；Windows 新增进程与文件身份测试仅编写、未运行。
+- 桌面内置测试验证业务 IPC 调度、迟到/重复请求、资源 ID、环境门禁及设置 v1/v2 迁移。前端本地 34 项测试验证控制器、稳定拓扑和展示行对齐；tests/ 按约定忽略，仅本机可运行，干净 clone 不包含这些文件，不能把命令缺文件写成通过。
+- 本地测试额外使用 strict TypeScript 检查：`pnpm --config.verify-deps-before-run=false exec tsc --ignoreConfig --noEmit --allowImportingTsExtensions --jsx react-jsx --target ES2022 --module ESNext --moduleResolution bundler --strict --skipLibCheck --types node,vite/client tests/m2-m3/ui.fixture.ts tests/m2-m3/*.test.ts`。
+- `tests/m2-m3/ui.fixture.html` 明确标识内存替身，只用于真实组件的按钮/草稿/焦点/布局，不作为 Git、原生 IPC 或认证测试。生产浏览器模式仍禁用写入。
+- Windows 平台测试、真实认证、物理跨卷、最低系统/Git 和本机受锁屏阻挡的原生交互按用户授权跳过。保留原因与风险，不以 M1 历史验收或浏览器结果替代。C01–C18 最终证据见 [验证记录](verification.md#m2m3-最终验收2026-09-23)。

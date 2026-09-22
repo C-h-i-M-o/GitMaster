@@ -16,9 +16,46 @@ export function describeGitError(error: OperationError): string {
     PARSE_FAILED: "Git 返回的数据无法解析。",
     STALE_REQUEST: "内容已变化，请重新刷新。",
     FILE_UNAVAILABLE: "文件已不可用，请刷新仓库。",
-    SETTINGS_IO: "应用设置读取失败。",
+    SETTINGS_IO: "应用设置读取或保存失败。",
+    INVALID_INPUT: "输入不符合要求。",
+    EMPTY_SELECTION: "请至少选择一项。",
+    STALE_WRITE_PLAN: "写入预览已过期，请重新准备。",
+    STALE_GRAPH: "历史已变化，请重新加载。",
+    STALE_CONFLICT: "冲突内容已变化，请重新加载。",
+    OPERATION_IN_PROGRESS: "已有操作正在进行。",
+    QUEUE_FULL: "操作队列已满，请稍后重试。",
+    WORKTREE_DIRTY: "工作区有未保存修改。",
+    INDEX_LOCKED: "索引正被其他 Git 进程锁定，请等待该进程结束后重试。",
+    HEAD_REQUIRED: "当前仓库还没有提交，请先创建第一个版本。",
+    DETACHED_HEAD_WRITE_BLOCKED:
+      "当前为分离头指针，请创建并切换到具名分支后再写入。",
+    REPOSITORY_OPERATION_ACTIVE:
+      "仓库存在进行中的 Git 操作，请先在原工具中完成。",
+    UNSUPPORTED_WRITE_CONFIGURATION:
+      "当前平台或仓库配置不支持安全写入，请在外部 Git 工具中处理。",
+    UNTRUSTED_AUTH_CONFIGURATION:
+      "认证配置来源无法确认，请在用户级或系统级配置可信凭据助手或 SSH agent。",
+    CONFLICT_PRESENT: "仓库存在未解决冲突。",
+    NOTHING_TO_COMMIT: "没有可提交的内容。",
+    IDENTITY_REQUIRED: "请先配置 Git 用户身份。",
+    INVALID_BRANCH_NAME: "分支名称无效。",
+    BRANCH_EXISTS: "分支已存在。",
+    BRANCH_IN_USE: "分支正被其他工作树使用。",
+    REMOTE_NOT_FOUND: "找不到目标远端。",
+    UNSUPPORTED_TRANSPORT: "远端传输协议不受支持。",
+    AUTH_REQUIRED: "远端认证未完成，请检查系统凭据。",
+    NETWORK_FAILED: "网络操作失败，请检查连接。",
+    REMOTE_REJECTED: "远端拒绝了此次操作。",
+    NON_FAST_FORWARD: "远端不允许非快进更新。",
+    REMOTE_CHANGED: "远端状态已变化，请重新准备。",
+    NO_COMMON_ANCESTOR: "本地与远端没有共同祖先。",
+    TARGET_EXISTS: "目标目录或分支已存在。",
+    CHECKOUT_UNSUPPORTED: "目标内容无法安全检出。",
+    UNSUPPORTED_CONFLICT: "该冲突类型暂不支持内置处理。",
+    UNRESOLVED_CONFLICTS: "仍有未解决冲突。",
+    WRITE_OUTCOME_UNKNOWN: "写入结果未知，请重新读取状态。",
   };
-  return map[error.code] ?? "读取失败，请重试。";
+  return map[error.code] ?? "操作未完成，请刷新状态后重试。";
 }
 export function describeStatus(status: string): string {
   return (

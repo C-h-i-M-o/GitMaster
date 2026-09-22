@@ -40,6 +40,7 @@ export function createRepositoryController(api: RepositoryApi) {
   let active = true;
   let pending = false;
   let queued = false;
+  let autoRefreshBlocked = false;
   const listeners = new Set<() => void>();
   /** 发布一个完整快照供视图订阅。 */
   function update(next: Partial<RepositoryViewState>): void {
@@ -93,6 +94,14 @@ export function createRepositoryController(api: RepositoryApi) {
     }
     const id = state.repository.repositoryId;
     return load(() => api.readRepositoryState(id));
+  }
+  /** 操作确认或未保存编辑期间暂停窗口激活刷新。 */
+  function setAutoRefreshBlocked(blocked: boolean): void {
+    autoRefreshBlocked = blocked;
+  }
+  /** 自动刷新遵守界面门禁，显式终态刷新仍使用 refresh。 */
+  function refreshAutomatic(): Promise<void> {
+    return autoRefreshBlocked ? Promise.resolve() : refresh();
   }
   /** 文件选择使用独立代次，并绑定当前仓库读取代次。 */
   async function selectDiff(changeId: string, side: DiffSide): Promise<void> {
@@ -168,6 +177,8 @@ export function createRepositoryController(api: RepositoryApi) {
   return {
     open,
     refresh,
+    refreshAutomatic,
+    setAutoRefreshBlocked,
     selectDiff,
     clear,
     activate,

@@ -24,7 +24,7 @@ export function useRepository() {
     controller.activate();
     /** 窗口激活时请求一次合并刷新。 */
     const onFocus = (): void => {
-      if (isDesktop()) void controller.refresh();
+      if (isDesktop()) void controller.refreshAutomatic();
     };
     window.addEventListener("focus", onFocus);
     return () => {
@@ -36,6 +36,7 @@ export function useRepository() {
     ...state,
     open: controller.open,
     refresh: controller.refresh,
+    setAutoRefreshBlocked: controller.setAutoRefreshBlocked,
     selectDiff: controller.selectDiff,
     clear: controller.clear,
   };

@@ -1354,9 +1354,14 @@ dependencies = [
 name = "gitmaster-core"
 version = "0.1.0"
 dependencies = [
+ "cap-primitives",
  "cap-std",
  "libc",
  "serde",
+ "sha2",
+ "tempfile",
+ "url",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
