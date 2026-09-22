@@ -1,6 +1,6 @@
 # gitMaster 需求与实施计划
 
-日期：2026-09-21。状态：M1 阶段已完成，macOS Apple Silicon 本机验收与文档收尾完成；按用户决定暂时跳过 Windows 实机验收，其他兼容性待办保留，M2 及以后为规划。
+更新日期：2026-09-22。状态：M1 功能已完成；macOS Apple Silicon 主要原生流程已验证，Windows 补充测试与构建结果及未完成交互见验证记录。本轮 M2、M3 合并开发与 HTML 工作台改版以独立的 [M2 + M3 spec/plan](m2-m3-spec-plan.md) 为准，方案待评审、尚未实施；第 9 节保留为旧 M2 草案，其他兼容性待办保留。
 
 > 执行说明：先阅读本文件与架构设计，按阶段逐项实施和验证。规范与计划合并维护，不再生成一份重复的 plan。M0 提交推送授权为历史事项；当前 M1 开发、文档同步及提交推送到 GitHub 已获授权，软件发布不在本次范围。
 
@@ -80,6 +80,8 @@ Windows、Intel Mac、最低 macOS 版本实机验证不在当前机器上冒充
 | M5 macOS 原生验证 | SwiftUI 小型客户端 + UniFFI 桥接验证              | 与 Tauri 共用的 Rust 核心                   | 读取状态及异步进度可用；不依赖 Tauri 生命周期                  |
 
 各后续阶段进入开发前，在本文件补充具体文件、接口签名、错误语义、测试和验收，取得该阶段开发授权。这里不是所有未来功能的执行授权。
+
+2026-09-22 调整：按老大本轮要求，M2 和 M3 合并为一次开发及联合验收，完整需求、接口、文件职责、步骤与验收移至 [独立合并计划](m2-m3-spec-plan.md)。表内 M2/M3 保留原阶段含义，不再分别执行旧草案；M4/M5 保持后续阶段。
 
 ## 5. 全局约束与设计决策
 
@@ -401,3 +403,288 @@ M1 本机完成要求：A01–A12 均有本机证据，静态检查、核心/适
 ### 8.1 Windows 测试夹具修正
 
 首轮核心测试发现 `literal_names_and_binary` 使用 `:(glob)*`，Windows 创建该文件时报系统错误 123。仅调整测试：Unix 保留原路径魔法样本，Windows 使用合法的 `-[target].txt` 和诱饵 `-t.txt`，继续验证字面 pathspec、前导短横线和二进制识别；不放宽生产超时或跳过安全断言。超时失败另以单线程复跑确认并如实记录。
+
+## 9. M2 本地版本操作：需求与开发计划
+
+> 历史草案：已由 [M2 + M3 合并开发 spec/plan](m2-m3-spec-plan.md) 替代。本节的“不做分支图、历史差异、视觉改版”和仅本地操作范围不再作为本轮执行边界；以下原始状态与授权说明仅描述旧计划编制时的情况。
+
+编制日期：2026-09-22。基线：`1f45acd`，M1 已有系统 Git 检测、仓库状态和单文件差异。状态：**待评审，尚未实施**。本次授权仅生成计划及相关文档记录；不代表已授权开发、安装依赖、操作真实仓库、提交、推送或发布。M2 是功能里程碑，不在本轮修改软件版本号。
+
+**目标：** 用户能选择文件准备下一次本地提交，核对暂存内容后保存版本，查看本地历史，并创建或切换本地分支；未选中文件、未暂存内容和已有提交不被意外修改。
+
+**架构：** 复用 React 工作区、业务级 Tauri IPC 和独立 Rust 核心。核心新增本地写操作、历史与分支查询，以及不依赖窗口的仓库协调器；Tauri 管理会话和异步调用，前端只保存选择、输入与展示状态。
+
+**技术与执行：** 沿用 Tauri 2、React、strict TypeScript、Rust、系统 Git，Node 24 LTS、`pnpm@11.15.1`，不预设新增依赖。需求、契约、任务和验收均以本节为准，不另建 spec/plan。开发获授权后按 executing-plans 工作流逐项实施；如安排 Sub-Agent，仅允许 GPT-5.6 Luna、Low，禁止 Fast，主 Agent 负责集成和最终判断。任务默认不提交。
+
+### 9.1 交付范围与方案取舍
+
+| 功能     | M2 交付                                               | 明确边界                                                                    |
+| -------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| 文件选择 | 在现有分组列表勾选文件、显示选择数、暂存选中项        | 勾选不写仓库；按完整文件操作，不支持逐行/分块暂存                           |
+| 暂存管理 | 暂存新增、修改、删除；取消选中文件的暂存              | 取消暂存只改变索引，绝不恢复或删除工作区文件；不强制添加忽略文件            |
+| 保存版本 | 提交整个已暂存区，显示分支、完整文件清单、作者和说明  | 不自动暂存，不使用 commit -a，不支持 amend、空提交、签名配置或身份配置写入  |
+| 本地历史 | 当前 HEAD 可达提交列表、分页和提交详情                | 含合并提交的元数据；不做分支图、全文搜索、历史文件 diff、恢复或 cherry-pick |
+| 本地分支 | 列表、从当前 HEAD 创建分支、切换已有本地分支          | 创建不自动切换；不删除/重命名分支，不创建远端跟踪分支，不切换到任意提交     |
+| 操作反馈 | 排队、执行、完成、失败/结果待核对；操作后读取真实状态 | 无百分比伪进度；不提供执行中取消，不把关闭窗口当回滚                        |
+
+方案比较：
+
+1. **采用现有 Git 暂存区与业务接口。** 行为能与命令行对应，复用 M1 文件分组和差异；提交前必须展示全部已暂存文件，包括其他客户端暂存的内容。
+2. 私有暂存区或“勾选即提交”会引入两套索引同步，并模糊已有暂存内容的归属，M2 不采用。
+3. 引入 libgit2 会增加第二套 Git 行为与依赖，继续沿用既定系统 Git 路线。
+
+建议的首版限制：切换分支要求索引、工作区均干净且无未跟踪文件；存在冲突或 merge/rebase/cherry-pick/revert/bisect 过程时阻止全部写操作。detached HEAD 允许只读查看和从当前提交创建分支，暂存/提交需先切换到具名分支；unborn HEAD 允许暂存、取消暂存与首次提交，尚无提交时不创建分支。这些是待评审的 M2 产品规则，不宣称为 Git 自身限制。
+
+远端协作留在 M3；丢弃文件修改、reset、revert、stash、冲突解决及软件发布留在后续阶段。本阶段不引入数据库、账户、网络访问或自动维护任务。
+
+### 9.2 用户流程与交互规则
+
+1. 打开仓库后复用 M1 状态与差异。文件勾选独立于“点击查看差异”，选择身份包含 `changeId + side`；刷新产生新快照后清空选择，不按列表下标恢复。
+2. 未暂存/未跟踪组提供“暂存选中文件”，已暂存组提供“取消暂存”。一个文件同时在两组出现时，各自显示对应层级。再次暂存 MM 文件会更新整个文件的索引版本，执行前明确提示。
+3. 重命名按一个逻辑变化展示旧路径与新路径，暂存/取消暂存一并处理两端。若 M1 尚未识别为重命名，则按删除与新增两项分别选择，不推测自动补选。
+4. 点击“保存版本”先准备预览，显示仓库、分支、作者、全部暂存文件及说明。已有暂存内容不默认取消，也不因为只勾选部分文件就隐式排除。确认按钮文案为“保存到本机”，无上传暗示。
+5. 提交说明须包含非空白字符，UTF-8 最多 64 KiB，拒绝 NUL；保留用户换行。作者从受限的有效 Git 配置读取，不根据操作系统账户猜测；缺少 name/email 时提示用户在外部配置后刷新，本阶段不增加配置编辑器。
+6. 保存成功后显示真实提交 OID，清空提交说明和选择，刷新状态与历史。失败保留说明。提交已成功但刷新失败时单独提示，不提供“再提交一次”作为刷新重试。
+7. 历史默认每页 50 条，按拓扑顺序展示当前 HEAD 可达提交，显示短 OID、标题、作者与含时区时间；详情显示完整 OID、父提交、作者/提交者和说明。文本按字面渲染，不解析 HTML。
+8. 分支列表只显示本地分支、当前分支与其他 worktree 占用情况。创建前展示“基于当前提交”；创建后保持原分支。切换前展示目标，脏工作区时说明阻止原因，不自动 stash、覆盖或清理文件。
+9. 执行或排队时禁用新写入口、切换仓库和修改 Git 路径。后端仍独立校验，不能依赖按钮禁用；窗口关闭/IPC 断开后下次打开先重新读取真实状态。
+10. 浏览器预览所有写入口禁用。复用现有样式、分批列表、键盘焦点和减少动效；确认面板支持键盘操作并在关闭后恢复触发按钮焦点，不进行视觉改版。
+
+### 9.3 写操作、安全与并发约束
+
+#### 身份、排队和过期检查
+
+- 文件输入只接受后端快照里的 `changeId`；前端不能提交任意路径、Git 参数、ref 表达式或环境变量。路径映射与有效操作侧在后端验证。
+- 核心 `RepositoryCoordinator` 以规范化 `common_dir` 作为串行键，覆盖共享 refs 的 linked worktree；每个操作同时绑定实际 `git_dir`、会话代次和 Git 可执行文件。同一键按进入顺序执行，最多 16 个待执行请求，超出返回 `QUEUE_FULL`。
+- 从准备到执行均走协调器；读请求遇到本应用写操作时等待完成后刷新，避免把操作中的中间状态发布成有效快照。Git 子进程运行期间不持有 Tauri 的 Session mutex。
+- 写前准备产生后端保存的一次性 `planId`，绑定请求、HEAD、索引内容摘要、仓库过程状态、有关文件指纹及 Git 环境。计划保留 5 分钟，同会话至多一个待确认计划；刷新、环境/仓库变更、写操作或新的准备请求会作废旧计划。
+- 排队取出时重新校验全部前置条件。不能只比较 M1 的 `snapshotId` 或 status 字母：MM 文件内容再次改变而状态字母不变也须识别。暂存检查选中文件的内容/类型及属性配置；提交检查完整索引和 HEAD；切分支检查完整状态、目标 ref 与占用情况。
+- `planId` 执行后不可再次触发写入；会话内重复执行返回已保存的结果或 `OPERATION_IN_PROGRESS`。只保留当前及最近 16 次结果，不持久化任务日志；进程重启不承诺幂等重放，旧计划统一失效。
+- 应用队列只约束本进程，不能锁住外部编辑器/Git。保留 Git 自带锁及引用一致性检查；发现外部变化则停止并刷新。预检与执行之间仍可能有外部写入，不宣称整个文件系统事务化；执行后核对实际影响，不自动重试或回滚。
+
+#### Git 进程策略
+
+- 保留 M1 的只读执行策略，新增内部专用写策略；不能仅将现有 `run_git` 改成接受任意写命令。使用参数数组、字面 pathspec 和 NUL 分隔路径输入，批量输入经 stdin 传递，避免 Windows 命令行长度限制。
+- 单次写子进程暂定 60 秒；整项准备/执行各有 120 秒预算，stderr 上限 64 KiB、普通输出上限 1 MiB；状态读取继续保留 M1 的 8 MiB/10,000 条限制。超限或超时不能返回部分成功列表，测试后在验证记录报告实际耗时。
+- 现有 stdin 为 null，需增加有界 stdin 写入与回收，并覆盖子进程不消费 stdin、双管道洪泛和超时；不得因 stdin 阻塞失去超时能力。
+- 不执行仓库 hooks、外部 filter、签名程序、编辑器或网络辅助程序。提交前发现有效 hook 或启用签名配置时拒绝并提示当前版本不支持，不能静默绕过项目检查或签名要求；所有写命令同时使用命令级防护，禁止修改用户配置来禁用它们。
+- 暂存/分支切换涉及有效自定义 filter（含 LFS）时拒绝，避免禁用过滤器后写入错误内容。切换预检必须覆盖目标树及其 `.gitattributes`；未能证明安全时拒绝。内建行尾转换仍遵循 Git 配置，在 Windows LF/CRLF 场景验证。
+- sparse checkout、含子模块/gitlink 或嵌套仓库、符号链接/特殊文件及无法无损表示的路径先保留只读；普通二进制文件可按完整文件暂存/提交，并明确无法提供文本差异。阻止能力由后端返回，不能只在前端猜测。
+- 不删除已有 `index.lock`/refs 锁，不修改 safe.directory、用户身份、hooksPath 或其他仓库/全局配置；不触发自动 gc/maintenance、递归子模块更新、promisor 网络下载。
+
+#### 各操作允许的影响
+
+| 操作          | 允许改变                                              | 必须保留/核对                                                                     |
+| ------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------- |
+| 暂存          | 选中路径对应索引项、Git 必需对象                      | 未选中索引项、HEAD/refs、所有工作区内容；同文件原有部分暂存被整文件更新须预览提示 |
+| 取消暂存      | 选中索引项回到 HEAD；unborn 时移出索引                | 工作区字节不变；新文件成为未跟踪，不删除；不使用工作区 restore                    |
+| 提交          | 新提交及必要对象、当前分支引用/reflog、Git 必需元数据 | 提交树等于已确认的索引树；未暂存内容不进入提交；不 amend、不改变其他分支          |
+| 创建分支      | 一个新本地 ref 及 Git 必需元数据                      | 当前 HEAD、索引、工作区不变；名称已存在绝不覆盖                                   |
+| 切换分支      | HEAD、索引、对应受跟踪文件                            | 不强制、不 merge、不猜测远端分支；目标被其他 worktree 使用时拒绝                  |
+| 历史/分支查询 | 无仓库写入                                            | 沿用 M1 只读约束；缺失对象报错，不联网补齐                                        |
+
+暂存使用明确路径集合的 Git add；取消暂存分别处理已有 HEAD 和 unborn，不对整个仓库执行 reset。提交只消费索引，通过 stdin 输入说明，不带路径和 `-a`，不弹出编辑器。创建分支从校验后的当前 OID 创建；切换只接受后端列表内完整本地 ref 映射的目标，关闭远端猜测，不使用 force/discard/merge 选项。
+
+失败后应再次读取真实状态：写进程未启动可报告未执行；启动后遇到超时、非零退出、IPC 断开或核对失败，不能统一宣称“无任何修改”。结果不确定时显示“结果待核对”，停止后续已排队写请求，作废计划，用户刷新后重新准备。不自动重放，也不回滚用户或其他程序可能新增的内容。
+
+### 9.4 拟新增接口与数据结构
+
+以下均为计划契约，现有 `docs/interfaces.md` 的已实现清单在开发时再同步。Rust 内部使用 PathBuf、枚举和结构体，serde 输出 camelCase；TypeScript 用严格类型和可辨别联合，不使用非必要 any。现有 `RepositoryState`、`FileChange`、`HeadState` 和 `OperationError` 继续复用。
+
+| 类型                | 字段与语义                                                                                                                                                                                                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LocalWriteRequest` | 联合类型：`stage/unstage` 含 `changeIds: string[]`；`commit` 含 `message: string`；`createBranch` 含 `name: string`；`switchBranch` 含 `branchId: string`；每项含 `kind`                                                                                                                                                             |
+| `WriteCapabilities` | `stage/unstage/commit/createBranch/switchBranch` 各为 `{ allowed: true }` 或 `{ allowed: false, error: OperationError }`；能力读取不代替执行前检查                                                                                                                                                                                   |
+| `LocalWriteContext` | `repositoryId: string`、`snapshotId: string`、`capabilities: WriteCapabilities`；只对应当前完整状态                                                                                                                                                                                                                                  |
+| `WritePreview`      | `planId: string`、`repositoryId: string`、`snapshotId: string`、`kind`（五种写操作）、`head: HeadState`、`paths: string[]`、`author: { name: string, email: string } \| null`、`message: string \| null`、`targetBranch: string \| null`、`warnings: string[]`、`expiresAt: string`；warnings 为固定文案键，完整路径清单不得静默截断 |
+| `WriteResult`       | 共同字段 `planId`、`repositoryId`、`kind`；`outcome: succeeded/failed/unknown` 三分支：成功含 `commitOid: string \| null`、`branchName: string \| null`，失败/未知含 `error: OperationError`；三者均含 `refresh`                                                                                                                     |
+| `WriteRefresh`      | `status: ready` 时含 `repository: RepositoryState`；`status: failed` 时含 `error: OperationError`。写成功与刷新失败可同时成立                                                                                                                                                                                                        |
+| `CommitSummary`     | `oid: string`、`parentOids: string[]`、`subject: string`、`authorName: string`、`authoredAt: string`；时间为带时区的 ISO 8601，不按 OID 长度假设 SHA-1                                                                                                                                                                               |
+| `CommitDetail`      | `summary: CommitSummary`、`authorEmail: string`、`committerName: string`、`committerEmail: string`、`committedAt: string`、`message: string`、`truncated: boolean`                                                                                                                                                                   |
+| `HistoryPage`       | `repositoryId: string`、`anchorOid: string \| null`、`commits: CommitSummary[]`、`nextCursor: string \| null`；unborn 返回空列表和 null anchor                                                                                                                                                                                       |
+| `LocalBranch`       | `branchId: string`、`name: string`、`oid: string`、`current: boolean`、`occupiedByOtherWorktree: boolean`；branchId 由后端映射，不当 ref 表达式执行                                                                                                                                                                                  |
+| `BranchList`        | `repositoryId: string`、`branches: LocalBranch[]`；仅完整成功返回，超过 1,000 个本地分支则 `OUTPUT_LIMIT`                                                                                                                                                                                                                            |
+
+| Tauri command              | 参数                                                           | 返回与语义                                                    |
+| -------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
+| `read_local_write_context` | `repositoryId, snapshotId: string`                             | `LocalWriteContext`；计算能力与拒绝原因                       |
+| `prepare_local_write`      | `repositoryId, snapshotId: string, request: LocalWriteRequest` | `WritePreview`；仅校验并准备，不修改仓库                      |
+| `execute_local_write`      | `repositoryId, planId: string`                                 | `WriteResult`；只执行后端保存的计划，不能替换消息、目标或路径 |
+| `read_commit_history`      | `repositoryId: string, cursor: string \| null`                 | `HistoryPage`；固定每页 50 条                                 |
+| `read_commit_detail`       | `repositoryId, oid: string`                                    | `CommitDetail`；只接受当前历史会话已返回的完整 OID            |
+| `read_local_branches`      | `repositoryId: string`                                         | `BranchList`；更新该会话分支 ID 映射                          |
+
+请求校验/准备失败沿用 `Result<DTO, OperationError>`；写操作被接受后的成功、失败与未知通过 `WriteResult` 表达，传输中断时前端显示待核对。`execute_local_write` 不以刷新失败覆盖已经确认的提交结果。
+
+历史首屏固定 `anchorOid`，后续 opaque cursor 绑定仓库、anchor 和偏移，后端校验而非原样传给 Git。新提交不会让已打开历史分页重复或漏项；手动刷新重新取 anchor，界面提示当前显示的历史基点。每页输出上限 1 MiB，超过则报错；详情说明上限 64 KiB，截断只针对说明并显式标记。每会话最多保留 1,000 个已返回 OID，达到上限提示刷新历史；不接受任意对象读取。
+
+核心公共接口建议：
+
+- `read_local_write_context(git: &GitExecutable, repository: &RepositoryHandle, snapshot: &RepositoryState) -> Result<LocalWriteContext, OperationError>`。
+- `prepare_local_write(git: &GitExecutable, repository: &RepositoryHandle, snapshot: &RepositoryState, request: LocalWriteRequest) -> Result<PreparedWrite, OperationError>`；`PreparedWrite` 保存内部指纹及 `WritePreview`，不整体序列化到前端。
+- `execute_local_write(git: &GitExecutable, repository: &RepositoryHandle, plan: &PreparedWrite) -> WriteResult`；只供协调器内持有执行许可的调用路径使用，执行前仍复核，不允许桌面层绕过排队。
+- `read_commit_history(git: &GitExecutable, repository: &RepositoryHandle, cursor: Option<&HistoryCursor>) -> Result<HistoryPage, OperationError>`；`HistoryCursor` 为核心解析并校验的内部类型。
+- `read_commit_detail(git: &GitExecutable, repository: &RepositoryHandle, oid: &str) -> Result<CommitDetail, OperationError>`；验证对象格式和范围。
+- `read_local_branches(git: &GitExecutable, repository: &RepositoryHandle) -> Result<BranchList, OperationError>`。
+
+协调器负责队列、一次性计划和结果缓存，Tauri Session 只保存会话绑定及协调器引用；核心公共查询/执行路径均通过协调器使用。后续 SwiftUI 可复用该机制，不依赖 Tauri event 或 React 生命周期。M2 用等待中的 IPC 和前端状态展示执行过程，不新增通用进度总线。
+
+新增稳定错误码：`EMPTY_SELECTION`、`INVALID_INPUT`、`STALE_WRITE_PLAN`、`OPERATION_IN_PROGRESS`、`QUEUE_FULL`、`INDEX_LOCKED`、`WORKTREE_DIRTY`、`CONFLICT_PRESENT`、`REPOSITORY_OPERATION_ACTIVE`、`NOTHING_TO_COMMIT`、`IDENTITY_REQUIRED`、`DETACHED_HEAD_WRITE_BLOCKED`、`HEAD_REQUIRED`、`INVALID_BRANCH_NAME`、`BRANCH_EXISTS`、`BRANCH_IN_USE`、`UNSUPPORTED_WRITE_CONFIGURATION`、`WRITE_OUTCOME_UNKNOWN`。其余沿用 M1 错误码；retryable 仅表示允许重新检查/准备，不授权自动重复写入。错误提示映射为中文，不透传原始 stderr、配置值或含凭据 URL。
+
+### 9.5 文件职责与修改边界
+
+| 文件                                                                                                                     | 拟变更职责                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `crates/gitmaster-core/src/git/process.rs`                                                                               | 保持只读策略；新增受限写策略、有界 stdin、按操作预算与进程回收                |
+| `crates/gitmaster-core/src/git/types.rs`、`error.rs`、`mod.rs`                                                           | 新契约、稳定错误码和模块导出；保留 M1 类型兼容                                |
+| 新增 `crates/gitmaster-core/src/git/write.rs`                                                                            | 能力检查、计划准备、暂存/取消暂存/提交、结果核对与配置拒绝                    |
+| 新增 `crates/gitmaster-core/src/git/coordinator.rs`                                                                      | 按 common_dir 排队、会话绑定、一次性计划、过期与重复执行控制                  |
+| 新增 `crates/gitmaster-core/src/git/history.rs`                                                                          | 历史分页、提交详情、机器格式解析与上限                                        |
+| 新增 `crates/gitmaster-core/src/git/branches.rs`                                                                         | 本地分支查询、命名校验、创建/切换与 worktree 占用检查                         |
+| `crates/gitmaster-core/src/git/repository.rs`、`status.rs`                                                               | 仅补全写前检查必需的原始路径/索引信息和过程识别，不重写 M1 解析器             |
+| 新增 `crates/gitmaster-core/src/git/write_tests.rs`                                                                      | 临时仓库写操作和不变量验收，沿用现有模块内测试组织；不新增长期顶层 tests 目录 |
+| `src-tauri/src/commands.rs`、`lib.rs`                                                                                    | 业务 command 注册、会话保护、阻塞任务适配与核心协调器接入                     |
+| `src/types/git.ts`、`src/services/git.ts`、`gitErrors.ts`、`src/ui/gitPresentation.ts`                                   | DTO、业务调用与中文错误/结果文案                                              |
+| `src/hooks/repositoryController.ts`、`useRepository.ts`、`useWorkspace.ts`                                               | 将写结果刷新纳入已有读取代次；执行期间保护环境切换                            |
+| 新增 `src/hooks/localWriteController.ts`、`useLocalWrite.ts`                                                             | 文件选择、预览、一次确认、写结果与草稿生命周期，可注入 service 测竞态         |
+| 新增 `src/hooks/useHistory.ts`、`useBranches.ts`                                                                         | 历史分页和分支表单/查询；业务方法留在 .ts                                     |
+| `src/components/RepositoryView.tsx`、`FileChangeList.tsx`；新增 `CommitPanel.tsx`、`HistoryPanel.tsx`、`BranchPanel.tsx` | 展示与导入方法；复用现有差异视图，不把处理逻辑放入 .tsx                       |
+| `src/App.tsx`、`src/styles.css`                                                                                          | 仅完成必要接线、面板布局、焦点和禁用样式                                      |
+| `docs/spec-plan.md`、`interfaces.md`、`architecture.md`、`testing.md`、`ui-design.md`、`verification.md`、README、AGENTS | 开发时按实际实现同步能力和验证记录；M2 未完成前不能删除只读现状说明           |
+| 本地 `tests/m2/*.test.ts`                                                                                                | 前端控制器受控异步用例；默认本地保留，长期纳入版本管理另按用户决定            |
+
+### 9.6 实施任务与验收
+
+依赖顺序：任务 1 → 任务 2 → 任务 3；任务 4 依赖任务 1，任务 5 依赖任务 1/2，任务 6 集成任务 2–5，任务 7 收尾。主 Agent 先稳定契约再拆分执行，禁止多个执行者同时修改共享类型和 command 注册。
+
+#### 任务 1：受限写执行与仓库协调
+
+文件：process/types/error/mod、coordinator，桌面 commands/lib。输入：M1 GitExecutable、RepositoryHandle 和 Session；输出：9.4 的计划生命周期与写结果契约。
+
+- [ ] 先增加进程有界 stdin、同 common_dir 串行、不同 worktree 共享队列、重复 planId、环境变更与计划过期的失败测试。
+- [ ] 实现受限进程策略与协调器；计划只存后端，进程期间释放 Session mutex；读取等待写结束。
+- [ ] 通过可控进程夹具验证不消费 stdin、stderr 洪泛、超时回收；不通过延长 M1 超时掩盖问题。
+- [ ] 用受控屏障而非长 sleep 测 FIFO、队列上限、在途重复执行及失败后后续任务失效；验证同一计划只启动一次写进程。
+
+验收：绕过前端直接调用也不能并发写同仓库、重放操作、替换目标；锁文件存在时不删除、不强行接管。
+
+#### 任务 2：文件暂存与取消暂存
+
+文件：write、write_tests、repository/status 必需补充、types。输入：当前快照和 stage/unstage 请求；输出：完整 WritePreview 与核对后的 WriteResult。
+
+- [ ] 先在唯一临时目录构造新增、修改、MM、删除、重命名、中文/空格/前导短横线路径、二进制与 unborn 场景，断言选中/未选中索引和工作区差异。
+- [ ] 实现文件身份和侧校验、去重、内容/类型指纹、属性/过滤器拒绝；给出 MM 整文件覆盖暂存预览。
+- [ ] 实现精确路径暂存与取消暂存；unborn 取消新增项时只移出索引，批量路径不通过 shell 或目录通配展开。
+- [ ] 在准备后修改文件内容但保持 status 字母不变，执行必须拒绝；构造外部索引变化、路径替换和单项失败，验证结果不被伪装成全批次成功。
+
+验收：暂存只影响选中索引项；取消暂存前后工作区字节相同；未选中的已有暂存保持不变。
+
+#### 任务 3：提交预览与本地保存
+
+文件：write、write_tests、types/error。输入：完整索引、说明与有效身份；输出：绑定已确认索引的提交及真实 OID。
+
+- [ ] 先写首次提交、普通提交、MM 文件、外部已有暂存、空索引、空说明、缺身份、detached、冲突和进行中仓库操作测试。
+- [ ] 实现完整暂存预览、身份校验和索引指纹；检查 hook/签名配置，禁止调用外部程序和自动维护。
+- [ ] 实现只消费索引的提交，说明从有界 stdin 输入；写后核对新 HEAD、父提交与提交树，不解析本地化“提交成功”文本作为事实来源。
+- [ ] 注入“提交已产生但状态刷新失败”和“写启动后超时”场景，分别验证 succeeded + refresh.failed 与 unknown；重复确认不得增加第二个提交。
+
+验收：提交树与确认内容一致，工作区尚未暂存的修改保留；缺失身份只提示，不改配置、不猜测身份。
+
+#### 任务 4：本地历史与提交详情
+
+文件：history、types/mod，桌面 commands/lib。输入：当前 HEAD 或经校验的历史 cursor；输出：HistoryPage、CommitDetail。
+
+- [ ] 构造无提交、单提交、51 个提交、合并历史、中文/多行/含 HTML 说明的临时仓库，先验证分页和纯文本契约。
+- [ ] 实现机器格式解析、固定 anchor 的拓扑分页及详情上限；拒绝任意 ref/路径输入和未返回的 OID。
+- [ ] 分页之间创建新提交，验证旧 anchor 页不重不漏；手动刷新后使用新 anchor。缺失对象、超限、切仓库迟到响应均明确失败或失效。
+
+验收：查询不写仓库、不访问远端；截断只出现在允许截断的说明字段，不能把解析失败显示为空历史。
+
+#### 任务 5：本地分支创建与切换
+
+文件：branches、write/coordinator、write_tests，桌面 commands/lib。输入：createBranch/switchBranch 请求；输出：BranchList 和标准写结果。
+
+- [ ] 先测有效/无效/已存在名称、中文名称、前导短横线、HEAD 无提交、detached 创建分支、其他 worktree 占用及 branchId 过期。
+- [ ] 通过 Git 官方分支名称校验校验实际字面名称，额外拒绝 `@{-1}` 等快捷表达式；新分支只从校验的当前 OID 创建，不切换、不覆盖。
+- [ ] 实现干净工作区才能切换的策略，覆盖已暂存、未暂存、未跟踪文件；复核目标 ref、目标属性/filter、子模块与符号链接限制，禁用远端猜测和递归更新。
+- [ ] 注入创建期间 HEAD 变化、切换期间锁冲突/目标变化，验证不强制覆盖；成功后比较真实 HEAD、索引与文件内容。
+
+验收：创建只增加目标本地分支；失败不清理用户文件；脏工作区、占用目标和不支持配置有稳定中文提示。
+
+#### 任务 6：桌面工作流与前端竞态
+
+文件：services/types/ui、相关 .ts controller/hooks、现有列表及三个新面板、styles、`tests/m2/`。输入：任务 2–5 的业务接口；输出：可操作的本地保存与历史/分支界面。
+
+- [ ] 先以 Node 内建测试和受控 Promise 覆盖选择/差异分离、刷新清空选择、MM 两侧、完整暂存预览及提交草稿保留，不预装新测试框架。
+- [ ] 接入“准备 → 核对 → 执行 → 真实刷新”；所有处理方法和副作用放 .ts，.tsx 只组合 UI 和导入方法。
+- [ ] 测双击确认、写期间窗口激活、迟到历史/分支/差异响应、写成功但刷新失败、组件卸载和重开仓库；旧响应不能覆盖当前项目，未知结果不能自动重试。
+- [ ] 验证浏览器禁用写入口、键盘确认/返回、最小窗口、200% 缩放与减少动效；测试“全选”仅覆盖明确显示的完整逻辑集合，不因分页隐藏文件而误导用户。
+
+验收：用户始终能分清选中、已暂存、已提交、待核对；成功信息来自后端结果，动画结束不触发成功。
+
+#### 任务 7：整体验收与文档同步
+
+- [ ] 按 9.7 执行自动与原生验证，在隔离临时仓库完成完整流程，不对本项目或用户真实仓库进行功能试写。
+- [ ] Windows 编译与核心测试顺序运行，分别记录默认并发和空闲单线程条件；若仍超时，报告真实结果，不用局部通过替代完整通过。
+- [ ] 按实际实现同步接口、架构、UI、测试、README 与 AGENTS；在 verification 记录系统/Git 版本、测试数量、命令结果、原生证据与未测项。
+- [ ] 核对 diff 无无关重构、依赖安装、凭据、临时仓库及构建产物；保留 LICENSE 与已有服务/改动。不自动提交、推送或发布。
+
+验收：每个功能和失败恢复路径均有对应证据；无法实测的平台明确列为未验证，不借用 M1 构建结果证明 M2 原生可用。
+
+### 9.7 验收矩阵与完成条件
+
+| 编号 | 场景                                             | 必须观察到的结果                             | 任务       |
+| ---- | ------------------------------------------------ | -------------------------------------------- | ---------- |
+| B01  | 新增/修改/MM/删除/重命名/二进制精确选择          | 只改对应索引项，未选中内容保留               | 2、6       |
+| B02  | 已有 HEAD/unborn 取消暂存                        | 工作区字节不变，新文件仍存在                 | 2          |
+| B03  | 首次/普通提交、其他客户端已有暂存                | 预览包含完整索引，提交树一致，未暂存内容保留 | 3、6       |
+| B04  | 空说明/空索引/缺身份/detached/冲突/进行中操作    | 明确拒绝；无自动身份、stash 或覆盖           | 3、5       |
+| B05  | 同仓库并发、linked worktree、重复 planId、队列满 | 串行且只执行一次，队列有界                   | 1          |
+| B06  | 同状态字母内容变化、外部索引/HEAD/目标 ref 变化  | 拒绝过期计划，要求刷新后重做                 | 1、2、3、5 |
+| B07  | 锁占用、超时、部分影响、写成功后刷新失败         | 不删除锁、不重放、不承诺回滚，区分实际结果   | 1、2、3、6 |
+| B08  | 51 条以上历史、合并提交、多行说明、分页时新提交  | anchor 稳定、无漏重、详情准确、无注入        | 4、6       |
+| B09  | 无效/重复分支名、unborn、detached、worktree 占用 | 创建与切换规则正确，不覆盖已有 ref           | 5          |
+| B10  | 脏索引/工作区/未跟踪文件、干净切换               | 脏时阻止；成功后 HEAD/索引/内容匹配          | 5          |
+| B11  | hook/filter/LFS/签名、目标树属性、缺失对象       | 不执行外部程序、不联网、不绕过要求写坏内容   | 1、2、3、5 |
+| B12  | 中文/空格/路径魔法、Windows 特殊字符与 LF/CRLF   | 字面处理、平台夹具合法、不错误归一化         | 2、5       |
+| B13  | 子模块、嵌套仓库、符号链接、sparse、编码限制     | 明确只读/拒绝，不越界写入                    | 2、5       |
+| B14  | 快速操作/刷新/切仓库/卸载、浏览器预览            | 无串仓库、无假成功、无重复提交               | 6          |
+| B15  | Windows/macOS 原生全流程、键盘、最小窗口         | 系统 Git 实际结果与界面一致，证据分平台记录  | 7          |
+| B16  | M1 查询回归与写入影响对照                        | 查询仍只读，各写操作只产生表列允许影响       | 1–7        |
+
+重点复核五类风险分别落入测试任务：MM 与已有暂存混合（2/3）、外部程序使计划过期（1/2/3/5）、linked worktree 共享 refs（1/5）、hook/filter 与目标树属性执行（1/2/3/5）、写成功但通信/刷新失败（3/6）。
+
+开发授权后的检查命令：
+
+```sh
+pnpm typecheck
+pnpm build
+pnpm format:check
+cargo fmt --all -- --check
+cargo test -p gitmaster-core --locked
+cargo test -p gitmaster-desktop --locked
+cargo check -p gitmaster-desktop --locked
+node --test --experimental-strip-types tests/m2/*.test.ts
+pnpm tauri build --no-bundle
+pnpm tauri dev
+git diff --check
+```
+
+Windows 另运行 `cargo test -p gitmaster-core --locked -- --test-threads=1` 并标明条件；不得与重编译并行后将超时直接判为逻辑失败，也不得省略已有并发不稳定记录。`tests/m2/` 仅在本轮开发已创建这些本地测试后运行，缺失时记录“未执行”。所有测试身份用临时仓库局部配置或进程级参数，不修改全局配置。
+
+原生验收使用唯一临时仓库：准备两个普通文本文件及一个二进制文件 → 仅暂存部分 → 取消其中一项 → 提交并核对未暂存内容 → 查看历史 → 从当前提交创建分支 → 保留脏状态验证切换被拒绝 → 在临时仓库明确处理剩余内容后切换 → 重开应用核对真实结果。macOS 与 Windows 分别执行，系统级可访问性和最低版本未测则保留未验证状态。
+
+**完成定义：** B01–B16 均可追溯；核心、适配、前端测试与检查通过，原生本地操作流程有真实证据，需求/接口/代码/提示一致。若某平台无法实测，记录并由用户明确决定是否调整验收范围，不能沿用 M1 的历史跳过授权。默认不承诺 Intel Mac、最低 Git 2.39 或最低 macOS 已通过；签名、安装包和发布不属于 M2。
+
+### 9.8 评审事项与依据
+
+本草案推荐一次评审以下产品选择：整文件暂存且提交全部已暂存区；切分支要求无未提交/未跟踪内容；创建分支不自动切换；缺身份只引导外部配置；hook/filter/签名及复杂工作区暂保留只读。调整这些规则时，应同步对应接口、任务与验收，不仅修改按钮文案。
+
+本轮依据当前源码及 M1 验证记录制定范围。Git 行为参考官方文档；应用的更严格限制属于上述产品决策，最低 Git 版本支持仍须实际验证：
+
+- [git-add：暂存内容与路径输入](https://git-scm.com/docs/git-add)。
+- [git-commit：索引提交与提交选项](https://git-scm.com/docs/git-commit)。
+- [git-switch：分支切换与 worktree 限制](https://git-scm.com/docs/git-switch)。
+- [gitattributes：过滤器和内容转换](https://git-scm.com/docs/gitattributes)。
+
+本节所有开发/测试复选框均未勾选；生成计划不代表上述功能或验证已完成。

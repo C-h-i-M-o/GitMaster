@@ -1,0 +1,3133 @@
+<!doctype html>
+<!--
+gitMaster 独立交互设计稿 · 2026-09-22
+需求与方案：浅色玻璃工作台，中央可交互提交图，左侧导航，右侧文件/差异/冲突抽屉，底部终端。
+数据：内置 Commit{id,title,branch,parents,x,y}、文件文本与冲突样例；状态仅在本页内存中保留。
+接口：无后端、无系统命令、无真实 Git 和文件读写；终端基于所选演示项目路径响应示例命令。
+实现：独立 HTML、内联 CSS/SVG/脚本；弹簧积分驱动节点与连线，支持平移缩放、键盘与减少动效。
+验收：离线打开；只读文件切换、外部编辑器入口；精简差异标题；多文件冲突选择、三视图行对齐与滚动同步；设置弹窗与图标工具条。
+后续应用要求：参考 https://csacademy.com/app/graph_editor/ 实现整棵树的拖拽响应、邻接节点传力、平移惯性及稳定回弹；不改变提交拓扑，兼容减少动效。本 HTML 暂保留原节点动效。
+本轮补充：设置不提供手动减少动效开关；分支头使用轻量半透明标签与弱化 HEAD 标记；设置使用描边齿轮图标；外部编辑器使用图标分段按钮和下拉菜单；左侧分支支持折叠。
+本轮方案：文件页仅查看；冲突编辑器上方两侧来源、下方结果，统一行高和同步滚动；设置为左分类右表单的简洁模态框；外部编辑器入口仅演示，不启动软件。
+范围：仅视觉与交互原型，不修改现有业务实现，不代表原生终端或 Git 写功能已实现。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gitMaster · UI 设计稿</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #233b3c;
+        --muted: #83908e;
+        --green: #23877c;
+        --line: #dbe4df;
+        --paper: #f7f9f5;
+        --shadow: 0 16px 45px #234e3810;
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #e9eee8;
+        color: var(--ink);
+        font:
+          13px "Segoe UI",
+          "Microsoft YaHei",
+          sans-serif;
+        overflow: hidden;
+      }
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+      button {
+        color: inherit;
+        cursor: pointer;
+      }
+      button {
+        border: 0;
+        background: none;
+      }
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 2px solid var(--green);
+        outline-offset: 4px;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+      svg {
+        display: block;
+      }
+      button svg {
+        width: 18px;
+        height: 18px;
+        flex: none;
+      }
+      .icon {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.65;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .mono,
+      code,
+      textarea {
+        font-family: Consolas, "Cascadia Code", monospace;
+      }
+      .app {
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        background:
+          radial-gradient(ellipse at 70% 3%, #e2eee7 0, transparent 45%),
+          radial-gradient(ellipse at 17% 88%, #f4eadc 0, transparent 46%),
+          #f6f8f3;
+        padding: 0 20px;
+      }
+      .topbar {
+        height: 82px;
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        flex: none;
+        border-bottom: 1px solid #ffffffb0;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        font-size: 23px;
+        font-weight: 650;
+        letter-spacing: -1px;
+        width: 186px;
+        flex: none;
+      }
+      .brandmark {
+        width: 35px;
+        height: 35px;
+        border-radius: 12px;
+        background: #2c746a;
+        color: white;
+        display: grid;
+        place-items: center;
+        box-shadow: 0 4px 12px #30675625;
+      }
+      .brandmark svg {
+        width: 24px;
+        height: 24px;
+      }
+      .project-wrap {
+        position: relative;
+      }
+      .project {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-align: left;
+        padding: 9px 12px;
+        border: 1px solid #ffffffd9;
+        border-radius: 12px;
+        background: #ffffff6b;
+      }
+      .project strong {
+        font-size: 13px;
+        display: block;
+      }
+      .project small {
+        font-size: 10px;
+        display: block;
+        color: var(--muted);
+        margin-top: 3px;
+      }
+      .project .chev {
+        margin-left: 20px;
+        color: #81928c;
+      }
+      .top-actions {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .top-button {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 13px;
+        border-radius: 11px;
+        border: 1px solid transparent;
+        font-size: 12px;
+      }
+      .top-button:hover,
+      .top-button.on {
+        background: #ffffffae;
+        border-color: #fff;
+        box-shadow: 0 3px 10px #263c3505;
+      }
+      .divider {
+        height: 23px;
+        width: 1px;
+        background: #d8e0d9;
+        margin: 0 8px;
+      }
+
+      .workspace {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        gap: 18px;
+        padding: 18px 0 0;
+      }
+      .sidebar {
+        width: 196px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        padding: 12px 10px 16px;
+        background: #ffffff60;
+        border: 1px solid #ffffffd9;
+        border-radius: 20px;
+        box-shadow: 0 4px 25px #35594004;
+        margin-bottom: 13px;
+      }
+      .eyebrow {
+        font-size: 10px;
+        letter-spacing: 1.8px;
+        color: #95a19a;
+        text-transform: uppercase;
+      }
+      .side-label {
+        padding: 15px 12px 10px;
+        font-size: 10px;
+        color: #98a49d;
+        letter-spacing: 1.5px;
+      }
+      .nav {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        border-radius: 10px;
+        text-align: left;
+        width: 100%;
+        margin: 2px 0;
+        font-size: 12px;
+        color: #667771;
+      }
+      .nav.active {
+        background: #e2ede5;
+        color: #2a6b60;
+        font-weight: 600;
+      }
+      .nav:hover {
+        background: #eaf0e9;
+      }
+      .count {
+        font: 10px Consolas;
+        margin-left: auto;
+        background: #e5eae3;
+        border-radius: 5px;
+        padding: 3px 6px;
+        color: #7b8781;
+      }
+      .nav.active .count {
+        background: #cbded0;
+        color: #3e7666;
+      }
+      .branch {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        padding: 10px 13px;
+        color: #73837d;
+        font-size: 11px;
+      }
+      .dot {
+        height: 7px;
+        width: 7px;
+        border-radius: 50%;
+        background: #55a89a;
+        display: inline-block;
+        flex: none;
+      }
+      .branch .mono {
+        font-size: 11px;
+      }
+      .branch small {
+        margin-left: auto;
+        font-size: 9px;
+        background: #dcece0;
+        color: #54806b;
+        padding: 2px 5px;
+        border-radius: 4px;
+      }
+
+      .main {
+        min-width: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+      }
+      .canvas-panel {
+        flex: 1;
+        min-height: 0;
+        position: relative;
+        overflow: hidden;
+        background: #ffffff39;
+        border-radius: 20px;
+        border: 1px solid #ffffffbe;
+        box-shadow: var(--shadow);
+      }
+
+      .pill {
+        border: 1px solid #d5e1d7;
+        border-radius: 6px;
+        padding: 3px 6px;
+        color: #7e9788;
+        font: 9px Consolas;
+        background: #f7faf5;
+      }
+
+      .canvas-actions {
+        position: absolute;
+        top: 26px;
+        right: 25px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        z-index: 2;
+      }
+      .search {
+        width: 164px;
+        height: 31px;
+        border: 1px solid #dce5db;
+        border-radius: 8px;
+        background: #ffffff86;
+        padding: 0 10px;
+        color: var(--ink);
+        font-size: 10px;
+      }
+      .round-btn {
+        height: 31px;
+        width: 31px;
+        display: grid;
+        place-items: center;
+        background: #ffffff99;
+        border: 1px solid #dfe7dd;
+        border-radius: 8px;
+      }
+      .graph-wrap {
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+        cursor: grab;
+        touch-action: none;
+        background-image: radial-gradient(#9cae982c 0.8px, transparent 0.8px);
+        background-size: 22px 22px;
+      }
+      .graph-wrap:active {
+        cursor: grabbing;
+      }
+      #graph {
+        width: 100%;
+        height: 100%;
+        min-height: 300px;
+      }
+      .edge {
+        fill: none;
+        stroke-width: 2.3;
+        opacity: 0.56;
+      }
+      .node {
+        cursor: grab;
+        outline: none;
+      }
+      .node:active {
+        cursor: grabbing;
+      }
+      .node .bubble {
+        stroke-width: 1.3;
+        filter: url(#bubbleShadow);
+      }
+      .node .halo {
+        fill: none;
+        stroke-width: 1.3;
+        opacity: 0;
+      }
+      .node.selected .halo,
+      .node:focus-visible .halo {
+        opacity: 1;
+      }
+      .node .node-title {
+        font-size: 12px;
+        fill: #435850;
+        font-weight: 500;
+      }
+      .node .meta {
+        font-size: 9px;
+        fill: #93a199;
+        font-family: Consolas, monospace;
+      }
+      .node .branch-label {
+        font-size: 9px;
+        font-family: Consolas, monospace;
+      }
+      .node.dim {
+        opacity: 0.14;
+      }
+      .graph-overlay {
+        position: absolute;
+        left: 26px;
+        bottom: 24px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: 10px;
+        color: #9aa69c;
+        pointer-events: none;
+      }
+      .legend {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .graph-controls {
+        position: absolute;
+        bottom: 22px;
+        right: 24px;
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        padding: 5px;
+        background: #ffffffbe;
+        backdrop-filter: blur(15px);
+        border: 1px solid white;
+        border-radius: 11px;
+        box-shadow: 0 5px 17px #2942340a;
+      }
+      .graph-controls button {
+        height: 28px;
+        min-width: 28px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+      }
+      .graph-controls button:hover {
+        background: #eaf0e8;
+      }
+      .zoom {
+        font: 10px Consolas;
+        min-width: 43px;
+        text-align: center;
+      }
+      .selection-card {
+        position: absolute;
+        right: 26px;
+        top: 90px;
+        width: 224px;
+        padding: 16px;
+        border: 1px solid #ffffffed;
+        border-radius: 15px;
+        background: #ffffffaa;
+        box-shadow: 0 10px 32px #2c483509;
+        backdrop-filter: blur(18px);
+        z-index: 2;
+      }
+      .selection-card .eyebrow {
+        font-size: 9px;
+        letter-spacing: 1px;
+      }
+      .selection-card h2 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 12px 0 9px;
+        line-height: 1.6;
+      }
+      .commit-author {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+        font-size: 10px;
+        color: #8a998e;
+      }
+      .mini-avatar {
+        height: 21px;
+        width: 21px;
+        background: #e6eadc;
+        color: #738765;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 9px;
+      }
+      .commit-stats {
+        border-top: 1px solid #e7ebe3;
+        margin-top: 13px;
+        padding-top: 12px;
+        display: flex;
+        gap: 9px;
+        font-size: 10px;
+        color: #91a091;
+      }
+      .added {
+        color: #4b9f79;
+      }
+      .removed {
+        color: #c57970;
+      }
+      .detail-link {
+        font-size: 11px;
+        color: #3e8774;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        padding: 13px 0 0;
+      }
+      .detail-link svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      .statusbar {
+        height: 31px;
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        font-size: 9px;
+        color: #8d9d90;
+        flex: none;
+      }
+      .statusbar .right {
+        margin-left: auto;
+      }
+      .statusbar .dot {
+        width: 5px;
+        height: 5px;
+      }
+      .statusbar button {
+        font-size: 9px;
+        color: #8d9d90;
+      }
+      .drawer {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 31px;
+        width: min(560px, 90%);
+        background: #fbfcf8f5;
+        border: 1px solid white;
+        border-radius: 19px;
+        box-shadow: -18px 0 60px #26473312;
+        z-index: 5;
+        backdrop-filter: blur(24px);
+        display: flex;
+        flex-direction: column;
+        transform: translateX(calc(100% + 30px));
+        transition: transform 0.35s var(--ease);
+        visibility: hidden;
+      }
+      .drawer.open {
+        transform: translateX(0);
+        visibility: visible;
+      }
+      .drawer-head {
+        padding: 20px 21px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .drawer-head h2 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 0;
+      }
+      .drawer-head p {
+        font-size: 10px;
+        color: var(--muted);
+        margin: 5px 0 0;
+      }
+      .drawer-tabs {
+        display: flex;
+        border-bottom: 1px solid #e2e9df;
+        padding: 0 20px;
+        gap: 25px;
+      }
+      .drawer-tabs button {
+        padding: 12px 0;
+        font-size: 11px;
+        color: #8b978e;
+        border-bottom: 2px solid transparent;
+      }
+      .drawer-tabs button.active {
+        color: #398173;
+        border-color: #398173;
+      }
+      .drawer-content {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 18px 20px;
+      }
+      .file-layout {
+        display: flex;
+        min-height: 290px;
+        border: 1px solid #e0e7dc;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .file-tree {
+        width: 145px;
+        flex: none;
+        background: #f1f5ee;
+        padding: 9px 5px;
+      }
+      .folder-label {
+        font-size: 10px;
+        padding: 9px;
+        color: #869581;
+      }
+      .file-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        font-size: 10px;
+        padding: 9px 7px;
+        text-align: left;
+        border-radius: 5px;
+        overflow: hidden;
+      }
+      .file-row.active {
+        background: #e1eadd;
+        color: #337b66;
+      }
+      .file-row .file-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .file-row small {
+        margin-left: auto;
+        color: #a8925f;
+      }
+      .file-editor {
+        min-width: 0;
+        flex: 1;
+        background: white;
+        display: flex;
+        flex-direction: column;
+      }
+      .editor-top {
+        font-size: 10px;
+        padding: 12px;
+        border-bottom: 1px solid #edf0e7;
+        color: #78917e;
+        display: flex;
+        gap: 8px;
+      }
+      .editor-top span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .editor-top b {
+        color: #bc9656;
+      }
+      .file-editor textarea {
+        width: 100%;
+        flex: 1;
+        min-height: 290px;
+        border: 0;
+        resize: vertical;
+        font-size: 11px;
+        line-height: 1.9;
+        padding: 14px;
+        color: #466751;
+        background: #fff;
+        outline-offset: -3px;
+        tab-size: 2;
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 15px 0;
+      }
+      .btn {
+        font-size: 11px;
+        padding: 9px 13px;
+        border: 1px solid #dce5d8;
+        background: #fff;
+        border-radius: 7px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .btn:hover {
+        background: #edf3e9;
+      }
+      .btn.primary {
+        background: #367d6b;
+        border-color: #367d6b;
+        color: white;
+      }
+      .btn.primary:hover {
+        background: #2c6d5e;
+      }
+      .hint {
+        color: #92a08f;
+        font-size: 10px;
+        line-height: 1.8;
+      }
+      .section-label {
+        font-size: 11px;
+        margin: 6px 0 12px;
+        color: #6b806f;
+      }
+      .diff-file {
+        border: 1px solid #e0e7dc;
+        border-radius: 9px;
+        margin: 12px 0;
+        overflow: hidden;
+        background: #fff;
+      }
+      .diff-title {
+        padding: 11px 13px;
+        background: #f2f6ee;
+        font-size: 11px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .diff-lines {
+        overflow: auto;
+        padding: 9px 0;
+        font:
+          10px/2 Consolas,
+          monospace;
+      }
+      .diff-line {
+        white-space: pre;
+        min-width: 430px;
+        padding: 0 12px;
+        color: #738471;
+      }
+      .diff-line em {
+        display: inline-block;
+        min-width: 24px;
+        font-style: normal;
+        color: #9caa99;
+        user-select: none;
+      }
+      .diff-line.plus {
+        background: #e6f3e9;
+        color: #398258;
+      }
+      .diff-line.minus {
+        background: #fae9e6;
+        color: #bc7167;
+      }
+
+      .terminal {
+        flex: none;
+        height: 0;
+        overflow: hidden;
+        transition: height 0.3s var(--ease);
+        background: #f9fcf5d9;
+        border: 0 solid white;
+        border-radius: 15px;
+        margin-top: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .terminal.open {
+        height: 215px;
+        border-width: 1px;
+        margin-top: 10px;
+      }
+      .terminal-head {
+        display: flex;
+        align-items: center;
+        padding: 11px 16px;
+        border-bottom: 1px solid #e5ebdf;
+        gap: 14px;
+        font-size: 10px;
+        color: #93a08b;
+      }
+      .terminal-head strong {
+        font-weight: 500;
+        color: #477b5c;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .terminal-head .terminal-path {
+        font: 10px Consolas;
+        color: #99a490;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .terminal-head .terminal-close {
+        margin-left: auto;
+      }
+      .terminal-head button {
+        font-size: 11px;
+        color: #83957c;
+      }
+      .terminal-body {
+        overflow: auto;
+        padding: 10px 17px;
+        flex: 1;
+        min-height: 0;
+        font: 11px/1.85 Consolas;
+        color: #72866b;
+      }
+      .terminal-output {
+        white-space: pre-wrap;
+        margin: 0;
+        font: inherit;
+      }
+      .terminal-input {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .prompt {
+        color: #35836b;
+        white-space: nowrap;
+      }
+      .terminal-input input {
+        font: inherit;
+        border: 0;
+        background: transparent;
+        outline: none;
+        min-width: 0;
+        flex: 1;
+        color: #466743;
+        padding: 4px 0;
+      }
+      .popover {
+        position: absolute;
+        z-index: 10;
+        padding: 10px;
+        border: 1px solid white;
+        border-radius: 13px;
+        background: #f8fbf3f5;
+        box-shadow: 0 15px 50px #23403220;
+        backdrop-filter: blur(20px);
+        display: none;
+      }
+      .popover.open {
+        display: block;
+      }
+      .project-menu {
+        top: 59px;
+        left: 0;
+        width: 260px;
+      }
+      .project-menu button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 12px 10px;
+        font-size: 12px;
+        border-radius: 7px;
+      }
+      .project-menu button:hover {
+        background: #e7efe1;
+      }
+      .project-menu small {
+        display: block;
+        font: 10px Consolas;
+        color: #97a18f;
+        margin-top: 5px;
+      }
+
+      .toast {
+        position: fixed;
+        bottom: 43px;
+        left: 50%;
+        transform: translate(-50%, 15px);
+        background: #315749ec;
+        color: #f5fbef;
+        box-shadow: var(--shadow);
+        padding: 12px 20px;
+        border-radius: 12px;
+        font-size: 11px;
+        z-index: 30;
+        opacity: 0;
+        pointer-events: none;
+        transition: 0.2s;
+      }
+      .toast.show {
+        transform: translate(-50%, 0);
+        opacity: 1;
+      }
+      .empty {
+        padding: 20px;
+        color: #899985;
+        font-size: 11px;
+      }
+      .hidden {
+        display: none !important;
+      }
+
+      @media (min-width: 1450px) {
+        .app {
+          padding: 0 28px;
+        }
+        .sidebar {
+          width: 215px;
+        }
+        .brand {
+          width: 205px;
+        }
+
+        .selection-card {
+          right: 32px;
+          top: 100px;
+        }
+      }
+      @media (max-width: 1050px) {
+        .sidebar {
+          width: 166px;
+        }
+        .brand {
+          width: 156px;
+        }
+        .topbar {
+          gap: 20px;
+        }
+        .selection-card {
+          width: 193px;
+          right: 18px;
+        }
+        .selection-card h2 {
+          font-size: 12px;
+        }
+        .canvas-actions .search {
+          width: 125px;
+        }
+        .graph-overlay {
+          gap: 8px;
+        }
+        .graph-overlay .legend:last-child {
+          display: none;
+        }
+      }
+      @media (max-width: 780px) {
+        .app {
+          padding: 0 10px;
+        }
+        .topbar {
+          height: 65px;
+          gap: 10px;
+        }
+        .brand {
+          width: auto;
+          font-size: 18px;
+        }
+        .brandmark {
+          width: 29px;
+          height: 29px;
+        }
+        .project {
+          padding: 7px;
+        }
+        .project small,
+        .project .chev,
+        .top-button span,
+        .avatar,
+        .divider {
+          display: none;
+        }
+        .top-actions {
+          gap: 2px;
+        }
+        .top-button {
+          padding: 8px;
+        }
+        .sidebar {
+          width: 49px;
+          padding: 6px;
+        }
+        .nav {
+          padding: 9px;
+          gap: 0;
+        }
+        .nav span,
+        .side-label,
+        .branch,
+        .workspace {
+          gap: 8px;
+          padding-top: 8px;
+        }
+
+        .canvas-actions {
+          top: 76px;
+          left: 18px;
+          right: auto;
+        }
+        .selection-card {
+          top: 15px;
+          right: 13px;
+          width: 160px;
+          padding: 12px;
+        }
+        .selection-card .commit-author,
+        .commit-stats {
+          display: none;
+        }
+        .selection-card h2 {
+          font-size: 11px;
+          margin: 9px 0;
+        }
+        .selection-card .eyebrow {
+          font-size: 8px;
+        }
+        .detail-link {
+          font-size: 9px;
+          padding-top: 4px;
+        }
+        .graph-overlay {
+          left: 16px;
+          bottom: 23px;
+        }
+        .graph-overlay .legend:nth-child(2) {
+          display: none;
+        }
+
+        .drawer {
+          width: 100%;
+        }
+        .file-tree {
+          width: 110px;
+        }
+        .statusbar {
+          gap: 9px;
+          font-size: 8px;
+        }
+        .statusbar .right {
+          display: none;
+        }
+        .drawer-content {
+          padding: 14px;
+        }
+        .drawer-head {
+          padding: 17px;
+        }
+        .drawer-tabs {
+          gap: 20px;
+          padding: 0 17px;
+        }
+        .project-menu {
+          left: -85px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+
+      /* 文件查看器和合并视图共享清晰的阅读区域。 */
+      .selection-card .commit-author {
+        margin-top: 16px;
+      }
+      .file-view {
+        display: flex;
+        flex-direction: column;
+      }
+      .file-view .file-layout {
+        flex: 1;
+        min-height: 0;
+      }
+      .file-editor textarea {
+        resize: none;
+        min-height: 0;
+      }
+      .external-tools {
+        display: flex;
+        gap: 6px;
+        padding: 8px;
+        border-bottom: 1px solid #edf0e7;
+        flex-wrap: wrap;
+      }
+      .external-tools .btn {
+        font-size: 10px;
+        padding: 7px 9px;
+      }
+      select {
+        font: inherit;
+        color: inherit;
+        background: #fbfcf6;
+        border: 1px solid #dce3d5;
+        border-radius: 7px;
+        padding: 6px 8px;
+      }
+      .external-tools select {
+        font-size: 10px;
+        max-width: 95px;
+      }
+      #settings-toggle {
+        font-size: 12px;
+      }
+      .drawer.merge-mode {
+        width: min(960px, 100%);
+      }
+      .merge-view {
+        padding: 0;
+        overflow: hidden;
+      }
+      .merge-workspace {
+        display: flex;
+        height: 100%;
+        min-height: 0;
+      }
+      .conflict-files {
+        width: 148px;
+        flex: none;
+        padding: 16px 7px;
+        border-right: 1px solid #e2e7dc;
+        background: #f1f5ec;
+      }
+      .conflict-files-title {
+        padding: 0 7px 14px;
+        font-size: 10px;
+        color: #7e8b76;
+        display: flex;
+        justify-content: space-between;
+      }
+      .conflict-file {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 10px 7px;
+        margin: 3px 0;
+        width: 100%;
+        text-align: left;
+        font:
+          10px Consolas,
+          monospace;
+        border-radius: 6px;
+      }
+      .conflict-file.active {
+        background: #e1eadd;
+        color: #326b57;
+      }
+      .conflict-file-icon {
+        color: #b18d54;
+      }
+      .file-choice {
+        width: 5px;
+        height: 5px;
+        background: #c8a565;
+        border-radius: 50%;
+        margin-left: auto;
+      }
+      .file-choice.chosen {
+        background: #64a48a;
+      }
+      .merge-editors {
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .merge-file-heading {
+        display: flex;
+        justify-content: space-between;
+        padding: 12px 15px;
+        border-bottom: 1px solid #e2e7dc;
+        font: 11px Consolas;
+        flex: none;
+      }
+      .merge-range {
+        color: #99a48d;
+        font-size: 10px;
+      }
+      .merge-sources {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        flex: 1;
+        min-height: 0;
+      }
+      .merge-pane {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+        background: #fff;
+        --highlight: #e6f1e7;
+      }
+      .merge-pane.incoming {
+        border-left: 1px solid #e0e4db;
+        --highlight: #eeebf7;
+      }
+      .merge-pane.result {
+        flex: 1;
+        border-top: 1px solid #d9e2d3;
+        --highlight: #f3f0db;
+      }
+      .merge-pane header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 37px;
+        gap: 5px;
+        padding: 8px 10px;
+        flex: none;
+        font-size: 10px;
+        background: #ecf3e9;
+        color: #6a8165;
+      }
+      .merge-pane.incoming header {
+        background: #eeecf6;
+        color: #837b9b;
+      }
+      .merge-pane.result header {
+        background: #f4f4e9;
+        color: #7a8161;
+      }
+      .merge-pane header button {
+        color: inherit;
+        font-size: 10px;
+        border: 1px solid #ffffffb0;
+        background: #ffffff80;
+        border-radius: 4px;
+        padding: 3px 5px;
+        white-space: nowrap;
+      }
+      .merge-choice {
+        font-size: 9px;
+        color: #97a18a;
+      }
+      .merge-code {
+        display: flex;
+        min-height: 0;
+        flex: 1;
+        overflow: hidden;
+      }
+      .line-gutter {
+        width: 35px;
+        flex: none;
+        overflow: hidden;
+        background: #f8faf5;
+        color: #a1ad99;
+        border-right: 1px solid #eff2e9;
+      }
+      .line-gutter pre {
+        margin: 0;
+        padding: 12px 7px 12px 0;
+        text-align: right;
+        font:
+          11px/22px Consolas,
+          monospace;
+      }
+      .merge-text {
+        flex: 1;
+        min-width: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        border-radius: 0;
+        margin: 0;
+        padding: 12px 10px;
+        resize: none;
+        white-space: pre;
+        overflow: scroll;
+        scrollbar-width: thin;
+        color: #566b51;
+        font:
+          11px/22px Consolas,
+          monospace;
+        outline-offset: -2px;
+        background: linear-gradient(
+          to bottom,
+          #fff 0 var(--conflict-top),
+          var(--highlight) var(--conflict-top) var(--conflict-bottom),
+          #fff var(--conflict-bottom)
+        );
+        background-attachment: local;
+        tab-size: 2;
+      }
+      /* 设置沿用参考图的左侧分类、右侧分组表单结构。 */
+      .settings-dialog {
+        width: min(790px, calc(100vw - 40px));
+        height: min(540px, calc(100dvh - 65px));
+        max-width: none;
+        max-height: none;
+        padding: 0;
+        border: 1px solid #fffdf3;
+        border-radius: 21px;
+        background: #fbf8ec;
+        color: #637063;
+        box-shadow: 0 35px 100px #33412c25;
+      }
+      .settings-dialog::backdrop {
+        background: #33453530;
+        backdrop-filter: blur(6px);
+      }
+      .settings-layout {
+        display: flex;
+        height: 100%;
+      }
+      .settings-nav {
+        width: 174px;
+        flex: none;
+        padding: 28px 12px 20px;
+        background: #efeddf;
+        border-right: 1px solid #e3e3d4;
+        display: flex;
+        flex-direction: column;
+      }
+      .settings-nav h2 {
+        font-size: 17px;
+        font-weight: 500;
+        margin: 0 13px 30px;
+      }
+      .settings-nav button {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        padding: 11px 13px;
+        text-align: left;
+        margin-bottom: 5px;
+        border-radius: 10px;
+        font-size: 12px;
+      }
+      .settings-nav button.active {
+        background: #e0e2d4;
+        color: #526b54;
+      }
+      .settings-brand {
+        margin: auto 13px 0;
+        font-size: 13px;
+        color: #a1a38f;
+      }
+      .settings-main {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        padding: 61px 35px 30px;
+        overflow: auto;
+      }
+      .settings-close {
+        position: absolute;
+        right: 17px;
+        top: 17px;
+        background: transparent;
+        border: 0;
+        color: #8d9786;
+      }
+      .settings-main h3 {
+        font-size: 23px;
+        font-weight: 500;
+        margin: 0 0 35px;
+      }
+      .settings-main h4 {
+        font-size: 11px;
+        font-weight: 500;
+        margin: 0 0 12px;
+        color: #939b87;
+      }
+      .settings-group {
+        padding: 0 17px;
+        border: 1px solid #e5e5d6;
+        border-radius: 14px;
+      }
+      .preference-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        min-height: 68px;
+        font-size: 12px;
+        border-bottom: 1px solid #e5e5d6;
+      }
+      .preference-row:last-child {
+        border-bottom: 0;
+      }
+      .preference-row select {
+        font-size: 11px;
+        background: #fbf8ec;
+        max-width: 145px;
+      }
+      .preference-row input[type="range"] {
+        width: 115px;
+        accent-color: #91ae69;
+      }
+      .switch {
+        appearance: none;
+        width: 34px;
+        height: 20px;
+        background: #d6dacb;
+        border-radius: 12px;
+        cursor: pointer;
+        position: relative;
+        flex: none;
+        transition: background 0.2s;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        top: 2px;
+        left: 2px;
+        border-radius: 50%;
+        background: white;
+        transition: transform 0.2s;
+      }
+      .switch:checked {
+        background: #96b06b;
+      }
+      .switch:checked::after {
+        transform: translateX(14px);
+      }
+      @media (max-width: 1050px) {
+        .conflict-files {
+          width: 120px;
+        }
+      }
+      @media (max-width: 780px) {
+        .conflict-files {
+          width: 102px;
+          padding: 12px 3px;
+        }
+        .conflict-file {
+          padding: 9px 4px;
+          gap: 4px;
+          font-size: 9px;
+        }
+        .merge-pane header {
+          padding: 7px 6px;
+          font-size: 9px;
+          flex-wrap: wrap;
+        }
+        .merge-pane header button {
+          font-size: 9px;
+        }
+        .line-gutter {
+          width: 26px;
+        }
+        .merge-text {
+          font-size: 10px;
+          padding-left: 7px;
+        }
+        .settings-nav {
+          width: 115px;
+          padding: 26px 8px;
+        }
+        .settings-main {
+          padding: 58px 20px 25px;
+        }
+        .settings-main h3 {
+          font-size: 21px;
+        }
+        .preference-row {
+          gap: 8px;
+          font-size: 11px;
+        }
+        .preference-row input[type="range"] {
+          width: 80px;
+        }
+      }
+
+      /* 分支标签采用低对比度玻璃底，保持文字清晰而不抢占节点层级。 */
+      .branch-badge .branch-name {
+        font:
+          500 16px Consolas,
+          monospace;
+      }
+      .branch-badge .head-tag {
+        font:
+          500 10px Consolas,
+          monospace;
+        letter-spacing: 0.5px;
+      }
+      .branch .mono {
+        font-size: 12px;
+        color: #536e61;
+      }
+      .branch small {
+        font-size: 10px;
+      }
+      .branches-toggle {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        width: 100%;
+        padding: 12px 10px;
+        margin-top: 25px;
+        font-size: 11px;
+        color: #718676;
+        text-align: left;
+      }
+      .branches-toggle .icon {
+        width: 14px;
+        height: 14px;
+        transition: transform 0.18s;
+      }
+      .branches-toggle[aria-expanded="false"] .icon {
+        transform: rotate(-90deg);
+      }
+      .branch-total {
+        margin-left: auto;
+        font: 10px Consolas;
+        color: #9aa797;
+      }
+      #branch-list[hidden],
+      .editor-menu[hidden] {
+        display: none;
+      }
+      .external-tools {
+        justify-content: flex-end;
+        padding: 8px 12px;
+      }
+      .open-picker {
+        position: relative;
+      }
+      .open-split {
+        display: flex;
+        border: 1px solid #e4e2d2;
+        border-radius: 10px;
+        background: #faf7eb;
+        overflow: hidden;
+      }
+      .open-split button {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 9px;
+        font-size: 12px;
+        color: #657363;
+      }
+      .open-split button:hover {
+        background: #ececde;
+      }
+      .open-split #editor-menu-toggle {
+        border-left: 1px solid #e4e2d2;
+        padding: 5px;
+        background: #f0eedf;
+      }
+      .open-split #editor-menu-toggle .icon {
+        width: 14px;
+        height: 14px;
+        color: #8f9988;
+      }
+      .editor-icon {
+        width: 20px;
+        height: 20px;
+        flex: none;
+      }
+      .editor-monogram {
+        width: 20px;
+        height: 20px;
+        display: grid;
+        place-items: center;
+        font: 600 16px Consolas;
+        border-radius: 4px;
+        flex: none;
+      }
+      .editor-monogram.cursor {
+        color: #fff;
+        background: #454b44;
+      }
+      .editor-monogram.zed {
+        color: #596b5d;
+        background: #e2e9de;
+      }
+      .editor-menu {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 6px);
+        width: 190px;
+        padding: 7px;
+        border: 1px solid #e6e3d2;
+        border-radius: 14px;
+        background: #fcf8ec;
+        box-shadow: 0 12px 30px #35402916;
+        z-index: 12;
+      }
+      .editor-menu button {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 8px;
+        border-radius: 8px;
+        font-size: 12px;
+        text-align: left;
+        color: #627264;
+      }
+      .editor-menu button:hover,
+      .editor-menu button:focus-visible {
+        background: #eaeedf;
+      }
+      .editor-check {
+        width: 13px;
+        height: 13px;
+        margin-left: auto;
+        color: #7a9674;
+      }
+      @media (max-width: 780px) {
+        .branches-toggle {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" aria-hidden="true" style="position: absolute">
+      <defs>
+        <symbol id="i-branch" viewBox="0 0 24 24">
+          <circle cx="6" cy="5" r="2.5" />
+          <circle cx="6" cy="19" r="2.5" />
+          <circle cx="18" cy="6" r="2.5" />
+          <path d="M6 7.5v9M18 8.5v1a7 7 0 0 1-7 7H6" />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path d="M3 7V5h6l2 3h10v12H3V7Z" />
+        </symbol>
+        <symbol id="i-terminal" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="3" />
+          <path d="m7 9 3 3-3 3m6 0h4" />
+        </symbol>
+        <symbol id="i-panel" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="3" />
+          <path d="M15 4v16" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path
+            d="m9.7 3-.5 2.1-1.7 1-2.1-.6-2.3 4 1.6 1.5v2l-1.6 1.5 2.3 4 2.1-.6 1.7 1 .5 2.1h4.6l.5-2.1 1.7-1 2.1.6 2.3-4-1.6-1.5v-2l1.6-1.5-2.3-4-2.1.6-1.7-1-.5-2.1Z"
+          />
+          <circle cx="12" cy="12" r="3.2" />
+        </symbol>
+        <symbol id="i-diff" viewBox="0 0 24 24">
+          <rect x="5" y="3" width="14" height="18" rx="2" />
+          <path d="M9 8h6m-3-3v6m-3 5h6" />
+        </symbol>
+        <symbol id="i-conflict" viewBox="0 0 24 24">
+          <path d="m12 3 10 18H2L12 3Zm0 6v5m0 3v.1" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24">
+          <path d="M5 12h14m-5-5 5 5-5 5" />
+        </symbol>
+        <symbol id="i-fit" viewBox="0 0 24 24">
+          <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
+          <circle cx="12" cy="12" r="3" />
+        </symbol>
+        <symbol id="i-chevron" viewBox="0 0 24 24">
+          <path d="m8 10 4 4 4-4" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L19 6" />
+        </symbol>
+      </defs>
+    </svg>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brandmark"
+            ><svg class="icon"><use href="#i-branch" /></svg></span
+          >gitMaster<span style="color: #82a38c">.</span>
+        </div>
+        <div class="project-wrap">
+          <button class="project" id="project-toggle" aria-expanded="false">
+            <svg class="icon"><use href="#i-folder" /></svg
+            ><span
+              ><strong id="project-name">gitMaster</strong
+              ><small id="project-path">C:\code\GitMaster</small></span
+            ><svg class="icon chev"><use href="#i-chevron" /></svg>
+          </button>
+          <div class="popover project-menu" id="project-menu">
+            <div class="side-label">演示项目</div>
+            <button data-project="0">
+              gitMaster <small>C:\code\GitMaster</small></button
+            ><button data-project="1">
+              studio-website <small>C:\projects\studio-website</small>
+            </button>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button
+            class="top-button"
+            id="terminal-toggle"
+            aria-expanded="false"
+            aria-label="终端"
+            title="终端"
+          >
+            <svg class="icon"><use href="#i-terminal" /></svg></button
+          ><button
+            class="top-button"
+            id="side-toggle"
+            aria-expanded="false"
+            aria-label="侧边面板"
+            title="侧边面板"
+          >
+            <svg class="icon"><use href="#i-panel" /></svg>
+          </button>
+          <div class="divider"></div>
+          <button
+            class="top-button"
+            id="settings-toggle"
+            aria-label="打开设置"
+            aria-expanded="false"
+          >
+            <svg class="icon"><use href="#i-settings" /></svg>
+          </button>
+        </div>
+      </header>
+      <dialog
+        class="settings-dialog"
+        id="settings"
+        aria-labelledby="settings-title"
+      >
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="设置分类">
+            <h2 id="settings-title">设置</h2>
+            <button class="active" data-settings-tab="general">
+              <svg class="icon"><use href="#i-settings" /></svg>常规</button
+            ><button data-settings-tab="appearance">
+              <svg class="icon"><use href="#i-panel" /></svg>外观</button
+            ><span class="settings-brand">gitMaster</span>
+          </nav>
+          <div class="settings-main">
+            <button
+              class="round-btn settings-close"
+              id="settings-close"
+              aria-label="关闭设置"
+            >
+              <svg class="icon"><use href="#i-close" /></svg>
+            </button>
+            <section id="settings-general">
+              <h3>常规</h3>
+              <h4>工作区</h4>
+              <div class="settings-group">
+                <label class="preference-row"
+                  ><span>默认编辑器</span
+                  ><select id="default-editor">
+                    <option>VS Code</option>
+                    <option>Cursor</option>
+                    <option>Zed</option>
+                  </select></label
+                ><label class="preference-row"
+                  ><span>集成终端</span
+                  ><select id="default-shell">
+                    <option>PowerShell</option>
+                    <option>命令提示符</option>
+                  </select></label
+                >
+              </div>
+            </section>
+            <section id="settings-appearance" hidden>
+              <h3>外观</h3>
+              <h4>提交历史</h4>
+              <div class="settings-group">
+                <label class="preference-row"
+                  ><span>弹性强度</span
+                  ><input
+                    id="elasticity"
+                    type="range"
+                    min="1"
+                    max="10"
+                    value="6" /></label
+                ><label class="preference-row"
+                  ><span>显示提交说明</span
+                  ><input
+                    class="switch"
+                    id="show-labels"
+                    type="checkbox"
+                    checked
+                /></label>
+              </div>
+            </section>
+          </div>
+        </div>
+      </dialog>
+      <div class="workspace">
+        <aside class="sidebar">
+          <div class="side-label">工作空间</div>
+          <button class="nav active" data-nav="history">
+            <svg class="icon"><use href="#i-branch" /></svg><span>提交历史</span
+            ><span class="count">8</span>
+          </button>
+          <button
+            class="branches-toggle"
+            id="branches-toggle"
+            aria-expanded="true"
+            aria-controls="branch-list"
+          >
+            <svg class="icon"><use href="#i-chevron" /></svg><span>分支</span
+            ><span class="branch-total">3</span>
+          </button>
+          <div id="branch-list">
+            <button class="branch" data-filter="main">
+              <i class="dot"></i><span class="mono">main</span
+              ><small>当前</small></button
+            ><button class="branch" data-filter="feat/bubble-ui">
+              <i class="dot" style="background: #c9ab7c"></i
+              ><span class="mono">feat/bubble-ui</span></button
+            ><button class="branch" data-filter="fix/sidebar">
+              <i class="dot" style="background: #9b9cc4"></i
+              ><span class="mono">fix/sidebar</span>
+            </button>
+          </div>
+        </aside>
+        <main class="main">
+          <section class="canvas-panel">
+            <div class="canvas-actions">
+              <input
+                id="search"
+                class="search"
+                placeholder="搜索提交 / SHA"
+                aria-label="搜索提交"
+              /><button
+                class="round-btn"
+                id="reset-top"
+                title="重置布局"
+                aria-label="重置布局"
+              >
+                <svg class="icon"><use href="#i-fit" /></svg>
+              </button>
+            </div>
+            <div class="graph-wrap" id="graph-wrap">
+              <svg
+                id="graph"
+                viewBox="0 0 1000 700"
+                aria-label="交互提交树，可拖动节点、滚轮缩放和拖动空白平移"
+              >
+                <defs>
+                  <filter
+                    id="bubbleShadow"
+                    x="-100%"
+                    y="-100%"
+                    width="300%"
+                    height="300%"
+                  >
+                    <feDropShadow
+                      dx="0"
+                      dy="7"
+                      stdDeviation="8"
+                      flood-color="#4b826a"
+                      flood-opacity=".12"
+                    />
+                  </filter>
+                  <radialGradient id="green" cx="30%" cy="23%" r="80%">
+                    <stop stop-color="#ffffff" />
+                    <stop offset=".45" stop-color="#e3f3e9" />
+                    <stop offset="1" stop-color="#a8d2bd" />
+                  </radialGradient>
+                  <radialGradient id="gold" cx="30%" cy="23%" r="80%">
+                    <stop stop-color="#fffefb" />
+                    <stop offset=".45" stop-color="#f6ecd9" />
+                    <stop offset="1" stop-color="#dec59e" />
+                  </radialGradient>
+                  <radialGradient id="purple" cx="30%" cy="23%" r="80%">
+                    <stop stop-color="#fff" />
+                    <stop offset=".45" stop-color="#eeeaf6" />
+                    <stop offset="1" stop-color="#c6c1de" />
+                  </radialGradient>
+                </defs>
+                <g id="viewport">
+                  <g id="edges"></g>
+                  <g id="nodes"></g>
+                </g>
+              </svg>
+            </div>
+            <article class="selection-card">
+              <div class="eyebrow">
+                已选提交
+                <span class="mono" id="selected-sha" style="float: right"
+                  >a8f3c21</span
+                >
+              </div>
+
+              <div class="commit-author">
+                <span class="mini-avatar">YL</span>逸伦<span
+                  style="margin-left: auto"
+                  id="selected-time"
+                  >12 分钟前</span
+                >
+              </div>
+              <div class="commit-stats">
+                <span>3 个文件</span><span class="added">+4</span
+                ><span class="removed">−2</span>
+              </div>
+              <button class="detail-link" id="view-diff">
+                查看这次改变<svg class="icon"><use href="#i-arrow" /></svg>
+              </button>
+            </article>
+
+            <div class="graph-overlay">
+              <span class="legend"><i class="dot"></i>主分支</span
+              ><span class="legend"
+                ><i class="dot" style="background: #c9ab7c"></i>新想法</span
+              ><span class="legend"
+                ><i class="dot" style="background: #9b9cc4"></i>小修复</span
+              >
+            </div>
+            <div class="graph-controls">
+              <button id="zoom-out" aria-label="缩小">−</button
+              ><span class="zoom" id="zoom-label">100%</span
+              ><button id="zoom-in" aria-label="放大">+</button
+              ><span
+                style="
+                  height: 15px;
+                  width: 1px;
+                  background: #dfe6da;
+                  margin: 0 4px;
+                "
+              ></span
+              ><button id="fit" aria-label="居中提交树" title="居中提交树">
+                <svg class="icon"><use href="#i-fit" /></svg>
+              </button>
+            </div>
+          </section>
+          <section class="terminal" id="terminal" aria-label="演示终端">
+            <div class="terminal-head">
+              <strong
+                ><svg class="icon" style="width: 14px; height: 14px">
+                  <use href="#i-terminal" /></svg
+                >终端</strong
+              ><span id="terminal-shell">PowerShell</span
+              ><span class="terminal-path" id="terminal-path"
+                >C:\code\GitMaster</span
+              ><span class="pill">演示</span
+              ><button id="clear-terminal" title="清空终端">清空</button
+              ><button
+                class="terminal-close"
+                id="terminal-close"
+                aria-label="关闭终端"
+              >
+                ×
+              </button>
+            </div>
+            <div class="terminal-body" id="terminal-body">
+              <pre class="terminal-output" id="terminal-output"></pre>
+              <form class="terminal-input" id="terminal-form">
+                <label class="prompt" for="terminal-command">❯</label
+                ><input
+                  id="terminal-command"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="输入演示终端命令"
+                  placeholder="输入 help 查看可用示例命令"
+                />
+              </form>
+            </div>
+          </section>
+          <footer class="statusbar">
+            <span><i class="dot"></i> main</span
+            ><span id="status-repo">gitMaster</span
+            ><span>8 次提交 · 3 个分支</span
+            ><button id="demo-info" style="margin-left: auto">
+              交互原型 ↗
+            </button>
+          </footer>
+          <aside class="drawer" id="drawer" aria-label="文件工作面板" inert>
+            <header class="drawer-head">
+              <div>
+                <h2 id="drawer-title">项目文件</h2>
+                <p id="drawer-subtitle" hidden></p>
+              </div>
+              <button
+                class="round-btn"
+                id="drawer-close"
+                aria-label="关闭侧边面板"
+              >
+                <svg class="icon"><use href="#i-close" /></svg>
+              </button>
+            </header>
+            <nav class="drawer-tabs">
+              <button data-tab="files" class="active">项目文件</button
+              ><button data-tab="diff">提交差异</button
+              ><button data-tab="conflict">冲突编辑器</button>
+            </nav>
+            <div class="drawer-content" id="drawer-content"></div>
+          </aside>
+        </main>
+      </div>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script>
+      "use strict";
+      /** 获取页面中已有的元素。 */
+      function el(id) {
+        return document.getElementById(id);
+      }
+      /** 将文本转换为安全的 HTML 内容。 */
+      function escapeText(value) {
+        return String(value).replace(
+          /[&<>"']/g,
+          (character) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[character],
+        );
+      }
+      const projects = [
+        { name: "gitMaster", path: "C:\\code\\GitMaster" },
+        { name: "studio-website", path: "C:\\projects\\studio-website" },
+      ];
+      const commits = [
+        {
+          id: "a8f3c21",
+          title: "让提交历史，变得触手可及",
+          branch: "main",
+          x: 425,
+          y: 172,
+          parents: [1, 2],
+          time: "12 分钟前",
+        },
+        {
+          id: "72bd8e4",
+          title: "细化工作区布局",
+          branch: "main",
+          x: 425,
+          y: 290,
+          parents: [3],
+          time: "48 分钟前",
+        },
+        {
+          id: "e6c904a",
+          title: "加入气泡回弹效果",
+          branch: "feat/bubble-ui",
+          x: 650,
+          y: 285,
+          parents: [4],
+          time: "1 小时前",
+        },
+        {
+          id: "b49f2d8",
+          title: "连接项目与文件",
+          branch: "main",
+          x: 425,
+          y: 411,
+          parents: [6],
+          time: "2 小时前",
+        },
+        {
+          id: "3a7d1e2",
+          title: "探索灵动的节点",
+          branch: "feat/bubble-ui",
+          x: 650,
+          y: 411,
+          parents: [6],
+          time: "3 小时前",
+        },
+        {
+          id: "c128a6f",
+          title: "修复侧栏间距",
+          branch: "fix/sidebar",
+          x: 222,
+          y: 459,
+          parents: [7],
+          time: "4 小时前",
+        },
+        {
+          id: "f50ab92",
+          title: "搭好工作台的骨架",
+          branch: "main",
+          x: 425,
+          y: 544,
+          parents: [7, 5],
+          time: "昨天",
+        },
+        {
+          id: "01d9c7b",
+          title: "从一个想法开始",
+          branch: "main",
+          x: 425,
+          y: 628,
+          parents: [],
+          time: "2 天前",
+        },
+      ];
+      const colors = {
+        main: { fill: "green", stroke: "#8abfa8" },
+        "feat/bubble-ui": { fill: "gold", stroke: "#cdb07d" },
+        "fix/sidebar": { fill: "purple", stroke: "#aba5c7" },
+      };
+      const initialFiles = {
+        "src/App.tsx":
+          'import { Workspace } from "./Workspace";\n\n/** 渲染项目工作台。 */\nexport function App() {\n  return <Workspace />;\n}\n',
+        "src/theme.css":
+          ":root {\n  --canvas: #f6f8f3;\n  --accent: #23877c;\n  --radius: 20px;\n}\n",
+        "README.md": "# gitMaster\n\n一个轻盈、直观的 Git 工作台。\n",
+      };
+      const projectFiles = projects.map(() => ({ ...initialFiles }));
+      let projectIndex = 0,
+        files = projectFiles[0],
+        currentFile = "src/App.tsx",
+        selected = 0,
+        currentTab = "files",
+        drawerOpen = false,
+        terminalOpen = false,
+        zoom = 1,
+        panX = 0,
+        panY = 0,
+        drag = null,
+        toastTimer = 0,
+        frame = 0,
+        lastTime = 0,
+        branchFilter = "";
+      const reduceMotion = matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      let elasticity = 6;
+      // 每个文件保留相同行数的上下文，用于三视图定位和滚动同步。
+      const conflictFiles = [
+        {
+          path: "src/panel.ts",
+          start: 9,
+          end: 12,
+          local: [
+            "  width: 280,",
+            '  mode: "floating",',
+            "  padding: 16,",
+            "  resizable: true,",
+          ],
+          incoming: [
+            "  width: 320,",
+            '  mode: "docked",',
+            "  padding: 20,",
+            "  resizable: false,",
+          ],
+        },
+        {
+          path: "src/theme.ts",
+          start: 9,
+          end: 12,
+          local: [
+            '  accent: "#23877c",',
+            "  radius: 16,",
+            '  contrast: "soft",',
+            "  blur: 20,",
+          ],
+          incoming: [
+            '  accent: "#357c68",',
+            "  radius: 20,",
+            '  contrast: "medium",',
+            "  blur: 24,",
+          ],
+        },
+        {
+          path: "src/terminal.ts",
+          start: 9,
+          end: 12,
+          local: [
+            '  shell: "powershell",',
+            "  fontSize: 12,",
+            '  cursor: "line",',
+            "  history: 500,",
+          ],
+          incoming: [
+            '  shell: "pwsh",',
+            "  fontSize: 13,",
+            '  cursor: "block",',
+            "  history: 1000,",
+          ],
+        },
+      ];
+      /** 构造含相同上下文的冲突文件，差异位于相同的行。 */
+      function conflictText(file, side) {
+        const name = file.path.split("/").pop().replace(".ts", "");
+        return [
+          "/** 工作区配置。 */",
+          "export const " + name + " = {",
+          "  enabled: true,",
+          "  version: 1,",
+          "  persist: false,",
+          '  layout: "auto",',
+          "  // 当前区域存在分支差异。",
+          "  options: {",
+          ...file[side],
+          "  },",
+          "  shortcuts: true,",
+          "  restore: true,",
+          "  autofocus: false,",
+          "  appearance: {",
+          '    density: "normal",',
+          "    border: true,",
+          "    shadow: true,",
+          "  },",
+          "  behavior: {",
+          "    smooth: true,",
+          "    delay: 160,",
+          "    respectReducedMotion: true,",
+          "  },",
+          "  viewport: {",
+          "    minWidth: 240,",
+          "    maxWidth: 960,",
+          '    overflow: "auto",',
+          "  },",
+          '  locale: "zh-CN",',
+          "};",
+        ].join("\n");
+      }
+      const conflictStates = projects.map(() =>
+        conflictFiles.map((file) => ({
+          result: conflictText(file, "local"),
+          choice: "",
+          scrollTop: 0,
+          scrollLeft: 0,
+        })),
+      );
+      let currentConflict = 0,
+        externalEditor = "VS Code",
+        terminalShell = "PowerShell";
+      const points = commits.map((commit) => ({
+        ...commit,
+        homeX: commit.x,
+        homeY: commit.y,
+        vx: 0,
+        vy: 0,
+      }));
+      /** 显示短暂的操作反馈。 */
+      function notify(message) {
+        el("toast").textContent = message;
+        el("toast").classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(
+          () => el("toast").classList.remove("show"),
+          2700,
+        );
+      }
+      /** 创建具有属性的 SVG 元素。 */
+      function svgElement(tag, attrs) {
+        const element = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          tag,
+        );
+        Object.entries(attrs).forEach(([key, value]) =>
+          element.setAttribute(key, String(value)),
+        );
+        return element;
+      }
+      /** 初始化提交气泡和拓扑连线。 */
+      function buildGraph() {
+        points.forEach((point, index) => {
+          point.parents.forEach((parent) => {
+            const path = svgElement("path", {
+              class: "edge",
+              stroke:
+                colors[
+                  point.branch === "main" ? points[parent].branch : point.branch
+                ].stroke,
+            });
+            el("edges").append(path);
+            point["edge" + parent] = path;
+          });
+          const color = colors[point.branch];
+          const group = svgElement("g", {
+            class: "node" + (index === 0 ? " selected" : ""),
+            tabindex: 0,
+            role: "button",
+            "aria-label": point.title + "，" + point.id,
+            "aria-pressed": index === 0,
+          });
+          group.innerHTML =
+            '<circle class="halo" r="37" stroke="' +
+            color.stroke +
+            '" stroke-dasharray="3 4"/><g class="bubble-body"><circle class="bubble" r="26" fill="url(#' +
+            color.fill +
+            ')" stroke="' +
+            color.stroke +
+            '"/><ellipse cx="-8" cy="-10" rx="10" ry="5" fill="white" opacity=".65" transform="rotate(-35)"/><circle r="4" fill="' +
+            color.stroke +
+            '" opacity=".8"/></g><g class="labels"><text class="node-title" x="44" y="-3">' +
+            point.title +
+            '</text><text class="meta" x="44" y="15">' +
+            point.id +
+            " · " +
+            point.time +
+            "</text></g>";
+          if (index === 0 || index === 2 || index === 5) {
+            const width = index === 0 ? 116 : index === 2 ? 164 : 140;
+            const tone =
+              index === 0 ? "#5d8273" : index === 2 ? "#9a8463" : "#89809d";
+            const label = svgElement("g", {
+              class: "branch-badge",
+              transform: "translate(" + -width / 2 + " -68)",
+            });
+            label.innerHTML =
+              '<rect width="' +
+              width +
+              '" height="28" rx="9" fill="#ffffff" fill-opacity=".66"/><text x="12" y="18" fill="' +
+              tone +
+              '" class="branch-name">' +
+              point.branch +
+              "</text>" +
+              (index === 0
+                ? '<path d="M63 8v12" stroke="#c9d8ce" stroke-width="1"/><text x="86" y="17" text-anchor="middle" class="head-tag" fill="#7e9a89">HEAD</text>'
+                : "");
+            group.append(label);
+            group
+              .querySelector(".bubble")
+              .setAttribute("r", index === 0 ? "30" : "28");
+            group.querySelector(".bubble").setAttribute("stroke-width", "1.3");
+            group
+              .querySelector(".halo")
+              .setAttribute("r", index === 0 ? "39" : "37");
+          }
+          group.addEventListener("pointerdown", (event) =>
+            startDrag(event, index),
+          );
+          group.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              selectCommit(index);
+            }
+          });
+          point.element = group;
+          point.body = group.querySelector(".bubble-body");
+          el("nodes").append(group);
+        });
+        drawGraph();
+      }
+      /** 根据节点实时位置绘制曲线和气泡形变。 */
+      function drawGraph() {
+        points.forEach((point) => {
+          point.element.setAttribute(
+            "transform",
+            "translate(" + point.x + " " + point.y + ")",
+          );
+          const speed = Math.hypot(point.vx, point.vy);
+          const stretch = reduceMotion ? 0 : Math.min(speed * 0.011, 0.14);
+          point.body.setAttribute(
+            "transform",
+            "scale(" + (1 + stretch) + " " + (1 - stretch * 0.65) + ")",
+          );
+          point.parents.forEach((parent) => {
+            const target = points[parent];
+            const mid = (point.y + target.y) / 2;
+            point["edge" + parent].setAttribute(
+              "d",
+              "M " +
+                point.x +
+                " " +
+                point.y +
+                " C " +
+                point.x +
+                " " +
+                mid +
+                ", " +
+                target.x +
+                " " +
+                mid +
+                ", " +
+                target.x +
+                " " +
+                target.y,
+            );
+          });
+        });
+      }
+      /** 用弹簧力和阻尼恢复节点位置；静止后停止动画。 */
+      function tick(time) {
+        const dt = Math.min((time - lastTime) / 16.67 || 1, 2);
+        lastTime = time;
+        let active = false;
+        points.forEach((point, index) => {
+          if (drag && drag.index === index) return;
+          const dx = point.homeX - point.x,
+            dy = point.homeY - point.y;
+          if (reduceMotion) {
+            point.x = point.homeX;
+            point.y = point.homeY;
+            point.vx = point.vy = 0;
+            return;
+          }
+          point.vx =
+            (point.vx + dx * 0.035 * dt) *
+            Math.pow(0.76 + elasticity * 0.015, dt);
+          point.vy =
+            (point.vy + dy * 0.035 * dt) *
+            Math.pow(0.76 + elasticity * 0.015, dt);
+          point.x += point.vx * dt;
+          point.y += point.vy * dt;
+          if (
+            Math.abs(dx) +
+              Math.abs(dy) +
+              Math.abs(point.vx) +
+              Math.abs(point.vy) >
+            0.12
+          )
+            active = true;
+          else {
+            point.x = point.homeX;
+            point.y = point.homeY;
+            point.vx = point.vy = 0;
+          }
+        });
+        drawGraph();
+        frame = active ? requestAnimationFrame(tick) : 0;
+      }
+      /** 唤醒弹性动画。 */
+      function animate() {
+        if (!frame) {
+          lastTime = performance.now();
+          frame = requestAnimationFrame(tick);
+        }
+      }
+      /** 把指针位置转换为提交画布坐标。 */
+      function graphPoint(event) {
+        return new DOMPoint(event.clientX, event.clientY).matrixTransform(
+          el("viewport").getScreenCTM().inverse(),
+        );
+      }
+      /** 捕获拖拽起点，不改变提交关系。 */
+      function startDrag(event, index) {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const position = graphPoint(event);
+        drag = {
+          index,
+          startX: event.clientX,
+          startY: event.clientY,
+          offsetX: points[index].x - position.x,
+          offsetY: points[index].y - position.y,
+          moved: false,
+        };
+        el("graph-wrap").setPointerCapture(event.pointerId);
+        selectCommit(index);
+      }
+      /** 更新节点拖拽或画布平移。 */
+      function movePointer(event) {
+        if (!drag) return;
+        if (drag.index === -1) {
+          const matrix = el("graph").getScreenCTM();
+          panX = drag.panX + (event.clientX - drag.startX) / matrix.a;
+          panY = drag.panY + (event.clientY - drag.startY) / matrix.d;
+          updateViewport();
+          return;
+        }
+        const position = graphPoint(event);
+        const point = points[drag.index];
+        point.x = position.x + drag.offsetX;
+        point.y = position.y + drag.offsetY;
+        point.vx = point.vy = 0;
+        drag.moved = true;
+        drawGraph();
+      }
+      /** 松开节点后启动回弹。 */
+      function endDrag() {
+        if (!drag) return;
+        drag = null;
+        animate();
+      }
+      /** 选中提交，更新摘要和历史差异。 */
+      function selectCommit(index) {
+        selected = index;
+        points.forEach((point, i) => {
+          point.element.classList.toggle("selected", i === index);
+          point.element.setAttribute("aria-pressed", String(i === index));
+        });
+        el("selected-sha").textContent = commits[index].id;
+        el("selected-time").textContent = commits[index].time;
+        if (drawerOpen && currentTab === "diff") renderDrawer();
+      }
+      /** 应用画布缩放和平移。 */
+      function updateViewport() {
+        el("viewport").setAttribute(
+          "transform",
+          "translate(" +
+            (500 * (1 - zoom) + panX) +
+            " " +
+            (350 * (1 - zoom) + panY) +
+            ") scale(" +
+            zoom +
+            ")",
+        );
+        el("zoom-label").textContent = Math.round(zoom * 100) + "%";
+      }
+      /** 限制缩放范围，保证节点仍可找回。 */
+      function changeZoom(delta) {
+        zoom = Math.min(1.8, Math.max(0.55, zoom + delta));
+        updateViewport();
+      }
+      /** 恢复画布、筛选与提交节点位置。 */
+      function resetGraph() {
+        zoom = 1;
+        panX = panY = 0;
+        branchFilter = "";
+        el("search").value = "";
+        filterGraph();
+        updateViewport();
+        animate();
+      }
+      /** 联合提交文本与分支条件高亮节点。 */
+      function filterGraph() {
+        const term = el("search").value.trim().toLowerCase();
+        points.forEach((point) =>
+          point.element.classList.toggle(
+            "dim",
+            !!(
+              (term &&
+                !(point.title + point.id + point.branch)
+                  .toLowerCase()
+                  .includes(term)) ||
+              (branchFilter && point.branch !== branchFilter)
+            ),
+          ),
+        );
+      }
+      /** 打开右侧指定工作面板。 */
+      function openDrawer(tab) {
+        currentTab = tab;
+        drawerOpen = true;
+        el("drawer").classList.add("open");
+        el("drawer").inert = false;
+        el("side-toggle").classList.add("on");
+        el("side-toggle").setAttribute("aria-expanded", "true");
+        renderDrawer();
+      }
+      /** 关闭右侧面板并恢复导航状态。 */
+      function closeDrawer() {
+        drawerOpen = false;
+        el("drawer").classList.remove("open");
+        el("drawer").inert = true;
+        el("side-toggle").classList.remove("on");
+        el("side-toggle").setAttribute("aria-expanded", "false");
+        el("side-toggle").focus();
+      }
+      /** 根据当前标签渲染文件、差异或冲突编辑器。 */
+      function renderDrawer() {
+        const headings = {
+          files: "项目文件",
+          diff: commits[selected].id,
+          conflict: "冲突编辑器",
+        };
+        el("drawer-title").textContent = headings[currentTab];
+        el("drawer-title").classList.toggle("mono", currentTab === "diff");
+        el("drawer-subtitle").hidden = true;
+        el("drawer").classList.toggle("merge-mode", currentTab === "conflict");
+        el("drawer-content").classList.toggle(
+          "file-view",
+          currentTab === "files",
+        );
+        el("drawer-content").classList.toggle(
+          "merge-view",
+          currentTab === "conflict",
+        );
+        document
+          .querySelectorAll("[data-tab]")
+          .forEach((button) =>
+            button.classList.toggle(
+              "active",
+              button.dataset.tab === currentTab,
+            ),
+          );
+        if (currentTab === "files") renderFiles();
+        if (currentTab === "diff") renderDiff();
+        if (currentTab === "conflict") renderConflict();
+      }
+      /** 返回外部编辑器的内联图标，不依赖网络资源。 */
+      function editorIcon(name) {
+        if (name === "VS Code")
+          return '<svg class="editor-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="#28a9df" d="m17 2 5 2v16l-5 2-9-8-5 4-2-1V7l2-1 5 4 9-8Zm0 5-6 5 6 5V7ZM3 9v6l3-3-3-3Z"/></svg>';
+        return (
+          '<span class="editor-monogram ' +
+          (name === "Cursor" ? "cursor" : "zed") +
+          '" aria-hidden="true">' +
+          (name === "Cursor" ? "↖" : "Z") +
+          "</span>"
+        );
+      }
+      /** 展开或收起外部编辑器菜单，同时更新无障碍状态。 */
+      function toggleEditorMenu(open) {
+        const menu = el("editor-menu");
+        if (!menu) return;
+        menu.hidden = !open;
+        el("editor-menu-toggle").setAttribute("aria-expanded", String(open));
+      }
+      /** 渲染只读文件内容和分段式外部打开按钮。 */
+      function renderFiles() {
+        const names = Object.keys(files);
+        if (!Object.hasOwn(files, currentFile)) currentFile = names[0] || "";
+        el("drawer-content").innerHTML =
+          '<div class="file-layout"><div class="file-tree"><div class="folder-label">⌄ ' +
+          escapeText(projects[projectIndex].name) +
+          "</div>" +
+          names
+            .map(
+              (name) =>
+                '<button class="file-row ' +
+                (name === currentFile ? "active" : "") +
+                '" data-file="' +
+                escapeText(name) +
+                '" title="' +
+                escapeText(name) +
+                '"><span style="color:#79a291">▧</span><span class="file-name">' +
+                escapeText(name.split("/").pop()) +
+                "</span></button>",
+            )
+            .join("") +
+          '</div><div class="file-editor"><div class="editor-top"><span>' +
+          escapeText(currentFile) +
+          '</span></div><div class="external-tools"><div class="open-picker"><div class="open-split"><button id="open-external" title="在 ' +
+          escapeText(externalEditor) +
+          ' 中打开" aria-label="在 ' +
+          escapeText(externalEditor) +
+          ' 中打开">' +
+          editorIcon(externalEditor) +
+          '<span>打开</span></button><button id="editor-menu-toggle" aria-label="选择打开方式" aria-expanded="false" aria-controls="editor-menu"><svg class="icon"><use href="#i-chevron"/></svg></button></div><div class="editor-menu" id="editor-menu" hidden>' +
+          ["VS Code", "Cursor", "Zed"]
+            .map(
+              (name) =>
+                '<button data-editor="' +
+                name +
+                '" aria-pressed="' +
+                (name === externalEditor) +
+                '">' +
+                editorIcon(name) +
+                "<span>" +
+                name +
+                "</span>" +
+                (name === externalEditor
+                  ? '<svg class="icon editor-check"><use href="#i-check"/></svg>'
+                  : "") +
+                "</button>",
+            )
+            .join("") +
+          '</div></div></div><textarea id="file-text" readonly spellcheck="false" wrap="off" aria-label="只读文件内容">' +
+          escapeText(files[currentFile] || "") +
+          "</textarea></div></div>";
+        document.querySelectorAll("[data-file]").forEach(
+          (button) =>
+            (button.onclick = () => {
+              currentFile = button.dataset.file;
+              renderFiles();
+            }),
+        );
+        el("open-external").onclick = () => {
+          toggleEditorMenu(false);
+          notify("设计稿：在 " + externalEditor + " 中打开 " + currentFile);
+        };
+        el("editor-menu-toggle").onclick = () =>
+          toggleEditorMenu(el("editor-menu").hidden);
+        document.querySelectorAll("[data-editor]").forEach(
+          (button) =>
+            (button.onclick = () => {
+              externalEditor = button.dataset.editor;
+              el("default-editor").value = externalEditor;
+              renderFiles();
+              el("open-external").focus();
+            }),
+        );
+      }
+      /** 构造红绿双色逐行差异，显示独立提交的示例数据。 */
+      function renderDiff() {
+        const commit = commits[selected];
+        const themeValues = [
+          "#23877c",
+          "#2d8175",
+          "#42978a",
+          "#378a72",
+          "#59a18c",
+          "#4e9083",
+          "#6e9d87",
+          "#749b80",
+        ];
+        const blocks = [
+          {
+            name: "src/theme.css",
+            lines: [
+              [" ", 1, ":root {"],
+              ["-", 2, "  --accent: #557d68;"],
+              ["+", 2, "  --accent: " + themeValues[selected] + ";"],
+              ["+", 3, "  --radius: " + (20 + selected) + "px;"],
+              [" ", 4, "}"],
+            ],
+          },
+          {
+            name: "src/App.tsx",
+            lines: [
+              [" ", 1, "export function App() {"],
+              ["-", 2, "  return <HistoryList />;"],
+              ["+", 2, "  return <CommitCanvas />;"],
+              [" ", 3, "}"],
+            ],
+          },
+          {
+            name: "README.md",
+            lines: [
+              [" ", 1, "# gitMaster"],
+              ["+", 2, "本次更新：" + commit.title],
+            ],
+          },
+        ];
+        el("drawer-content").innerHTML =
+          '<div class="hint">父提交 → 所选提交 <span class="added" style="margin-left:12px">＋ 新增</span><span class="removed" style="margin-left:10px">− 删除</span></div>' +
+          blocks
+            .map(
+              (block) =>
+                '<section class="diff-file"><div class="diff-title"><span>' +
+                escapeText(block.name) +
+                '</span><span class="added">M · 已修改</span></div><div class="diff-lines">' +
+                block.lines
+                  .map(
+                    (line) =>
+                      '<div class="diff-line ' +
+                      (line[0] === "+"
+                        ? "plus"
+                        : line[0] === "-"
+                          ? "minus"
+                          : "") +
+                      '"><em>' +
+                      line[1] +
+                      "</em><em>" +
+                      line[0] +
+                      "</em>" +
+                      escapeText(line[2]) +
+                      "</div>",
+                  )
+                  .join("") +
+                "</div></section>",
+            )
+            .join("");
+      }
+      /** 创建统一行高的代码视图，冲突行具有背景标记。 */
+      function mergePane(kind, title, text, file) {
+        const editable = kind === "result";
+        return (
+          '<section class="merge-pane ' +
+          kind +
+          '"><header><span>' +
+          title +
+          "</span>" +
+          (editable
+            ? '<span class="merge-choice" id="merge-choice"></span>'
+            : '<button data-accept="' +
+              kind +
+              '">采纳' +
+              (kind === "local" ? "当前" : "传入") +
+              "</button>") +
+          '</header><div class="merge-code"><div class="line-gutter" aria-hidden="true"><pre></pre></div><textarea class="merge-text" id="merge-' +
+          kind +
+          '" ' +
+          (editable ? "" : "readonly") +
+          ' wrap="off" spellcheck="false" aria-label="' +
+          title +
+          '">' +
+          escapeText(text) +
+          "</textarea></div></section>"
+        );
+      }
+      /** 渲染可切换文件的上方双来源和下方合并结果。 */
+      function renderConflict() {
+        const file = conflictFiles[currentConflict],
+          state = conflictStates[projectIndex][currentConflict];
+        el("drawer-content").innerHTML =
+          '<div class="merge-workspace"><nav class="conflict-files" aria-label="冲突文件"><div class="conflict-files-title">冲突文件 <span>' +
+          conflictFiles.length +
+          "</span></div>" +
+          conflictFiles
+            .map(
+              (item, index) =>
+                '<button class="conflict-file ' +
+                (index === currentConflict ? "active" : "") +
+                '" data-conflict="' +
+                index +
+                '" title="' +
+                escapeText(item.path) +
+                '"><span class="conflict-file-icon">!</span><span>' +
+                escapeText(item.path.split("/").pop()) +
+                '</span><i class="file-choice ' +
+                (conflictStates[projectIndex][index].choice ? "chosen" : "") +
+                '"></i></button>',
+            )
+            .join("") +
+          '</nav><div class="merge-editors"><div class="merge-file-heading"><span>' +
+          escapeText(file.path) +
+          '</span><span class="merge-range">L' +
+          file.start +
+          "–" +
+          file.end +
+          '</span></div><div class="merge-sources">' +
+          mergePane("local", "当前 · main", conflictText(file, "local"), file) +
+          mergePane(
+            "incoming",
+            "传入 · feat/bubble-ui",
+            conflictText(file, "incoming"),
+            file,
+          ) +
+          "</div>" +
+          mergePane("result", "合并结果", state.result, file) +
+          "</div></div>";
+        el("merge-choice").textContent = state.choice;
+        document.querySelectorAll("[data-conflict]").forEach(
+          (button) =>
+            (button.onclick = () => {
+              currentConflict = Number(button.dataset.conflict);
+              renderConflict();
+            }),
+        );
+        document.querySelectorAll("[data-accept]").forEach(
+          (button) =>
+            (button.onclick = () => {
+              const kind = button.dataset.accept;
+              state.result = conflictText(file, kind);
+              state.choice = kind === "local" ? "已采纳当前" : "已采纳传入";
+              renderConflict();
+            }),
+        );
+        el("merge-result").oninput = () => {
+          state.result = el("merge-result").value;
+          state.choice = "已手动编辑";
+          el("merge-choice").textContent = state.choice;
+          document
+            .querySelector(".conflict-file.active .file-choice")
+            .classList.add("chosen");
+          updateMergeLines();
+        };
+        updateMergeLines();
+        document.querySelectorAll(".merge-text").forEach((editor) => {
+          editor.scrollTop = state.scrollTop;
+          editor.scrollLeft = state.scrollLeft;
+          editor.addEventListener("scroll", () => syncMergeScroll(editor));
+        });
+        syncMergeScroll(el("merge-result"));
+      }
+      /** 对齐三处文本的行数，给行号和文本设置相同的冲突区背景。 */
+      function updateMergeLines() {
+        const file = conflictFiles[currentConflict];
+        const rows = Math.max(
+          conflictText(file, "local").split("\n").length,
+          el("merge-result").value.split("\n").length,
+        );
+        document.querySelectorAll(".merge-text").forEach((editor) => {
+          if (editor.readOnly) {
+            const kind = editor.id === "merge-local" ? "local" : "incoming";
+            const content = conflictText(file, kind);
+            editor.value =
+              content +
+              "\n".repeat(Math.max(0, rows - content.split("\n").length));
+          }
+          editor.style.paddingBottom =
+            12 +
+            Math.max(0, rows - editor.value.split("\n").length) * 22 +
+            "px";
+          const pane = editor.closest(".merge-pane");
+          pane.style.setProperty(
+            "--conflict-top",
+            12 + (file.start - 1) * 22 + "px",
+          );
+          pane.style.setProperty(
+            "--conflict-bottom",
+            12 + file.end * 22 + "px",
+          );
+          pane.querySelector(".line-gutter pre").textContent = Array.from(
+            { length: rows },
+            (_, index) => index + 1,
+          ).join("\n");
+        });
+      }
+      const expectedMergeScroll = new WeakMap();
+      /** 共享滚动位置，忽略程序触发的回传事件，避免不同宽度造成滚动抖动。 */
+      function syncMergeScroll(source) {
+        const expected = expectedMergeScroll.get(source);
+        expectedMergeScroll.delete(source);
+        if (
+          expected &&
+          expected.top === source.scrollTop &&
+          expected.left === source.scrollLeft
+        )
+          return;
+        const state = conflictStates[projectIndex][currentConflict];
+        state.scrollTop = source.scrollTop;
+        state.scrollLeft = source.scrollLeft;
+        document.querySelectorAll(".merge-text").forEach((editor) => {
+          const changed =
+            editor !== source &&
+            (Math.abs(editor.scrollTop - source.scrollTop) > 1 ||
+              Math.abs(editor.scrollLeft - source.scrollLeft) > 1);
+          if (Math.abs(editor.scrollTop - source.scrollTop) > 1)
+            editor.scrollTop = source.scrollTop;
+          if (Math.abs(editor.scrollLeft - source.scrollLeft) > 1)
+            editor.scrollLeft = source.scrollLeft;
+          if (changed)
+            expectedMergeScroll.set(editor, {
+              top: editor.scrollTop,
+              left: editor.scrollLeft,
+            });
+          editor
+            .closest(".merge-code")
+            .querySelector(".line-gutter pre").style.transform =
+            "translateY(" + -editor.scrollTop + "px)";
+        });
+      }
+      /** 切换设置分类，保留表单值。 */
+      function showSettingsTab(tab) {
+        document
+          .querySelectorAll("[data-settings-tab]")
+          .forEach((button) =>
+            button.classList.toggle(
+              "active",
+              button.dataset.settingsTab === tab,
+            ),
+          );
+        el("settings-general").hidden = tab !== "general";
+        el("settings-appearance").hidden = tab !== "appearance";
+      }
+      /** 关闭模态设置并恢复触发按钮状态。 */
+      function closeSettings() {
+        el("settings").close();
+        el("settings-toggle").setAttribute("aria-expanded", "false");
+      }
+      /** 展开或收起底部终端，默认使用当前项目目录。 */
+      function toggleTerminal(force) {
+        terminalOpen = typeof force === "boolean" ? force : !terminalOpen;
+        el("terminal").classList.toggle("open", terminalOpen);
+        el("terminal-toggle").classList.toggle("on", terminalOpen);
+        el("terminal-toggle").setAttribute(
+          "aria-expanded",
+          String(terminalOpen),
+        );
+        el("terminal-command").disabled = !terminalOpen;
+        if (terminalOpen) el("terminal-command").focus();
+      }
+      /** 初始化项目对应的演示终端会话。 */
+      function resetTerminal() {
+        el("terminal-path").textContent = projects[projectIndex].path;
+        el("terminal-output").textContent =
+          terminalShell +
+          " · 演示会话\n工作目录：" +
+          projects[projectIndex].path +
+          "\n输入 help 查看示例命令；此页面不执行系统命令。\n";
+        el("terminal-command").value = "";
+      }
+      /** 为可识别的命令提供明确标记的演示响应。 */
+      function runCommand(event) {
+        event.preventDefault();
+        const input = el("terminal-command");
+        const command = input.value.trim();
+        if (!command) return;
+        input.value = "";
+        if (command === "clear" || command === "cls") {
+          el("terminal-output").textContent = "";
+          return;
+        }
+        let output = "演示终端不执行系统命令。输入 help 查看支持的命令。";
+        if (command === "help")
+          output = "可用示例：pwd、ls、git status、git log、git branch、clear";
+        if (command === "pwd") output = projects[projectIndex].path;
+        if (command === "ls") output = Object.keys(files).join("\n");
+        if (command === "git status")
+          output =
+            "[演示] On branch main\n冲突文件：\n" +
+            conflictFiles.map((file) => file.path).join("\n");
+        if (command === "git log")
+          output = commits
+            .map((commit) => commit.id + "  " + commit.title)
+            .join("\n");
+        if (command === "git branch")
+          output = "* main\n  feat/bubble-ui\n  fix/sidebar";
+        el("terminal-output").textContent +=
+          "\n❯ " + command + "\n" + output + "\n";
+        el("terminal-body").scrollTop = el("terminal-body").scrollHeight;
+      }
+      /** 切换独立演示项目，同步文件、冲突和终端路径。 */
+      function switchProject(index) {
+        projectIndex = index;
+        files = projectFiles[index];
+        currentFile = Object.keys(files)[0] || "";
+        el("project-name").textContent = projects[index].name;
+        el("project-path").textContent = projects[index].path;
+        el("status-repo").textContent = projects[index].name;
+        currentConflict = 0;
+        setPopover("project-menu", "project-toggle", false);
+        resetTerminal();
+        if (drawerOpen) renderDrawer();
+        notify("已切换演示项目，终端目录已同步");
+      }
+      /** 保持浮层和触发按钮的无障碍展开状态一致。 */
+      function setPopover(id, trigger, open) {
+        el(id).classList.toggle("open", open);
+        el(trigger).setAttribute("aria-expanded", String(open));
+      }
+      /** 绑定页面导航、快捷键和画布事件。 */
+      function bindEvents() {
+        el("branches-toggle").onclick = () => {
+          const collapsed = !el("branch-list").hidden;
+          el("branch-list").hidden = collapsed;
+          el("branches-toggle").setAttribute(
+            "aria-expanded",
+            String(!collapsed),
+          );
+        };
+        el("project-toggle").onclick = () =>
+          setPopover(
+            "project-menu",
+            "project-toggle",
+            !el("project-menu").classList.contains("open"),
+          );
+        el("settings-toggle").onclick = () => {
+          el("settings").showModal();
+          el("settings-toggle").setAttribute("aria-expanded", "true");
+        };
+        el("settings-close").onclick = closeSettings;
+        el("settings").addEventListener("close", () =>
+          el("settings-toggle").setAttribute("aria-expanded", "false"),
+        );
+        el("settings").addEventListener("click", (event) => {
+          if (event.target === el("settings")) closeSettings();
+        });
+        document
+          .querySelectorAll("[data-settings-tab]")
+          .forEach(
+            (button) =>
+              (button.onclick = () =>
+                showSettingsTab(button.dataset.settingsTab)),
+          );
+        el("default-editor").onchange = () => {
+          externalEditor = el("default-editor").value;
+          if (drawerOpen && currentTab === "files") renderFiles();
+        };
+        el("default-shell").onchange = () => {
+          terminalShell = el("default-shell").value;
+          el("terminal-shell").textContent = terminalShell;
+          resetTerminal();
+        };
+        document
+          .querySelectorAll("[data-project]")
+          .forEach(
+            (button) =>
+              (button.onclick = () =>
+                switchProject(Number(button.dataset.project))),
+          );
+        el("terminal-toggle").onclick = () => toggleTerminal();
+        el("terminal-close").onclick = () => toggleTerminal(false);
+        el("side-toggle").onclick = () =>
+          drawerOpen ? closeDrawer() : openDrawer(currentTab);
+        el("drawer-close").onclick = closeDrawer;
+        el("view-diff").onclick = () => openDrawer("diff");
+        document
+          .querySelectorAll("[data-nav]")
+          .forEach(
+            (button) =>
+              (button.onclick = () =>
+                button.dataset.nav === "history"
+                  ? closeDrawer()
+                  : openDrawer(button.dataset.nav)),
+          );
+        document
+          .querySelectorAll("[data-tab]")
+          .forEach(
+            (button) => (button.onclick = () => openDrawer(button.dataset.tab)),
+          );
+        document.querySelectorAll("[data-filter]").forEach(
+          (button) =>
+            (button.onclick = () => {
+              branchFilter =
+                branchFilter === button.dataset.filter
+                  ? ""
+                  : button.dataset.filter;
+              filterGraph();
+              notify(
+                branchFilter ? "高亮分支：" + branchFilter : "已显示全部分支",
+              );
+            }),
+        );
+        el("search").oninput = filterGraph;
+        el("zoom-in").onclick = () => changeZoom(0.1);
+        el("zoom-out").onclick = () => changeZoom(-0.1);
+        el("fit").onclick = resetGraph;
+        el("reset-top").onclick = resetGraph;
+        el("graph-wrap").addEventListener(
+          "wheel",
+          (event) => {
+            event.preventDefault();
+            changeZoom(event.deltaY < 0 ? 0.05 : -0.05);
+          },
+          { passive: false },
+        );
+        el("graph-wrap").addEventListener("pointerdown", (event) => {
+          if (event.button !== 0) return;
+          drag = {
+            index: -1,
+            startX: event.clientX,
+            startY: event.clientY,
+            panX,
+            panY,
+          };
+          el("graph-wrap").setPointerCapture(event.pointerId);
+        });
+        el("graph-wrap").addEventListener("pointermove", movePointer);
+        el("graph-wrap").addEventListener("pointerup", endDrag);
+        el("graph-wrap").addEventListener("pointercancel", endDrag);
+        el("graph-wrap").addEventListener("lostpointercapture", endDrag);
+        el("graph-wrap").addEventListener("dblclick", (event) => {
+          if (!event.target.closest(".node")) resetGraph();
+        });
+        el("elasticity").oninput = () =>
+          (elasticity = Number(el("elasticity").value));
+        el("show-labels").onchange = () =>
+          document
+            .querySelectorAll(".labels")
+            .forEach(
+              (label) =>
+                (label.style.display = el("show-labels").checked ? "" : "none"),
+            );
+        el("terminal-form").onsubmit = runCommand;
+        el("clear-terminal").onclick = () =>
+          (el("terminal-output").textContent = "");
+        el("demo-info").onclick = () =>
+          notify("独立交互设计稿 · 全部文件、提交和终端均为演示数据");
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            if (el("settings").open) return;
+            if (el("editor-menu") && !el("editor-menu").hidden) {
+              toggleEditorMenu(false);
+              el("editor-menu-toggle").focus();
+              return;
+            }
+            if (drawerOpen) closeDrawer();
+
+            setPopover("project-menu", "project-toggle", false);
+          }
+        });
+        document.addEventListener("click", (event) => {
+          if (!event.target.closest(".open-picker")) toggleEditorMenu(false);
+          if (!event.target.closest(".project-wrap"))
+            setPopover("project-menu", "project-toggle", false);
+        });
+      }
+      buildGraph();
+      bindEvents();
+      resetTerminal();
+      el("terminal-command").disabled = true;
+    </script>
+  </body>
+</html>
