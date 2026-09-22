@@ -529,4 +529,8 @@ Windows 实现使用 Job 树回收、挂起创建和限制句柄继承、非阻�
 
 已逐份核对并更新根 README、AGENTS 和 docs 下的总计划、M2/M3 计划、索引、架构、接口、UI、环境、测试、安全与验证文档。LICENSE 与 gitmaster-ui.html 保持原样；原 main 工作区保留干净。本地 tests/、node_modules、target、dist 和测试替身不纳入提交；Rust 核心/桌面模块内长期测试随源码提交。GitHub 交付目标为 origin 的 codex/m2-m3 分支，提交与远端 OID 在最终回复核验。
 
-最终 `cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop --locked --offline`、全量 `pnpm format:check`、`git diff --check` 均通过；12 份项目 Markdown 文档的本地文件链接检查无失效目标。原 main 的 `git status --porcelain` 为空；GitHub main 仍为实施基线 `eba92ef`，交付分支尚无同名远端引用。
+最终 `cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop --locked --offline`、全量 `pnpm format:check`、`git diff --check` 均通过；12 份项目 Markdown 文档的本地文件链接检查无失效目标。原 main 的 `git status --porcelain` 为空；提交前 GitHub main 为实施基线 `eba92ef`，当时交付分支尚无同名远端引用。
+
+### GitHub 交付记录
+
+功能与完整文档提交 `3b34bd7eaeb972c148174e3ed5ae26ae18824a32`（`feat: 完成 M2 M3 版本操作与 Git 工作台`）已通过普通 push 创建 `origin/codex/m2-m3`。随后 `git ls-remote --heads origin refs/heads/codex/m2-m3` 返回完全一致的 OID，本地工作树干净。当前段落与计划勾选作为独立文档收尾提交；最终分支 HEAD 以 GitHub 分支和交付回复为准。未改写历史、合并 main、创建 PR 或发布软件。
