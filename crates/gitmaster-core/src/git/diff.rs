@@ -226,12 +226,21 @@ mod tests {
     #[test]
     fn literal_names_and_binary() {
         let f = Fixture::new();
-        f.write(":(glob)*", b"only target\n");
-        f.write("-other", b"private\n");
+        // Windows 禁止冒号和星号，改用合法通配样本及诱饵验证字面匹配。
+        let target = if cfg!(windows) {
+            "-[target].txt"
+        } else {
+            ":(glob)*"
+        };
+        f.write(target, b"only target\n");
+        f.write(
+            if cfg!(windows) { "-t.txt" } else { "-other" },
+            b"private\n",
+        );
         f.write("bin", b"a\0b");
         f.command(&["add", "."]);
         let (repo, state) = open_repository(&f.git, &f.root).unwrap();
-        let change = state.changes.iter().find(|c| c.path == ":(glob)*").unwrap();
+        let change = state.changes.iter().find(|c| c.path == target).unwrap();
         let FileDiff::Text { content, .. } =
             read_file_diff(&f.git, &repo, &state, &change.change_id, DiffSide::Staged).unwrap()
         else {

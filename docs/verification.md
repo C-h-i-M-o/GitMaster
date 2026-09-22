@@ -1,6 +1,6 @@
 # 初始化验证记录
 
-当前状态：M1 已完成实现及 macOS Apple Silicon 本机验收，Windows 实机验收按用户决定暂时跳过，详细结果见本文 M1 章节。各章节的“未验证”“未提交”等描述均指该阶段结束时的状态，保留为历史记录。
+当前状态：M1 已完成实现及 macOS Apple Silicon 本机验收；2026-09-22 补充 Windows 测试与构建检查，超时稳定性及原生交互边界见本文 Windows 补充验收章节。各章节的“未验证”“未提交”等描述均指该阶段结束时的状态，保留为历史记录。
 
 日期：2026-09-20。仓库：`C:/code/GitMaster`。初始 HEAD：`7f48ce0`，分支 main；初始工作区干净，仅跟踪 LICENSE。
 
@@ -169,3 +169,54 @@
 用户在 M1 收尾后授权同步文档并提交 GitHub。本次同步包含 M1 核心、桌面适配、前端、依赖锁文件、工程协作说明与文档；Rust 模块内测试随源码保留。`tests/m1/` 按项目约定仅本地保留，不纳入此次提交；其测试结果属于本机验收证据。推送目标为 `origin` 的 `codex/m1-readonly` 分支，不直接合并 main，不生成发布版本。提交及远端同步结果以 Git 历史和远端分支为准。
 
 提交前复核：`pnpm typecheck`、`pnpm build`、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop --locked`、`git diff --check` 均通过；核心 31 项、桌面 5 项、本地前端 8 项测试通过，1 个子进程 fixture 仍按设计标记 ignored。此次未改动功能源码，未重复原生窗口验收。
+
+## Windows M1 补充验收（2026-09-22）
+
+本轮从干净的 main 切换至跟踪 `origin/codex/m1-readonly` 的本地同名分支，基线 `57d2a23`。用户授权补充 Windows 测试和文档；没有提交、推送、修改真实仓库业务数据或全局 Git 配置。下列结果补充前文历史记录，不把前文“跳过 Windows”改写成历史上已通过。
+
+### 环境与范围
+
+Windows 11 x64（10.0.26200）、Node 24.18.0、pnpm 11.15.1、Git 2.55.0.windows.3、WebView2 153.0.4234.48、Rust/Cargo 1.98.1、rustup 1.29.1、MSVC Build Tools 2022 17.14.41、Windows SDK 10.0.26100.0。工具链为 stable-x86_64-pc-windows-msvc，rustfmt/clippy 已安装；`pnpm tauri info` 在安装后已识别完整环境。
+
+### 测试发现与复核
+
+- 原始默认并发核心测试：22 通过、4 失败、1 ignored。`literal_names_and_binary` 创建 `:(glob)*` 报 Windows 错误 123（InvalidFilename）；其余 3 项为 `TIMEOUT`。
+- 原始代码单线程复跑：25 通过、1 失败、1 ignored；唯一失败仍为非法文件名，3 项超时在该次运行通过。
+- 仅修改测试夹具：Windows 使用合法 `-[target].txt` 与诱饵 `-t.txt`，Unix 保留原样；保留字面路径、前导短横线和二进制断言。GPT-5.6 Luna（Low）只读复核未发现问题。生产接口、逻辑及 10 秒超时不变。
+- 修改后单线程完整复跑（与桌面编译同时进行）：23 通过、3 失败、1 ignored；路径夹具测试通过，但 `linked_worktree_and_detached`、`real_status_is_read_only`、`repository_kinds` 发生 `TIMEOUT`。因此不能把单线程描述为已解决稳定性问题，负载相关性为观察结果，尚未确定完整根因。
+- Windows 不编译 Unix 专用脚本拒绝、中文 Git 可执行路径、符号链接/目录越界和非 UTF-8 文件名测试；共枚举 27 项，不能照搬 macOS 的 31 项通过数字。ignored 是父测试使用的子进程 fixture，不代表超时/双管道测试未执行。
+- `tests/m1/` 未随远端分支提交，本机没有历史 8 项前端测试，未声称这些用例在 Windows 通过。
+
+### 已完成检查
+
+| 检查                                        | 本机结果                                                                        |
+| ------------------------------------------- | ------------------------------------------------------------------------------- |
+| `pnpm typecheck`、`pnpm build`              | 通过                                                                            |
+| `pnpm format:check`                         | 初始检查通过，文档收尾另复核                                                    |
+| `cargo fmt --all -- --check`                | 通过                                                                            |
+| `cargo test -p gitmaster-desktop --locked`  | 5 通过、0 失败，覆盖设置首次保存/替换/损坏和请求代次；main 与 doc-tests 各 0 项 |
+| `cargo check -p gitmaster-desktop --locked` | 通过                                                                            |
+
+桌面测试的链接器输出“正在创建库……”触发 `linker_messages` 警告，命令仍以 0 退出，不是链接失败。
+
+### 原生交互与剩余边界
+
+Computer Use 的 `list_windows` 两次超时，按工具规则重置后仍超时，故停止 UI 自动化。本轮不能确认目录/文件选择器、真实仓库状态和差异 IPC、Git 路径设置及重启恢复、键盘/最小窗口、系统缩放/减少动效等 Windows 交互。设置单元测试不能替代 UI 实测；M0 先前窗口启动证据也不能代替 M1。
+
+未验证 Windows 多版本 Git、最低 Git 2.39、Windows 符号链接与目录逃逸实机防护、Intel Mac、最低系统版本、NSIS 安装包与签名。未进入 M2，未发布。
+
+### Windows 原生发布构建
+
+`pnpm tauri build --no-bundle` 通过，release 优化构建耗时 15m 27s，生成 `target/release/gitmaster-desktop.exe`。构建中的前端生产构建同步通过。未生成 NSIS/MSI 安装包，不代表安装、签名或发布验收通过。文档整理后的 `pnpm format:check` 与 `git diff --check` 均通过。
+
+### 空闲编译条件下的最终复核
+
+发布构建结束后，不再并行运行编译，三个仓库超时用例单独复跑全部通过（33.87s）。随后完整执行 `cargo test -p gitmaster-core --locked -- --test-threads=1`：**26 通过、0 失败、1 ignored，耗时 186.75s**；doc-tests 为 0 项。结果证明本机在该运行条件下通过，不撤销前述并发/高负载超时记录，也不证明默认并行模式稳定。
+
+编译结束后再次检查 Computer Use，窗口列表恢复响应。已启动本轮 release 可执行文件并发现标题为 `gitMaster` 的原生窗口；截图为黑屏，可访问性树只有窗口和区域，未得到业务文本。刷新绑定后两次激活均返回 `failed to activate captured window`，因此停止交互尝试。无法据此判断是捕获/会话限制还是应用渲染问题，不能将窗口存在写成真实 Git IPC 验收通过。后续应在可交互 Windows 桌面上完成目录选择与状态/差异实测。
+
+已创建唯一的中文/空格临时验收仓库，包含 MM 文本与两个未跟踪文件，未通过应用打开；测试准备不作为 UI 通过证据。未操作用户真实仓库内容。临时目录前缀为 `gitmaster-m1-win-中文 空格-16eb5699693f4bfc92023ee5558a5844`，保留用于后续人工复验。
+
+### 开发环境保留状态
+
+关闭本轮启动的 release 验收进程后，`pnpm tauri dev` 调试编译通过（52.31s），启动 `target/debug/gitmaster-desktop.exe`，检测到 `gitMaster` 窗口句柄；`http://127.0.0.1:1420/` 返回 HTTP 200。开发服务保留运行，不把进程/HTTP 成功扩展为业务交互通过。当前分支与远端提交一致（ahead/behind 均为 0），仅有测试及文档未提交改动。

@@ -121,3 +121,11 @@ Tauri 工程、Node 包、Rust crate 的版本与锁文件分别管理。仓库�
 - [Tauri CLI](https://v2.tauri.app/reference/cli/)
 - [Tauri 发布](https://v2.tauri.app/distribute/)
 - [pnpm 安装说明](https://pnpm.io/installation)
+
+## Windows 11 x64 环境补齐（2026-09-22）
+
+本机已按用户授权安装 Visual Studio Build Tools 2022 17.14.41（C++ 桌面工作负载及推荐组件）、Windows SDK 10.0.26100.0、rustup 1.29.1 与 Rust/Cargo 1.98.1。MSVC stable 工具链包含 rustfmt、clippy。复用 Node 24.18.0、pnpm 11.15.1、Git 2.55.0.windows.3 和 WebView2 153.0.4234.48；安装器未要求重启。
+
+Rust 安装器已将用户 `.cargo/bin` 加入用户 PATH。安装前启动的 Codex/终端需要重新打开；当前 PowerShell 会话也可执行 `$env:Path="$env:USERPROFILE/.cargo/bin;$env:Path"` 后运行 Cargo。以上版本为本机实际验证版本，不代表最低兼容版本。
+
+M1 本轮测试使用锁文件，原生构建、测试数量及限制详见 [Windows 补充验收](verification.md#windows-m1-补充验收2026-09-22)。

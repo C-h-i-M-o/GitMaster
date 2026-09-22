@@ -66,3 +66,11 @@ pnpm tauri build --no-bundle
 - `tests/m1/` 使用 Node 原生测试执行器，覆盖错误文案、文件分组及受控异步竞态；按项目约定默认本地保留，是否提交长期测试另由用户决定。
 - macOS APFS 不接受非法 UTF-8 文件名，真实文件名用例仅在其他 Unix 启用；本机字节解析用例仍验证 `UNSUPPORTED_PATH_ENCODING`。
 - 性能限制是有界保护，不等于性能指标：未声称 60fps 或达到固定耗时目标。测试不触碰用户真实仓库、远端或全局 Git 配置。
+
+## Windows M1 测试说明（2026-09-22）
+
+- Windows 核心共有 27 项测试（含 1 个由父测试启动的 ignored fixture）；Unix 专用脚本、符号链接/目录越界、中文 Git 可执行路径与非法 UTF-8 文件名用例不在 Windows 执行，不能照搬 macOS 测试数量。
+- 特殊字符路径测试在 Windows 使用合法的 `-[target].txt` 和诱饵 `-t.txt`，Unix 保留 `:(glob)*`；验证字面 pathspec、前导短横线及二进制识别，不以跳过整个用例规避文件系统差异。
+- 本机默认并发首轮出现 3 项 `TIMEOUT`，同一版本串行复跑时通过；Windows 复现检查使用 `cargo test -p gitmaster-core --locked -- --test-threads=1`。这不证明默认并发稳定或所有机器性能达标，生产 10 秒超时保持不变。
+- 远端分支没有 `tests/m1/`，本机不具备历史 8 项前端测试，不能将 macOS 本地结果算作 Windows 重跑通过。
+- 原生窗口自动化工具本轮反复超时；进程启动、窗口标题和 HTTP 状态不能代替目录选择器、真实状态/差异 IPC、键盘、最小窗口及系统缩放交互验收。
