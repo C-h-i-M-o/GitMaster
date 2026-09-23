@@ -55,7 +55,24 @@ export function describeGitError(error: OperationError): string {
     UNRESOLVED_CONFLICTS: "仍有未解决冲突。",
     WRITE_OUTCOME_UNKNOWN: "写入结果未知，请重新读取状态。",
   };
-  return map[error.code] ?? "操作未完成，请刷新状态后重试。";
+  const message = map[error.code] ?? "操作未完成，请刷新状态后重试。";
+  const diagnostic = error.diagnostic;
+  if (!diagnostic) return message;
+  const stages: Record<string, string> = {
+    revParse: "解析仓库",
+    status: "读取状态",
+    log: "读取历史",
+    revList: "读取提交关系",
+    forEachRef: "读取引用",
+    gitQuery: "查询 Git",
+    windowsProcess: "启动 Windows 进程",
+  };
+  const details = [`阶段：${stages[diagnostic.stage] ?? "Git 操作"}`];
+  if (diagnostic.osCode !== undefined)
+    details.push(`系统码：${diagnostic.osCode}`);
+  if (diagnostic.exitCode !== undefined)
+    details.push(`退出码：${diagnostic.exitCode}`);
+  return `${message}（${details.join("，")}）`;
 }
 export function describeStatus(status: string): string {
   return (

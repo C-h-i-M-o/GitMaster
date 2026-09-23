@@ -21,12 +21,14 @@
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "d3-force": "^3.0.0",
     "motion": "13.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.5",
+    "@types/d3-force": "^3.0.10",
     "@types/node": "^24.0.0",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

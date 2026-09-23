@@ -1,7 +1,21 @@
 export interface OperationError {
   code: string;
   retryable: boolean;
+  diagnostic?: ErrorDiagnostic;
 }
+export interface ErrorDiagnostic {
+  stage: GitDiagnosticStage;
+  osCode?: number;
+  exitCode?: number;
+}
+export type GitDiagnosticStage =
+  | "revParse"
+  | "status"
+  | "log"
+  | "revList"
+  | "forEachRef"
+  | "gitQuery"
+  | "windowsProcess";
 export type GitEnvironment =
   | {
       status: "ready";
@@ -325,4 +339,13 @@ export interface ConflictDocument {
   encoding: string;
   lineEnding: string;
   fingerprint: string;
+}
+
+/** 日志详细程度与后端实际生效状态。 */
+export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
+export interface LogSettings {
+  level: LogLevel | null;
+  effectiveLevel: LogLevel;
+  directory: string;
+  available: boolean;
 }

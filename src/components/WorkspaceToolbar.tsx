@@ -69,7 +69,7 @@ export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
         <button
           title="新建分支"
           onClick={w.openModal("branch")}
-          disabled={!w.canWrite("createBranch")}
+          disabled={!w.canOpenWrite}
         >
           <Icon name="branch" />
           <span>新建分支</span>

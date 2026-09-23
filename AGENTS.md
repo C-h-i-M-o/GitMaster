@@ -13,8 +13,10 @@
 ## 产品约束
 
 - 品牌名 `gitMaster`；中文名尚未确认，不自行命名。
-- Tauri 2 + React + TypeScript + Rust；用户自行安装系统 Git，应用不附带、不下载、不自动安装 Git。
-- 保留 macOS SwiftUI 演进可能；独立 Rust 核心不得依赖 Tauri、React 或窗口生命周期。
+- 当前正式版路线：Tauri 2/React/TypeScript + 独立 Rust 核心；达到体验要求可长期保留。Windows WinUI 3/C#、macOS SwiftUI/AppKit 仅为正式版后可选演进，不是首发门槛。普通浏览器预览仍仅作开发测试。
+- 基础 Git、文件阅读和差异查看的流畅性优先；全局磁盘缓存上限 1GB（1,000,000,000 字节），正常无变化焦点切换不重新读取 Git。方案以 docs/spec-plan.md 第 12 节为准，尚未实施。
+- 用户自行安装系统 Git，应用不附带、不下载、不自动安装 Git；正式安装流程负责其他必要运行依赖；Windows WebView2 缺失时由安装器自动部署，用户无需手工安装。不得依赖开发服务器。
+- 独立 Rust 核心不得依赖 Tauri、React 或窗口生命周期；当前 Tauri 双端分别进行 Release 实机及干净系统验收；未来原生版另行验收，历史测试跳过许可不沿用到发布。
 - Web 玻璃效果不得宣传为 Apple 原生 Liquid Glass。
 - 当前已实现 M2/M3 本地版本、远端协作、文本冲突与 HTML 工作台；平台、真实认证和原生交互的已测/跳过范围见 docs/verification.md，不把实现等同于双平台验收。M4 恢复与发布需单独授权。
 

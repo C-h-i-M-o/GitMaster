@@ -15,6 +15,7 @@ pub mod merge;
 pub mod remote;
 pub mod repository;
 pub mod status;
+pub mod watcher;
 
 pub use error::OperationError;
 pub use types::*;

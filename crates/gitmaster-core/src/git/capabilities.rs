@@ -37,21 +37,19 @@ pub fn read_write_context(
         "DETACHED_HEAD_WRITE_BLOCKED",
     );
     let clean = require(state.changes.is_empty(), "WORKTREE_DIRTY");
-    // 基础本地检查复用核心配置、索引与属性规则；不检查尚未选定的目标树。
-    let branch = platform
-        .clone()
-        .and(idle.clone())
-        .and_then(|()| guard::branch_fingerprint(git, repo, deadline).map(|_| ()));
+    // 这里只决定是否允许进入准备流程；完整路径、配置和指纹由 prepare/execute 校验。
+    let branch = platform.clone().and(idle.clone());
     let local = branch.clone().and(named.clone());
     let staged = state
         .changes
         .iter()
         .any(|c| c.kind == "tracked" && c.index_status != ".");
-    let identity = if platform.is_ok() && (idle.is_ok() || state.operations == ["merge"]) {
-        guard::identity(git, repo, deadline).map(|_| ())
-    } else {
-        platform.clone().and(idle.clone())
-    };
+    let identity =
+        if platform.is_ok() && ((idle.is_ok() && staged) || state.operations == ["merge"]) {
+            guard::identity(git, repo, deadline).map(|_| ())
+        } else {
+            platform.clone().and(idle.clone())
+        };
     let merge = platform
         .clone()
         .and(require(
@@ -59,8 +57,7 @@ pub fn read_write_context(
             "REPOSITORY_OPERATION_ACTIVE",
         ))
         .and(named.clone())
-        .and(headed.clone())
-        .and_then(|()| guard::merge_fingerprint(git, repo, false, deadline).map(|_| ()));
+        .and(headed.clone());
     let unresolved = state.changes.iter().any(|c| c.kind == "conflicted");
     let network = platform.and(idle);
     let result = WriteContext {
@@ -98,7 +95,49 @@ pub fn read_write_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::coordinator::RepositoryCoordinator;
     use crate::git::repository::tests::Fixture;
+    /// 显式指定仓库才运行的只读诊断，不打印路径、内容或配置。
+    #[test]
+    #[ignore]
+    fn readonly_capability_profile() {
+        let path =
+            std::env::var_os("GITMASTER_HISTORY_BENCH_REPOSITORY").expect("需要明确只读仓库");
+        let git = crate::git::environment::resolve_git(None).unwrap();
+        let (repo, state) =
+            crate::git::repository::open_repository(&git, std::path::Path::new(&path)).unwrap();
+        let started = Instant::now();
+        let result = read_write_context(&git, &repo, &state);
+        eprintln!("能力总耗时 {:?} 成功 {}", started.elapsed(), result.is_ok());
+        assert!(result.is_ok());
+    }
+    /// 入口不运行写前完整检查；真正准备仍拒绝被锁定的索引。
+    #[test]
+    fn entry_is_lightweight_but_prepare_keeps_write_guards() {
+        let f = Fixture::new();
+        f.write("base", b"base");
+        f.command(&["add", "."]);
+        f.command(&["commit", "-m", "base"]);
+        let (repo, state) = repository::open_repository(&f.git, &f.root).unwrap();
+        std::fs::write(repo.git_dir.join("index.lock"), b"external").unwrap();
+        let context = read_write_context(&f.git, &repo, &state).unwrap();
+        assert!(matches!(
+            context.capabilities.create_branch,
+            WriteCapability::Allowed
+        ));
+        let result = branches::prepare_create_branch(
+            &RepositoryCoordinator::new(),
+            &f.git,
+            &repo,
+            &state,
+            "candidate",
+        );
+        assert_eq!(result.unwrap_err().code, "INDEX_LOCKED");
+        assert_eq!(
+            std::fs::read(repo.git_dir.join("index.lock")).unwrap(),
+            b"external"
+        );
+    }
     /// 普通仓库能力读取保持只读并返回原快照 ID。
     #[test]
     fn normal_read_only() {

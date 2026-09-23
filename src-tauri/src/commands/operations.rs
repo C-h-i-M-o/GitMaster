@@ -278,7 +278,7 @@ pub async fn read_write_context(
     let shared = state.inner().clone();
     let ctx = Context::capture(&*shared.lock()?, &repository_id)?;
     ctx.check_snapshot(&snapshot_id)?;
-    blocking(move || {
+    blocking("read_write_context", move || {
         let key = git::coordinator::CoordinationKey::repository(&ctx.repository)?;
         let result = ctx.coordinator.read(&key, || {
             git::capabilities::read_write_context(&ctx.git, &ctx.repository, &ctx.state)
@@ -297,8 +297,8 @@ pub async fn prepare_local_write(
     request: LocalWriteRequest,
 ) -> Result<WritePreview, OperationError> {
     let shared = state.inner().clone();
-    let prepare = WritePreparation::local(&shared, &repository_id, &snapshot_id, request)?;
-    blocking(move || prepare.run(&shared)).await
+    let prepare = WritePreparation::local(&shared, &repository_id, &snapshot_id, request);
+    blocking("prepare_local_write", move || prepare?.run(&shared)).await
 }
 /// 准备当前远端映射对应的获取、推送或整合。
 #[tauri::command]
@@ -310,7 +310,7 @@ pub async fn prepare_remote_write(
 ) -> Result<WritePreview, OperationError> {
     let shared = state.inner().clone();
     let prepare = WritePreparation::remote(&shared, &repository_id, &snapshot_id, request)?;
-    blocking(move || prepare.run(&shared)).await
+    blocking("prepare_remote_write", move || prepare.run(&shared)).await
 }
 /// 准备当前合并会话的保存或完成操作。
 #[tauri::command]
@@ -322,7 +322,7 @@ pub async fn prepare_conflict_write(
 ) -> Result<WritePreview, OperationError> {
     let shared = state.inner().clone();
     let prepare = WritePreparation::conflict(&shared, &repository_id, &merge_session_id, request)?;
-    blocking(move || prepare.run(&shared)).await
+    blocking("prepare_conflict_write", move || prepare.run(&shared)).await
 }
 /// 启动确认的仓库任务，函数返回后核心继续执行。
 #[tauri::command]
@@ -402,7 +402,7 @@ pub async fn prepare_clone(
 ) -> Result<ClonePreview, OperationError> {
     let shared = state.inner().clone();
     let prepare = ClonePreparation::begin(&shared, request)?;
-    blocking(move || prepare.run(&shared)).await
+    blocking("prepare_clone", move || prepare.run(&shared)).await
 }
 /// 启动已确认 clone，成功路径由前端显式打开，不隐式切换会话。
 #[tauri::command]

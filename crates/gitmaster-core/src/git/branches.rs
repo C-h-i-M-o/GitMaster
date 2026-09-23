@@ -127,7 +127,9 @@ pub fn prepare_create_branch(
     let (fingerprint, oid) = coordinator.read_until(&key, deadline, || {
         guard::validate_snapshot(git, repo, state, deadline)?;
         validate_name(git, repo, name, &reference, deadline)?;
-        let fingerprint = guard::branch_fingerprint(git, repo, deadline)?;
+        let fingerprint = crate::diagnostics::measure("branch_fingerprint", || {
+            guard::branch_fingerprint(git, repo, deadline)
+        })?;
         let oid = match &fingerprint.head {
             HeadState::Branch { oid, .. } | HeadState::Detached { oid } => oid.clone(),
             HeadState::Unborn { .. } => return Err(OperationError::new("HEAD_REQUIRED")),
@@ -226,7 +228,9 @@ pub fn prepare_switch_branch(
             return Err(OperationError::new("WORKTREE_DIRTY"));
         }
         validate_switch_target(git, repo, &selected, deadline)?;
-        let fingerprint = guard::branch_fingerprint(git, repo, deadline)?;
+        let fingerprint = crate::diagnostics::measure("branch_fingerprint", || {
+            guard::branch_fingerprint(git, repo, deadline)
+        })?;
         let entries = guard::checkout_tree(git, repo, &selected.oid, deadline)?;
         let current: BTreeMap<_, _> = fingerprint
             .index
@@ -243,8 +247,13 @@ pub fn prepare_switch_branch(
             .filter(|path| current.get(path) != target.get(path))
             .cloned()
             .collect::<Vec<_>>();
-        let checkout = CapturedCheckout::capture(git, repo, &fingerprint, &selected, deadline)?;
-        if guard::branch_fingerprint(git, repo, deadline)? != fingerprint {
+        let checkout = crate::diagnostics::measure("checkout_capture", || {
+            CapturedCheckout::capture(git, repo, &fingerprint, &selected, deadline)
+        })?;
+        if crate::diagnostics::measure("branch_fingerprint", || {
+            guard::branch_fingerprint(git, repo, deadline)
+        })? != fingerprint
+        {
             return Err(OperationError::new("STALE_WRITE_PLAN"));
         }
         Ok((fingerprint, paths, checkout))
@@ -325,7 +334,10 @@ fn execute_switch(
     let deadline = reporter.deadline(LOCAL_BUDGET);
     let mut attempted = false;
     let result = (|| {
-        if guard::branch_fingerprint(git, repo, deadline)? != *expected {
+        if crate::diagnostics::measure("branch_fingerprint", || {
+            guard::branch_fingerprint(git, repo, deadline)
+        })? != *expected
+        {
             return Err(OperationError::new("STALE_WRITE_PLAN"));
         }
         let before = super::repository::read_repository_state_until(git, repo, deadline)?;
@@ -400,7 +412,10 @@ fn execute_create(
     let deadline = Instant::now() + LOCAL_BUDGET;
     let mut attempted = false;
     let result = (|| {
-        if guard::branch_fingerprint(git, repo, deadline)? != *expected {
+        if crate::diagnostics::measure("branch_fingerprint", || {
+            guard::branch_fingerprint(git, repo, deadline)
+        })? != *expected
+        {
             return Err(OperationError::new("STALE_WRITE_PLAN"));
         }
         reporter.report(OperationPhase::Writing, None)?;

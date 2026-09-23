@@ -1,4 +1,5 @@
 mod commands;
+mod logging;
 #[cfg(test)]
 mod m2_contract_tests;
 mod settings;
@@ -16,12 +17,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(commands::DesktopState::default())
+        .setup(|app| logging::initialize(app.handle()))
         .invoke_handler(tauri::generate_handler![
             get_app_info,
+            logging::read_log_settings,
+            logging::set_log_level,
+            logging::open_log_directory,
             commands::detect_git,
             commands::set_git_path,
             commands::open_repository,
             commands::read_repository_state,
+            commands::read_repository_watch,
             commands::read_file_diff,
             commands::read_commit_history,
             commands::read_commit_detail,

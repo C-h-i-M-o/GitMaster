@@ -1,4 +1,4 @@
-import type { OperationError } from "../types/git";
+import type { ErrorDiagnostic, OperationError } from "../types/git";
 const codes = new Set([
   "GIT_NOT_FOUND",
   "GIT_PATH_INVALID",
@@ -58,10 +58,44 @@ export function normalizeOperationError(value: unknown): OperationError {
     typeof value.code === "string" &&
     codes.has(value.code)
   ) {
+    const diagnostic = normalizeDiagnostic(
+      (value as Record<string, unknown>).diagnostic,
+    );
     return {
       code: value.code,
       retryable: "retryable" in value && value.retryable === true,
+      ...(diagnostic ? { diagnostic } : {}),
     };
   }
   return { code: "GIT_EXECUTION_FAILED", retryable: true };
+}
+
+/** 严格过滤诊断阶段与整数范围，拒绝任意原始内容。 */
+function normalizeDiagnostic(value: unknown): ErrorDiagnostic | undefined {
+  if (typeof value !== "object" || value === null || !("stage" in value))
+    return undefined;
+  const stage = value.stage;
+  const stages = new Set([
+    "revParse",
+    "status",
+    "log",
+    "revList",
+    "forEachRef",
+    "gitQuery",
+    "windowsProcess",
+  ]);
+  if (typeof stage !== "string" || !stages.has(stage)) return undefined;
+  const validInt = (item: unknown, min: number, max: number): item is number =>
+    typeof item === "number" &&
+    Number.isInteger(item) &&
+    item >= min &&
+    item <= max;
+  const diagnostic: ErrorDiagnostic = {
+    stage: stage as ErrorDiagnostic["stage"],
+  };
+  if ("osCode" in value && validInt(value.osCode, 0, 0xffffffff))
+    diagnostic.osCode = value.osCode;
+  if ("exitCode" in value && validInt(value.exitCode, -2147483648, 2147483647))
+    diagnostic.exitCode = value.exitCode;
+  return diagnostic;
 }

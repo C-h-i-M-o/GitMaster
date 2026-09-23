@@ -501,6 +501,9 @@ impl OperationReporter {
             .as_mut()
             .filter(|(_, record)| record.progress.handle.operation_id == self.handle.operation_id)
             .ok_or_else(|| OperationError::new("STALE_REQUEST"))?;
+        if record.progress.phase != phase {
+            log::debug!(target: "gitmaster::diagnostic", "写入阶段 operation_id={} kind={:?} phase={:?} elapsed_ms={}", self.handle.operation_id, self.kind, phase, self.started.elapsed().as_millis());
+        }
         record.progress.sequence += 1;
         record.progress.phase = phase;
         record.progress.counts = counts;
@@ -522,6 +525,14 @@ impl OperationReporter {
 
     /// 结果和终态一同提交到有界历史，后台业务不能伪造操作身份。
     fn finish(&self, mut result: OperationResult) {
+        match &result {
+            OperationResult::Failed { error, .. } | OperationResult::Unknown { error, .. } => {
+                log::error!(target: "gitmaster::diagnostic", "写入失败 operation_id={} kind={:?} code={} elapsed_ms={}", self.handle.operation_id, self.kind, crate::diagnostics::safe_code(&error.code), self.started.elapsed().as_millis())
+            }
+            _ => {
+                log::info!(target: "gitmaster::diagnostic", "写入结束 operation_id={} kind={:?} elapsed_ms={}", self.handle.operation_id, self.kind, self.started.elapsed().as_millis())
+            }
+        }
         let phase = match &mut result {
             OperationResult::Succeeded {
                 operation_id, kind, ..
@@ -559,6 +570,9 @@ impl OperationReporter {
             return;
         }
         let (plan_id, mut record) = session.current.take().expect("已验证当前任务身份");
+        if record.progress.phase != phase {
+            log::debug!(target: "gitmaster::diagnostic", "写入阶段 operation_id={} kind={:?} phase={:?} elapsed_ms={}", self.handle.operation_id, self.kind, phase, self.started.elapsed().as_millis());
+        }
         record.progress.sequence += 1;
         record.progress.phase = phase;
         record.progress.counts = None;

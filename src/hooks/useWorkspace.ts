@@ -23,8 +23,13 @@ export function useWorkspace() {
   const git = useGitEnvironment();
   const repo = useRepository();
   const enabled = isDesktop() && git.environment?.status === "ready";
-  const history = useHistory(repo.repository, enabled);
-  const remote = useRemote(repo.repository, enabled);
+  // 仓库刷新期间停用旧历史会话，忽略后端返回的过期结果。
+  const history = useHistory(repo.repository, enabled && !repo.loading);
+  // 首屏历史优先占用仓库队列；失败时仍开放远端入口。
+  const remote = useRemote(
+    repo.repository,
+    enabled && Boolean(history.page || history.error),
+  );
   const conflicts = useConflicts(repo.repository, enabled);
   const pendingSave = useRef<{ id: string; content: string } | null>(null);
   const [completion, setCompletion] = useState<{
@@ -67,8 +72,26 @@ export function useWorkspace() {
   );
   const operations = useOperations(repo.repository, enabled, completed);
   useEffect(() => {
-    repo.setAutoRefreshBlocked(operations.busy || conflicts.dirty);
-  }, [repo.setAutoRefreshBlocked, operations.busy, conflicts.dirty]);
+    // 焦点变化不能中断正在读取的历史；显式刷新仍由独立入口处理。
+    repo.setAutoRefreshBlocked(
+      operations.busy ||
+        conflicts.dirty ||
+        history.loading ||
+        history.loadingMore ||
+        history.detailLoading ||
+        history.filesLoading ||
+        history.diffLoading,
+    );
+  }, [
+    repo.setAutoRefreshBlocked,
+    operations.busy,
+    conflicts.dirty,
+    history.loading,
+    history.loadingMore,
+    history.detailLoading,
+    history.filesLoading,
+    history.diffLoading,
+  ]);
   /** 保存草稿和指纹一起进入确认，失败保留原编辑。 */
   const prepareConflict = useCallback(
     async (session: string, request: ConflictWriteRequest): Promise<void> => {

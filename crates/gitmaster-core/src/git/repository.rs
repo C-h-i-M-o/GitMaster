@@ -31,21 +31,44 @@ pub(crate) fn query_until(
     limit: usize,
     deadline: Option<Instant>,
 ) -> Result<Vec<u8>, OperationError> {
+    let mut command_index = 0;
+    while args.get(command_index) == Some(&"-c") {
+        command_index += 2;
+    }
+    let command = args.get(command_index).copied();
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
     let out = match deadline {
         Some(deadline) => {
-            super::process::run_git_read_until(git, cwd, &args, limit, false, deadline)?
+            super::process::run_git_read_until(git, cwd, &args, limit, false, deadline)
         }
-        None => run_git(git, cwd, &args, limit, false)?,
-    };
+        None => run_git(git, cwd, &args, limit, false),
+    }
+    .map_err(|error| {
+        let os_code = error.diagnostic.as_ref().and_then(|info| info.os_code);
+        error.with_diagnostic(query_stage(command), os_code, None)
+    })?;
     if !out.success {
-        return Err(command_error(&out.stderr));
+        return Err(command_error_with_context(
+            &out.stderr,
+            command,
+            out.exit_code,
+        ));
     }
     Ok(out.stdout)
 }
 
 /// 脱敏底层失败；这些映射只用于提示，仓库身份始终来自成功的机器查询。
+/// 将查询命令映射到稳定阶段，并附加退出码而不透传 stderr。
 pub(crate) fn command_error(stderr: &[u8]) -> OperationError {
+    command_error_with_context(stderr, None, None)
+}
+
+/// 分类查询失败并附加退出码；stderr 仅用于本地错误分类。
+fn command_error_with_context(
+    stderr: &[u8],
+    command: Option<&str>,
+    exit_code: Option<i32>,
+) -> OperationError {
     let text = String::from_utf8_lossy(stderr);
     OperationError::new(if text.contains("dubious ownership") {
         "UNSAFE_REPOSITORY"
@@ -56,6 +79,19 @@ pub(crate) fn command_error(stderr: &[u8]) -> OperationError {
     } else {
         "GIT_EXECUTION_FAILED"
     })
+    .with_diagnostic(query_stage(command), None, exit_code)
+}
+
+/// 只允许查询入口使用的 Git 子命令进入诊断阶段。
+fn query_stage(command: Option<&str>) -> &'static str {
+    match command {
+        Some("rev-parse") => "revParse",
+        Some("status") => "status",
+        Some("log") => "log",
+        Some("rev-list") => "revList",
+        Some("for-each-ref") => "forEachRef",
+        _ => "gitQuery",
+    }
 }
 
 /// 无损解码机器路径，移除 Git 添加的唯一换行而非路径中的空白。
@@ -78,6 +114,16 @@ pub fn open_repository(
     git: &GitExecutable,
     path: &Path,
 ) -> Result<(RepositoryHandle, RepositoryState), OperationError> {
+    let repository = identify_repository(git, path)?;
+    let state = read_repository_state(git, &repository)?;
+    Ok((repository, state))
+}
+
+/// 先识别工作树身份，允许桌面在第一次状态读取前安装文件监听。
+pub fn identify_repository(
+    git: &GitExecutable,
+    path: &Path,
+) -> Result<RepositoryHandle, OperationError> {
     if !path.is_dir() {
         return Err(OperationError::new("NOT_REPOSITORY"));
     }
@@ -106,14 +152,12 @@ pub fn open_repository(
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         65536,
     )?)?;
-    let repository = RepositoryHandle {
+    Ok(RepositoryHandle {
         id: next_id(),
         root,
         git_dir,
         common_dir,
-    };
-    let state = read_repository_state(git, &repository)?;
-    Ok((repository, state))
+    })
 }
 
 /// 刷新已识别工作树的完整快照，不执行网络或写入操作。

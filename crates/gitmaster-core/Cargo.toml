@@ -11,6 +11,8 @@ cap-std = "=4.0.2"
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"
 url = "=2.5.8"
+notify = "8"
+log = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

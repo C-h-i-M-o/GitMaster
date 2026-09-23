@@ -1,3 +1,4 @@
+import { useLogSettings } from "./useLogSettings";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useWorkspace } from "./useWorkspace";
 import { usePreferences } from "./usePreferences";
@@ -30,6 +31,7 @@ export function useWorkbench() {
   const { repo, operations, conflicts } = workspace;
   const repository = repo.repository;
   const preferences = usePreferences(!workspace.preview);
+  const logSettings = useLogSettings(!workspace.preview);
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [modal, setModal] = useState<Modal>(null);
   const [showOperations, setShowOperations] = useState(false);
@@ -37,7 +39,7 @@ export function useWorkbench() {
   const [projectMenu, setProjectMenu] = useState(false);
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
   const [settingsCategory, setSettingsCategory] = useState<
-    "general" | "appearance"
+    "general" | "appearance" | "logging"
   >("general");
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [context, setContext] = useState<WriteContext | null>(null);
@@ -96,7 +98,9 @@ export function useWorkbench() {
     setBranchesExpanded((value) => !value);
   }
   /** 设置分类切换不改变已保存值。 */
-  function selectSettings(category: "general" | "appearance"): () => void {
+  function selectSettings(
+    category: "general" | "appearance" | "logging",
+  ): () => void {
     return () => setSettingsCategory(category);
   }
   useEffect(() => {
@@ -107,7 +111,7 @@ export function useWorkbench() {
     };
   }, []);
   useEffect(() => {
-    const generation = ++resourceGeneration.current;
+    resourceGeneration.current += 1;
     fileGeneration.current += 1;
     setBranches(null);
     setContext(null);
@@ -117,32 +121,66 @@ export function useWorkbench() {
     setProjectLoading(false);
     setResourceError(null);
     setSelected({ stage: [], unstage: [] });
-    if (!repository || workspace.preview) return;
-    void Promise.allSettled([
-      api.readBranches(repository.repositoryId),
-      api.readWriteContext(repository.repositoryId, repository.snapshotId),
-    ]).then(([branchResult, contextResult]) => {
-      if (!alive.current || generation !== resourceGeneration.current) return;
-      if (
-        branchResult.status === "fulfilled" &&
-        branchResult.value.repositoryId === repository.repositoryId
-      )
-        setBranches(branchResult.value);
-      else if (branchResult.status === "rejected")
-        setResourceError(normalizeOperationError(branchResult.reason));
-      if (
-        contextResult.status === "fulfilled" &&
-        contextResult.value.repositoryId === repository.repositoryId &&
-        contextResult.value.snapshotId === repository.snapshotId
-      )
-        setContext(contextResult.value);
-      else if (contextResult.status === "rejected")
-        setResourceError(normalizeOperationError(contextResult.reason));
-    });
     return () => {
       resourceGeneration.current += 1;
     };
   }, [repository, workspace.preview]);
+  const historyReady = Boolean(
+    workspace.history.page || workspace.history.error,
+  );
+  useEffect(() => {
+    if (!repository || workspace.preview || !historyReady) return;
+    const generation = resourceGeneration.current;
+    let active = true;
+    void api
+      .readBranches(repository.repositoryId)
+      .then((value) => {
+        if (
+          !active ||
+          !alive.current ||
+          generation !== resourceGeneration.current
+        )
+          return;
+        if (value.repositoryId === repository.repositoryId) setBranches(value);
+      })
+      .catch((error: unknown) => {
+        if (
+          active &&
+          alive.current &&
+          generation === resourceGeneration.current
+        )
+          setResourceError(normalizeOperationError(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [repository, workspace.preview, historyReady]);
+  const needsWriteContext =
+    drawer === "changes" ||
+    drawer === "conflicts" ||
+    modal === "branch" ||
+    modal === "remote";
+  useEffect(() => {
+    if (!repository || workspace.preview || !needsWriteContext) return;
+    let active = true;
+    // 写入能力只在操作面板需要时读取，避免阻塞首屏历史的仓库队列。
+    void api
+      .readWriteContext(repository.repositoryId, repository.snapshotId)
+      .then((value) => {
+        if (
+          active &&
+          value.repositoryId === repository.repositoryId &&
+          value.snapshotId === repository.snapshotId
+        )
+          setContext(value);
+      })
+      .catch((error: unknown) => {
+        if (active) setResourceError(normalizeOperationError(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [repository, workspace.preview, needsWriteContext]);
   useEffect(() => {
     setFields((old) => ({
       ...old,
@@ -186,6 +224,11 @@ export function useWorkbench() {
     if (done.result.outcome === "needsResolution") setDrawer("conflicts");
   }, [workspace.completion]);
   const blocked = operations.busy || repo.loading || repo.stale;
+  const canOpenWrite =
+    Boolean(repository) && !workspace.preview && !blocked && !conflicts.dirty;
+  const canSwitchBranch =
+    canOpenWrite &&
+    (!context || context.capabilities.switchBranch.status === "allowed");
   /** 能力与当前快照一致才开放写入口，详细拒绝原因保留在后端预览。 */
   function canWrite(kind: Exclude<OperationKind, "clone">): boolean {
     return (
@@ -290,10 +333,10 @@ export function useWorkbench() {
         name: fields.branchName,
       });
   }
-  /** 切换仅接受后端签发的本地分支 ID。 */
+  /** 切换仅接受后端分支 ID；按需请求预览，由后端完整校验并等待用户确认。 */
   function switchBranch(id: string): () => void {
     return () => {
-      if (canWrite("switchBranch"))
+      if (canSwitchBranch)
         void operations.prepareLocal({ kind: "switchBranch", branchId: id });
     };
   }
@@ -492,6 +535,7 @@ export function useWorkbench() {
     toggleBranches,
     selectSettings,
     preferences,
+    logSettings,
     drawer,
     modal,
     showOperations,
@@ -511,6 +555,8 @@ export function useWorkbench() {
     blocked,
     groups: groupChanges(repository?.changes ?? []),
     canWrite,
+    canOpenWrite,
+    canSwitchBranch,
     writeReason,
     openDrawer,
     openModal,

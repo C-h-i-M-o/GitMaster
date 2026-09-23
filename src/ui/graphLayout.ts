@@ -45,8 +45,9 @@ export function layoutGraph(page: HistoryPage | null): GraphLayout {
     lanes[nodeLane] = null;
     const node: GraphNode = {
       oid: commit.oid,
-      x: 150 + nodeLane * 220,
-      y: 140 + index * 112,
+      // 稳定的柔和摆动锚点，分页追加不重新随机排列已有节点。
+      x: 150 + nodeLane * 250 + Math.sin(index * 0.71 + nodeLane * 1.7) * 72,
+      y: 140 + index * 100 + Math.sin(index * 1.31) * 17,
       lane: nodeLane,
       commit,
       refs: refsByOid.get(commit.oid) ?? [],
@@ -69,8 +70,8 @@ export function layoutGraph(page: HistoryPage | null): GraphLayout {
         from: commit.oid,
         to: parentOid,
         boundary: target === undefined,
-        endX: target?.x ?? 150 + targetLane * 220,
-        endY: target?.y ?? 140 + page.commits.length * 112,
+        endX: target?.x ?? 150 + targetLane * 250,
+        endY: target?.y ?? 140 + page.commits.length * 100,
       });
     });
   });
@@ -90,7 +91,7 @@ export function layoutGraph(page: HistoryPage | null): GraphLayout {
   return {
     nodes,
     edges,
-    width: 150 + laneCount * 220,
-    height: page.commits.length === 0 ? 0 : 140 + page.commits.length * 112,
+    width: 230 + laneCount * 250,
+    height: page.commits.length === 0 ? 0 : 160 + page.commits.length * 100,
   };
 }

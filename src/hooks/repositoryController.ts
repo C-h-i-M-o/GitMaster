@@ -41,6 +41,9 @@ export function createRepositoryController(api: RepositoryApi) {
   let pending = false;
   let queued = false;
   let autoRefreshBlocked = false;
+  let automaticVisible = true;
+  let automaticFailure = false;
+  let dirty = false;
   const listeners = new Set<() => void>();
   /** 发布一个完整快照供视图订阅。 */
   function update(next: Partial<RepositoryViewState>): void {
@@ -52,6 +55,9 @@ export function createRepositoryController(api: RepositoryApi) {
     const token = ++repositoryRequest;
     diffRequest += 1;
     pending = true;
+    dirty = false;
+    automaticFailure = false;
+    let succeeded = false;
     update({
       loading: true,
       error: null,
@@ -63,7 +69,12 @@ export function createRepositoryController(api: RepositoryApi) {
       const repository = await task();
       if (active && token === repositoryRequest)
         update({ repository, loading: false, stale: false });
+      if (active && token === repositoryRequest) succeeded = true;
     } catch (error: unknown) {
+      if (active && token === repositoryRequest) {
+        dirty = true;
+        automaticFailure = true;
+      }
       if (active && token === repositoryRequest)
         update({
           loading: false,
@@ -76,6 +87,8 @@ export function createRepositoryController(api: RepositoryApi) {
         if (queued) {
           queued = false;
           void refresh();
+        } else if (succeeded && dirty && !autoRefreshBlocked) {
+          void refreshAutomatic();
         }
       }
     }
@@ -83,6 +96,7 @@ export function createRepositoryController(api: RepositoryApi) {
   /** 打开新目录使之前刷新和差异失效。 */
   function open(path: string): Promise<void> {
     queued = false;
+    dirty = false;
     return load(() => api.openRepository(path));
   }
   /** 在途刷新合并为至多一次后续刷新。 */
@@ -95,13 +109,31 @@ export function createRepositoryController(api: RepositoryApi) {
     const id = state.repository.repositoryId;
     return load(() => api.readRepositoryState(id));
   }
+  /** 标记当前仓库可能发生变化，供文件监视事件驱动自动刷新。 */
+  function markDirty(): void {
+    if (active && state.repository) {
+      dirty = true;
+      automaticFailure = false;
+    }
+  }
   /** 操作确认或未保存编辑期间暂停窗口激活刷新。 */
   function setAutoRefreshBlocked(blocked: boolean): void {
     autoRefreshBlocked = blocked;
+    if (!blocked) void refreshAutomatic();
   }
   /** 自动刷新遵守界面门禁，显式终态刷新仍使用 refresh。 */
   function refreshAutomatic(): Promise<void> {
-    return autoRefreshBlocked ? Promise.resolve() : refresh();
+    return automaticFailure ||
+      !automaticVisible ||
+      autoRefreshBlocked ||
+      pending ||
+      !dirty
+      ? Promise.resolve()
+      : refresh();
+  }
+  /** 后台窗口保留 dirty，但不启动自动 Git 查询。 */
+  function setAutomaticVisible(visible: boolean): void {
+    automaticVisible = visible;
   }
   /** 文件选择使用独立代次，并绑定当前仓库读取代次。 */
   async function selectDiff(changeId: string, side: DiffSide): Promise<void> {
@@ -141,6 +173,7 @@ export function createRepositoryController(api: RepositoryApi) {
     diffRequest += 1;
     pending = false;
     queued = false;
+    dirty = false;
     update({
       repository: null,
       loading: false,
@@ -158,6 +191,7 @@ export function createRepositoryController(api: RepositoryApi) {
     diffRequest += 1;
     pending = false;
     queued = false;
+    dirty = false;
   }
   /** 激活订阅生命周期。 */
   function activate(): void {
@@ -178,7 +212,9 @@ export function createRepositoryController(api: RepositoryApi) {
     open,
     refresh,
     refreshAutomatic,
+    setAutomaticVisible,
     setAutoRefreshBlocked,
+    markDirty,
     selectDiff,
     clear,
     activate,

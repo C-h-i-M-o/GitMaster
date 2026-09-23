@@ -209,7 +209,7 @@ pub async fn read_commit_history(
 ) -> Result<HistoryPage, OperationError> {
     let shared = state.inner().clone();
     let request = HistoryRequest::begin(&shared, &repository_id, cursor)?;
-    blocking(move || request.run(&shared)).await
+    blocking("read_commit_history", move || request.run(&shared)).await
 }
 
 /// 读取已分页提交的详情，并核对所属图快照。
@@ -222,7 +222,7 @@ pub async fn read_commit_detail(
 ) -> Result<CommitDetail, OperationError> {
     let shared = state.inner().clone();
     let request = HistoryAccess::capture(&shared, &repository_id)?;
-    blocking(move || {
+    blocking("read_commit_detail", move || {
         request.run(&shared, &graph_snapshot_id, |history| {
             history.commit_detail(&oid)
         })
@@ -241,7 +241,7 @@ pub async fn read_commit_files(
 ) -> Result<CommitFileList, OperationError> {
     let shared = state.inner().clone();
     let request = HistoryAccess::capture(&shared, &repository_id)?;
-    blocking(move || {
+    blocking("read_commit_files", move || {
         request.run(&shared, &graph_snapshot_id, |history| {
             history.commit_files(&oid, parent_oid.as_deref())
         })
@@ -259,7 +259,7 @@ pub async fn read_commit_file_diff(
 ) -> Result<FileDiff, OperationError> {
     let shared = state.inner().clone();
     let request = HistoryAccess::capture(&shared, &repository_id)?;
-    blocking(move || {
+    blocking("read_commit_file_diff", move || {
         request.run(&shared, &graph_snapshot_id, |history| {
             history.commit_file_diff(&file_id)
         })
@@ -309,7 +309,7 @@ pub async fn read_branches(
 ) -> Result<BranchList, OperationError> {
     let shared = state.inner().clone();
     let request = BranchRequest::begin(&shared, &repository_id)?;
-    blocking(move || request.run(&shared)).await
+    blocking("read_branches", move || request.run(&shared)).await
 }
 
 /// 项目文件列表请求绑定状态快照与槽代次。
@@ -407,7 +407,7 @@ pub async fn read_project_files(
 ) -> Result<ProjectFileList, OperationError> {
     let shared = state.inner().clone();
     let request = ProjectFilesRequest::begin(&shared, &repository_id, &snapshot_id)?;
-    blocking(move || request.run(&shared)).await
+    blocking("read_project_files", move || request.run(&shared)).await
 }
 
 /// 按本次列表 fileId 读取项目文件内容，列表刷新后旧 ID 拒绝。
@@ -420,7 +420,7 @@ pub async fn read_project_file(
 ) -> Result<FileDiff, OperationError> {
     let shared = state.inner().clone();
     let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
-    blocking(move || request.run(&shared, &file_id)).await
+    blocking("read_project_file", move || request.run(&shared, &file_id)).await
 }
 
 #[cfg(test)]

@@ -4,10 +4,12 @@ use gitmaster_core::git::{
     environment::{describe_git, resolve_git},
     *,
 };
+mod monitoring;
 mod operations;
 mod readonly;
 mod resources;
 
+pub use monitoring::*;
 pub use operations::*;
 pub use readonly::*;
 pub use resources::*;
@@ -47,6 +49,7 @@ pub struct Session {
     conflicts_request: u64,
     clone_parent: Option<(String, PathBuf)>,
     picker_request: u64,
+    monitor: Option<monitoring::RepositoryMonitor>,
 }
 /// 在异步阻塞任务间共享会话；Git 子进程期间不持有锁。
 #[derive(Clone, Default)]
@@ -83,6 +86,7 @@ impl Session {
             self.epoch += 1;
             self.repository_request += 1;
             self.active = None;
+            self.monitor = None;
             self.clear_readonly();
             self.previous_remotes = None;
             self.clone_parent = None;
@@ -141,9 +145,10 @@ impl Session {
 
 /// 在工作线程执行阻塞核心调用，避免阻塞桌面事件循环。
 async fn blocking<T: Send + 'static>(
+    stage: &'static str,
     job: impl FnOnce() -> Result<T, OperationError> + Send + 'static,
 ) -> Result<T, OperationError> {
-    tauri::async_runtime::spawn_blocking(job)
+    tauri::async_runtime::spawn_blocking(move || gitmaster_core::diagnostics::measure(stage, job))
         .await
         .map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"))?
 }
@@ -165,7 +170,7 @@ pub async fn detect_git(
     let path = settings_path(&app)?;
     let shared = state.inner().clone();
     let token = shared.lock()?.begin_environment();
-    blocking(move || {
+    blocking("detect_git", move || {
         let result =
             settings::load(&path).and_then(|s| resolve_git(s.git_path.as_deref().map(Path::new)));
         let mut session = shared.lock()?;
@@ -195,7 +200,7 @@ pub async fn set_git_path(
     let config = settings_path(&app)?;
     let shared = state.inner().clone();
     let token = shared.lock()?.begin_environment();
-    blocking(move || {
+    blocking("set_git_path", move || {
         let result = resolve_git(path.as_deref().map(Path::new));
         if path.is_some() {
             if let Err(error) = &result {
@@ -229,6 +234,7 @@ pub async fn set_git_path(
 /// 识别并打开已选择工作区，只在完整成功后替换活动仓库。
 #[tauri::command]
 pub async fn open_repository(
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     path: String,
 ) -> Result<RepositoryState, OperationError> {
@@ -242,10 +248,13 @@ pub async fn open_repository(
         s.begin_repository_request()?;
         (git, s.epoch, s.repository_request)
     };
-    blocking(move || {
-        let (handle, snapshot) = git::repository::open_repository(&git, Path::new(&path))?;
+    blocking("open_repository", move || {
+        let handle = git::repository::identify_repository(&git, Path::new(&path))?;
+        let monitor = monitoring::RepositoryMonitor::new(&handle, app);
+        let snapshot = git::repository::read_repository_state(&git, &handle)?;
         let mut s = shared.lock()?;
         s.publish_repository(epoch, token, handle, snapshot.clone())?;
+        s.monitor = Some(monitor);
         Ok(snapshot)
     })
     .await
@@ -273,7 +282,7 @@ pub async fn read_repository_state(
         s.begin_repository_request()?;
         (git, handle, s.epoch, s.repository_request)
     };
-    blocking(move || {
+    blocking("read_repository_state", move || {
         let coordinator = {
             let s = shared.lock()?;
             s.coordinator.clone()
@@ -319,7 +328,7 @@ pub async fn read_file_diff(
             s.coordinator.clone(),
         )
     };
-    blocking(move || {
+    blocking("read_file_diff", move || {
         let key = git::coordinator::CoordinationKey::repository(&handle)?;
         let diff = coordinator.read(&key, || {
             git::diff::read_file_diff(&git, &handle, &snapshot, &change_id, side)
@@ -333,7 +342,7 @@ pub async fn read_file_diff(
 /// 打开原生 Git 文件选择器，取消返回 null。
 #[tauri::command]
 pub async fn choose_git_path(app: tauri::AppHandle) -> Result<Option<String>, OperationError> {
-    blocking(move || {
+    blocking("choose_git_path", move || {
         app.dialog()
             .file()
             .set_title("选择系统 Git 可执行文件")
@@ -357,7 +366,7 @@ pub async fn choose_git_path(app: tauri::AppHandle) -> Result<Option<String>, Op
 pub async fn choose_repository_path(
     app: tauri::AppHandle,
 ) -> Result<Option<String>, OperationError> {
-    blocking(move || {
+    blocking("choose_repository_path", move || {
         app.dialog()
             .file()
             .set_title("打开已有 Git 仓库")
@@ -379,7 +388,7 @@ pub async fn choose_repository_path(
 /// 只打开固定的官方安装页面，不接受任意 URL。
 #[tauri::command]
 pub async fn open_git_install_page(app: tauri::AppHandle) -> Result<(), OperationError> {
-    blocking(move || {
+    blocking("open_git_install_page", move || {
         app.opener()
             .open_url("https://git-scm.com/install/", None::<&str>)
             .map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"))

@@ -1,5 +1,14 @@
 # 接口与数据模型
 
+当前正文描述已实现 Tauri 接口；新增内容版本、缓存 freshness、任务和文本窗口契约见总计划第 12.2、12.5 节，先经 Tauri IPC 实施。原生 C ABI 仅在后续演进获批时设计，不是当前前置任务。会话令牌不跨重启复用，确认与真实状态核实语义不变。
+
+## 性能首批新增契约（2026-09-23）
+
+- `read_repository_watch({ repositoryId }) -> { repositoryId, revision, reliable }`：只读当前会话原子版本，不执行 Git。`revision` 从 0 单调递增；监听在首次状态读取前注册，初始版本未变时不追加刷新。旧仓库返回 `STALE_REQUEST`。
+- `repository-invalidated` 桌面事件使用相同结构；Rust 合并事件洪泛，前端按仓库身份、单调版本与可见状态消费。`reliable=false` 表示监听失败或溢出，降级到 60 秒核实。它不是写授权令牌。
+- `OperationError.diagnostic?` 为可选 `{ stage, osCode?, exitCode? }`。阶段白名单为 `revParse/status/log/revList/forEachRef/gitQuery/windowsProcess`；机器码为 u32/i32。不传路径、参数或 stderr 原文；未携带诊断的旧错误保持兼容。
+- `WriteContext.capabilities` 只表达是否可进入准备流程。完整配置、路径、锁与指纹校验继续在 prepare/execute 执行；入口 allowed 不代表已授权写入。
+
 ## 1. M0 应用信息接口
 
 command 名称：`get_app_info`。请求：无参数。成功响应：
@@ -137,3 +146,13 @@ M1 业务接口已实现，精确请求、DTO、错误码与限制以 [需求与
 read_write_context 返回输入快照身份与十项入口能力，复用只读本地配置/索引/属性校验；活动 merge 只开放合并相关入口，其他进行中操作引导外部处理。网络入口不因无关工作区文件而禁用；目标、认证和内容条件仍由 prepare 检查。缺少真实暂存内容时提交返回 NOTHING_TO_COMMIT。
 
 CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elasticity, showLabels}`。设置保存为 version 2 的 `{gitPath, uiPreferences}`，兼容 version 1，默认 6/true；elasticity 必须为 1..10 整数。两种设置互相保留字段，同目录临时文件替换失败不覆盖旧配置。浏览器包装保持禁用真实 IPC。
+
+### 诊断日志设置
+
+配置 version 2 增加可选 `logLevel`：`null | "error" | "warn" | "info" | "debug" | "trace"`，缺失视为 null；保存 Git 路径、外观与日志设置时互相保留。null 使用 Rust 编译模式默认：Debug=Trace、Release=Error。
+
+- `read_log_settings()` 与 `set_log_level({level})` 返回 `{level, effectiveLevel, directory, available}`。
+- `available` 表示本进程文件日志初始化成功，不是持续磁盘健康监测；磁盘后续写满不能据此判断。写入失败不改变 Git 业务结果。
+- `open_log_directory()` 仅打开应用固定日志目录，不接受前端路径。
+- 设置在工作线程原子持久化，成功后立即更新过滤；损坏配置返回 SETTINGS_IO 并保留原文件。
+- 官方插件负责 5MiB 轮转与 3 个归档；仅接收内部 `gitmaster::diagnostic` target，不授予 WebView 任意日志写入权限。

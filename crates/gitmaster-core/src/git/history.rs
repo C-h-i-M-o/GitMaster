@@ -3,7 +3,10 @@ mod files;
 use super::repository::{next_id, query};
 use super::types::{CommitDetail, CommitSummary, HistoryPage, HistoryRefTip, ReferenceKind};
 use super::{GitExecutable, OperationError, RepositoryHandle};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+};
 
 const PAGE_SIZE: usize = 50;
 const MAX_COMMITS: usize = 1000;
@@ -87,14 +90,7 @@ impl HistorySession {
         let mut commits = if tip_oids.is_empty() {
             Vec::new()
         } else {
-            let mut rev_args = vec![
-                "rev-list",
-                "--topo-order",
-                "--date-order",
-                "--max-count=1000",
-            ];
-            rev_args.extend(tip_oids);
-            unique_lines(&query(&git, &repository.root, &rev_args, OUTPUT_LIMIT)?)?
+            unique_lines(&rev_list_from_stdin(&git, &repository.root, &tip_oids)?)?
         };
         let mut seen = HashSet::new();
         commits.retain(|oid| seen.insert(oid.clone()));
@@ -128,12 +124,9 @@ impl HistorySession {
             return Err(OperationError::new("INVALID_INPUT"));
         }
         let end = (offset + PAGE_SIZE).min(self.commits.len());
-        let mut summaries = Vec::new();
         let page_oids = self.commits[offset..end].to_vec();
-        for oid in page_oids {
-            summaries.push(self.summary(&oid)?);
-            self.returned.insert(oid);
-        }
+        let summaries = self.summaries(&page_oids)?;
+        self.returned.extend(page_oids);
         let next_cursor =
             (end < self.commits.len()).then(|| format!("{}:{}", self.snapshot_id, end));
         if let Some(value) = &next_cursor {
@@ -174,16 +167,25 @@ impl HistorySession {
         self.commit_detail(parent_oid)
     }
 
-    /// 将完整详情投影为分页摘要。
-    fn summary(&mut self, oid: &str) -> Result<CommitSummary, OperationError> {
-        let d = self.detail(oid)?;
-        Ok(CommitSummary {
-            oid: d.oid,
-            parent_oids: d.parent_oids,
-            subject: d.subject,
-            author_name: d.author_name,
-            authored_at: d.authored_at,
-        })
+    /// 一次读取整页冻结 OID，避免 Windows 逐条启动 Git 的固定开销。
+    fn summaries(&self, oids: &[String]) -> Result<Vec<CommitSummary>, OperationError> {
+        if oids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut args = vec![
+            "log",
+            "--no-walk=unsorted",
+            "-z",
+            "--no-patch",
+            "--no-notes",
+            "--no-show-signature",
+            "--no-use-mailmap",
+            "--format=%H%x00%P%x00%an%x00%aI%x00%B",
+        ];
+        args.extend(oids.iter().map(String::as_str));
+        args.push("--");
+        let bytes = query(&self.git, &self.repository.root, &args, OUTPUT_LIMIT)?;
+        parse_summaries(&bytes, oids)
     }
     /// 从冻结 OID 读取原始说明和身份，格式模式不额外添加结尾换行。
     fn detail(&self, oid: &str) -> Result<CommitDetail, OperationError> {
@@ -232,6 +234,63 @@ impl HistorySession {
     }
 }
 
+/// 通过 stdin 传递冻结的引用头，避免 Windows 命令行长度限制。
+fn rev_list_from_stdin(
+    git: &GitExecutable,
+    root: &std::path::Path,
+    tip_oids: &[&str],
+) -> Result<Vec<u8>, OperationError> {
+    let mut input = tip_oids.join("\n").into_bytes();
+    input.push(b'\n');
+    let args = [
+        OsString::from("rev-list"),
+        OsString::from("--topo-order"),
+        OsString::from("--date-order"),
+        OsString::from("--max-count=1000"),
+        OsString::from("--stdin"),
+    ];
+    let output = super::process::run_git_read_input(git, root, &args, &input, OUTPUT_LIMIT)?;
+    if !output.success {
+        return Err(super::repository::command_error(&output.stderr));
+    }
+    Ok(output.stdout)
+}
+
+/// 固定字段数并核对冻结顺序，整页有效后才允许发布；正文中的换行不作为边界。
+fn parse_summaries(bytes: &[u8], oids: &[String]) -> Result<Vec<CommitSummary>, OperationError> {
+    let bytes = bytes
+        .strip_suffix(b"\0")
+        .ok_or_else(|| OperationError::new("PARSE_FAILED"))?;
+    let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
+    if fields.len() != oids.len() * 5 {
+        return Err(OperationError::new("PARSE_FAILED"));
+    }
+    fields
+        .chunks_exact(5)
+        .zip(oids)
+        .map(|(record, expected)| {
+            let oid = text(record[0])?;
+            if &oid != expected {
+                return Err(OperationError::new("PARSE_FAILED"));
+            }
+            Ok(CommitSummary {
+                oid,
+                parent_oids: text(record[1])?
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect(),
+                author_name: text(record[2])?,
+                authored_at: text(record[3])?,
+                subject: text(record[4])?
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// 将 Git 输出无损转换为 UTF-8 文本。
 fn text(bytes: &[u8]) -> Result<String, OperationError> {
     std::str::from_utf8(bytes)
@@ -264,6 +323,39 @@ mod tests {
     use super::*;
     use crate::git::repository::open_repository;
     use crate::git::repository::tests::Fixture;
+
+    /// 批量记录保留中文、多行与空说明，拒绝缺失字段、额外 NUL 和错误顺序。
+    #[test]
+    fn batch_summary_boundaries() {
+        let oids = vec!["a".to_owned(), "b".to_owned()];
+        let bytes = "a\0p q\0作者\02026-09-23\0标题\n正文\n\0b\0\0作者\02026-09-22\0\0".as_bytes();
+        let parsed = parse_summaries(bytes, &oids).unwrap();
+        assert_eq!(parsed[0].subject, "标题");
+        assert_eq!(parsed[0].parent_oids, vec!["p", "q"]);
+        assert_eq!(parsed[1].subject, "");
+        assert!(parse_summaries(&bytes[..bytes.len() - 1], &oids).is_err());
+        assert!(parse_summaries(bytes, &["b".into(), "a".into()]).is_err());
+        assert!(parse_summaries(b"a\0\0name\0date\0body\0extra\0", &["a".into()]).is_err());
+    }
+
+    /// 显式指定仓库时执行只读性能验收，避免日常测试依赖用户路径与机器速度。
+    #[test]
+    #[ignore = "需要 GITMASTER_HISTORY_BENCH_REPOSITORY 指定只读验收仓库"]
+    fn history_page_readonly_performance() {
+        let path = std::env::var_os("GITMASTER_HISTORY_BENCH_REPOSITORY").unwrap();
+        let git = crate::git::environment::resolve_git(None).unwrap();
+        let started = std::time::Instant::now();
+        let (repository, _) = open_repository(&git, std::path::Path::new(&path)).unwrap();
+        println!("打开仓库：{:?}", started.elapsed());
+        let started = std::time::Instant::now();
+        let mut session = HistorySession::new(git, repository).unwrap();
+        println!("冻结历史：{:?}", started.elapsed());
+        let started = std::time::Instant::now();
+        let page = session.read_page(None).unwrap();
+        println!("首页 {} 条：{:?}", page.commits.len(), started.elapsed());
+        assert_eq!(page.commits.len(), 50);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     /// 真实临时仓库验证超过一页时游标只读取固定提交集合。
     #[test]
@@ -387,19 +479,21 @@ mod tests {
         let (repository, _) = open_repository(&fixture.git, &fixture.root).unwrap();
         let oid = query(&fixture.git, &fixture.root, &["rev-parse", "HEAD"], 4096).unwrap();
         let oid = String::from_utf8(oid).unwrap().trim().to_owned();
-        let input = (0..999)
+        let commands = (0..999)
             .map(|index| format!("create refs/heads/ref-{index} {oid}\n"))
-            .collect::<String>();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        crate::git::write_guard::local_query(
-            &fixture.git,
-            &repository,
-            &["update-ref", "--stdin"],
-            input.as_bytes(),
-            None,
-            deadline,
-        )
-        .unwrap();
+            .collect::<Vec<_>>();
+        // 测试准备分批创建真实 refs，避免把慢磁盘上的千文件写入当成只读查询超时。
+        for batch in commands.chunks(100) {
+            crate::git::write_guard::local_query(
+                &fixture.git,
+                &repository,
+                &["update-ref", "--stdin"],
+                batch.concat().as_bytes(),
+                None,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            )
+            .unwrap();
+        }
         assert_eq!(
             HistorySession::new(fixture.git.clone(), repository.clone())
                 .unwrap()
@@ -413,7 +507,7 @@ mod tests {
             &["update-ref", "--stdin"],
             format!("create refs/heads/ref-over-limit {oid}\n").as_bytes(),
             None,
-            deadline,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
         )
         .unwrap();
         let result = HistorySession::new(fixture.git.clone(), repository);

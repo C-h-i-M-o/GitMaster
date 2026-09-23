@@ -492,9 +492,9 @@ p[role="alert"] {
 }
 .graph-edge {
   stroke: #8baea2;
-  stroke-width: 2.2;
+  stroke-width: 1.6;
   fill: none;
-  opacity: 0.75;
+  opacity: 0.62;
 }
 .graph-edge.boundary {
   stroke-dasharray: 5 6;
@@ -508,8 +508,8 @@ p[role="alert"] {
   cursor: grabbing;
 }
 .graph-node .node-halo {
-  fill: #ffffff85;
-  stroke: #ffffffcc;
+  fill: #ffffff35;
+  stroke: #72a89b80;
   stroke-width: 1;
 }
 .graph-node.selected .node-halo,

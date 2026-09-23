@@ -2,25 +2,26 @@
 
 面向 Git 初学者的 Windows/macOS 图形化桌面工具。用清晰的操作流程、流畅动效与克制的玻璃质感，让版本管理更容易理解。
 
-**当前状态：M2/M3 功能已实现，界面已按 HTML 设计稿改为 Git 工作台。** 支持真实历史图、整文件暂存/取消暂存、完整索引提交、分支创建/切换、clone、单分支 fetch、普通 push、显式整合和文本冲突解决。中文名尚未确认。
+**当前路线：Tauri 2 + React/TypeScript + 独立 Rust 核心作为前期正式版，达到预期可长期作为正式方案。** 原生客户端仅是正式版后续可选更新，不是发布前置条件。现有 M2/M3 已有功能实现，但 Git 性能、已知失败、1GB 缓存及正式交付仍需完善；不能把路线确认理解为已完成发布验收。
 
-M2/M3 在 macOS Apple Silicon 完成核心、桌面适配与前端自动检查，并通过浏览器界面夹具验证。Windows 执行器及文件安全适配已有实现，本轮无 Windows 编译/实机验证；macOS 完整原生交互因桌面锁定无法验收。真实 HTTPS/SSH 认证及最低系统/Git 版本测试按用户授权跳过，均不计为通过。完整证据与边界见[验证记录](docs/verification.md#m2m3-最终验收2026-09-23)。
+基础 Git、文件阅读和差异查看的流畅性优先于动效。现有 Windows/macOS 检查及已知限制见[验证记录](docs/verification.md)；普通浏览器预览不代替实际 Tauri 桌面验收。
 
 ## 技术方案
 
-- 桌面：Tauri 2。
-- 界面：React、TypeScript、Vite、Motion。
-- 核心：独立 Rust 库 `gitmaster-core`，不依赖 Tauri。
-- Git：调用用户自行安装的系统 Git，本应用不附带、不下载、不自动安装 Git。
-- 演进：未来 macOS 可增加 SwiftUI/AppKit 客户端，共享 Rust 核心；React UI 与动画需单独重建。
+- 正式主线：Tauri 2、React、TypeScript、Vite，Windows/macOS 分别适配和验证。
+- 核心：独立 Rust gitmaster-core，系统 Git 由用户安装，应用不附带或自动下载 Git。
+- 数据规划：内存缓存＋全局 1GB 磁盘缓存、事件驱动局部刷新、按需读取；无变化焦点切换不重新查询 Git。
+- 阅读和图形：虚拟化、有界 IPC、后台计算、模型释放；可评估成熟 Web 阅读器，性能以真实 Release 应用为准。
+- 后续可选：Windows WinUI 3/C#、macOS SwiftUI/AppKit，共用核心；是否原生化依据实测收益，不预设必须替换 Tauri。
+- 交付目标：用户只需另装 Git，其他必要运行依赖由安装流程处理；详见[总计划第 12 节](docs/spec-plan.md#12-tauri-正式版与流畅性优先合并需求及实施方案)。
 
 ## 开发环境
 
-开发者需要 Node.js 24 LTS、pnpm 11、Rust stable 和系统 Git。
+以下命令用于当前 Tauri 正式版主线开发。开发者需要 Node.js 24 LTS、pnpm 11、Rust stable 和系统 Git；可选原生工具链仅在相应演进立项后确定。
 
 - Windows：还需 Visual Studio C++ Build Tools（“使用 C++ 的桌面开发”、MSVC x64/x86、Windows SDK）及 WebView2 Runtime；Rust 选择 MSVC 工具链。
 - macOS：Tauri 桌面阶段至少需要 Xcode Command Line Tools；未来 SwiftUI 开发使用完整 Xcode。macOS 构建在 Mac 上验证。
-- 最终用户不需要 Node、pnpm、Rust 或 C++ 编译器，但需要自行安装 [Git](https://git-scm.com/install/)；Windows 还需 WebView2 Runtime。
+- 正式版目标：最终用户只需另装 [Git](https://git-scm.com/install/)，不需手工安装 .NET、Windows App SDK、WebView2 或编译器；Windows WebView2 由安装器检测并在缺失时自动部署，离线安装包携带所需安装资源；macOS 使用系统 WKWebView。此目标尚未完成干净系统验收。远端访问仍需正常认证。
 
 官网：[Node.js](https://nodejs.org/en/download)、[pnpm](https://pnpm.io/installation)、[Rust](https://rustup.rs/)、[C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)、[WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)、[Xcode](https://developer.apple.com/xcode/)。
 
@@ -61,9 +62,11 @@ docs/                    需求、设计、开发与验收文档
 AGENTS.md                Agent 协作规范
 ```
 
-详细文档从[文档索引](docs/README.md)阅读，当前执行规范为 [M2/M3 合并需求与实施计划](docs/m2-m3-spec-plan.md)，[总计划](docs/spec-plan.md)保留阶段索引与历史记录。项目文档与 [AGENTS.md](AGENTS.md) 随仓库版本管理。
+详细文档从[文档索引](docs/README.md)阅读，当前方向及合并 spec/plan 以[总计划第 12 节](docs/spec-plan.md#12-tauri-正式版与流畅性优先合并需求及实施方案)为准。[M2/M3 计划](docs/m2-m3-spec-plan.md)保留现有原型接口和实现记录。项目文档与 [AGENTS.md](AGENTS.md) 随仓库版本管理。
 
 ## 当前限制
+
+以下是当前实现限制，不是最终发布体验的承诺；Tauri 正式版也必须实现大文件有界阅读，不能用未来原生更新替代当前性能治理。
 
 - 写操作先准备并展示完整确认内容，再执行一次性计划；不提供 init、逐行暂存、amend、force push、reset、stash、自动 rebase 或自动 abort。
 - 切换/整合要求干净工作区；hook、外部 filter、签名、自定义 merge driver、稀疏检出和特殊索引等不支持配置会被明确拒绝。

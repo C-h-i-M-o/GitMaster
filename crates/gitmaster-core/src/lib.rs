@@ -1,4 +1,5 @@
 //! gitMaster 的独立核心，提供应用信息和系统 Git 只读业务。
+pub mod diagnostics;
 pub mod git;
 
 use serde::Serialize;

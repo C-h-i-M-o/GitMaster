@@ -1,5 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+  LogLevel,
+  LogSettings,
   BranchList,
   CloneParent,
   ClonePreview,
@@ -27,6 +29,13 @@ import type {
 } from "../types/git";
 
 import { normalizeOperationError } from "./gitErrors";
+
+/** 文件监视状态，用于在不读取 Git 的情况下判断仓库是否可能变化。 */
+export interface RepositoryWatchState {
+  repositoryId: string;
+  revision: number;
+  reliable: boolean;
+}
 
 /** 判断当前是否连接桌面 IPC；浏览器预览不发起调用。 */
 export const isDesktop = (): boolean => isTauri();
@@ -68,6 +77,11 @@ export const openRepository = (path: string): Promise<RepositoryState> =>
 export const readRepositoryState = (
   repositoryId: string,
 ): Promise<RepositoryState> => call("read_repository_state", { repositoryId });
+/** 读取后端文件监视状态；失败时由调用方降级为低频核实。 */
+export const readRepositoryWatch = (
+  repositoryId: string,
+): Promise<RepositoryWatchState> =>
+  call("read_repository_watch", { repositoryId });
 /** 读取当前快照中单个文件的差异或预览。 */
 export const readFileDiff = (
   repositoryId: string,
@@ -202,3 +216,12 @@ export const setUiPreferences = (
   showLabels: boolean,
 ): Promise<UiPreferences> =>
   call("set_ui_preferences", { elasticity, showLabels });
+
+/** 读取日志设置。 */
+export const readLogSettings = (): Promise<LogSettings> =>
+  call("read_log_settings");
+/** 保存并立即应用日志级别。 */
+export const setLogLevel = (level: LogLevel | null): Promise<LogSettings> =>
+  call("set_log_level", { level });
+/** 打开固定的应用日志目录。 */
+export const openLogDirectory = (): Promise<void> => call("open_log_directory");

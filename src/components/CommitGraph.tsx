@@ -65,11 +65,18 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
         onPointerUp={graph.release}
         onPointerCancel={graph.cancel}
       >
-        <g transform={graph.transform}>
+        <defs>
+          <radialGradient id="bubble-glass" cx="32%" cy="25%" r="75%">
+            <stop offset="0%" stopColor="white" stopOpacity="0.95" />
+            <stop offset="55%" stopColor="#d9eee5" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#559e92" stopOpacity="0.3" />
+          </radialGradient>
+        </defs>
+        <g data-graph-world="" transform={graph.transform}>
           {graph.edges.map((edge) => (
             <path
               key={edge.id}
-              d={edge.path}
+              data-edge={edge.id}
               className={edge.boundary ? "graph-edge boundary" : "graph-edge"}
             />
           ))}
@@ -92,9 +99,10 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
                 {"\n"}
                 {node.refs.map((ref) => ref.name).join(" · ")}
               </title>
-              <circle r="18" className="node-halo" />
-              <circle r="9" fill={laneColor(node.lane)} />
-              <circle r="3" fill="white" />
+              <circle r="23" className="node-halo" />
+              <circle r="16" fill={laneColor(node.lane)} fillOpacity="0.32" />
+              <circle r="19" fill="url(#bubble-glass)" />
+              <circle cx="-6" cy="-7" r="4" fill="white" fillOpacity="0.85" />
               {(w.preferences.saved?.showLabels ?? true) && (
                 <text x="27" y="-7" className="node-subject">
                   {node.commit.subject.length > 29

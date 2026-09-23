@@ -81,7 +81,7 @@ export default function App() {
                 className="icon-button"
                 title="新建分支"
                 aria-label="新建分支"
-                disabled={!w.canWrite("createBranch")}
+                disabled={!w.canOpenWrite}
                 onClick={w.openModal("branch")}
               >
                 <Icon name="plus" />
@@ -97,7 +97,7 @@ export default function App() {
                     branch.current ||
                     branch.kind === "remote" ||
                     branch.occupiedByOtherWorktree ||
-                    !w.canWrite("switchBranch")
+                    !w.canSwitchBranch
                   }
                   title={`${branch.name}${branch.occupiedByOtherWorktree ? " · 其他工作树正在使用" : ""}`}
                 >

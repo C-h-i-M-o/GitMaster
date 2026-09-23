@@ -1,5 +1,7 @@
 # 测试与验收
 
+当前正式版验收以总计划第 12.9 节为准：真实 Tauri Release 在 Windows WebView2/macOS WKWebView 下分别测量 Git、IPC、渲染、缓存、大文件及安装；浏览器夹具不能替代桌面验收。内存包括应用所属 WebView/Worker 进程。未来原生版本另行验收，不作为 Tauri 发布前置条件；旧跳过许可不延续。
+
 ## M0 初始化验证
 
 | 检查         | 命令/方式                          | 证明范围                            |

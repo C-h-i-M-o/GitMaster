@@ -17,6 +17,8 @@ static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
+    #[serde(default)]
+    pub log_level: Option<crate::logging::LogLevel>,
     pub version: u8,
     pub git_path: Option<String>,
     pub ui_preferences: UiPreferences,
@@ -67,6 +69,8 @@ fn validate(p: &UiPreferences) -> Result<(), OperationError> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredSettings {
+    #[serde(default)]
+    log_level: Option<crate::logging::LogLevel>,
     version: u8,
     git_path: Option<String>,
     #[serde(default)]
@@ -80,6 +84,7 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Settings {
                 version: 2,
+                log_level: None,
                 git_path: None,
                 ui_preferences: UiPreferences::default(),
             })
@@ -98,6 +103,7 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
     validate(&preferences)?;
     Ok(Settings {
         version: 2,
+        log_level: stored.log_level,
         git_path: stored.git_path,
         ui_preferences: preferences,
     })
@@ -151,6 +157,7 @@ pub fn save(path: &Path, git_path: Option<String>) -> Result<(), OperationError>
         path,
         &Settings {
             version: 2,
+            log_level: current.log_level,
             git_path,
             ui_preferences: current.ui_preferences,
         },
@@ -168,6 +175,7 @@ pub fn save_preferences(
         path,
         &Settings {
             version: 2,
+            log_level: current.log_level,
             git_path: current.git_path,
             ui_preferences: preferences.clone(),
         },
@@ -208,6 +216,8 @@ mod tests {
     /// 验证保存 Git 路径和偏好时互相保留。
     fn saves_preserve_each_other() {
         let p = path();
+        assert_eq!(load(&p).unwrap().log_level, None);
+        save_log_level(&p, Some(crate::logging::LogLevel::Trace)).unwrap();
         save(&p, Some("/git".into())).unwrap();
         save_preferences(
             &p,
@@ -219,6 +229,13 @@ mod tests {
         .unwrap();
         assert_eq!(load(&p).unwrap().git_path.as_deref(), Some("/git"));
         save(&p, None).unwrap();
+        assert_eq!(load(&p).unwrap().ui_preferences.elasticity, 9);
+        assert_eq!(
+            load(&p).unwrap().log_level,
+            Some(crate::logging::LogLevel::Trace)
+        );
+        save_log_level(&p, None).unwrap();
+        assert_eq!(load(&p).unwrap().log_level, None);
         assert_eq!(load(&p).unwrap().ui_preferences.elasticity, 9);
         cleanup(&p);
     }
@@ -270,6 +287,7 @@ mod tests {
         assert!(load(&p).is_err());
         assert_eq!(fs::read(&p).unwrap(), b"broken");
         assert!(save(&p, Some("/git".into())).is_err());
+        assert!(save_log_level(&p, Some(crate::logging::LogLevel::Error)).is_err());
         assert_eq!(fs::read(&p).unwrap(), b"broken");
         fs::write(&p, b"{\"version\":3,\"gitPath\":null}").unwrap();
         assert!(load(&p).is_err());
@@ -295,4 +313,27 @@ mod tests {
         assert_eq!(fs::read(&p).unwrap(), before);
         cleanup(&p);
     }
+
+    /// 拒绝未知日志级别并完整保留原始配置。
+    #[test]
+    fn invalid_log_level_preserves_bytes() {
+        let p = path();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let bytes = br#"{"version":2,"gitPath":null,"uiPreferences":{"elasticity":6,"showLabels":true},"logLevel":"verbose"}"#;
+        fs::write(&p, bytes).unwrap();
+        assert!(save_log_level(&p, None).is_err());
+        assert_eq!(fs::read(&p).unwrap(), bytes);
+        cleanup(&p);
+    }
+}
+
+/// 保存日志级别，保留其他设置并拒绝覆盖损坏配置。
+pub fn save_log_level(
+    path: &Path,
+    level: Option<crate::logging::LogLevel>,
+) -> Result<(), OperationError> {
+    let _guard = lock()?;
+    let mut current = read_unlocked(path)?;
+    current.log_level = level;
+    write_unlocked(path, &current)
 }

@@ -66,7 +66,7 @@ pub async fn read_remotes(
 ) -> Result<RemoteState, OperationError> {
     let shared = state.inner().clone();
     let request = RemoteRequest::begin(&shared, &repository_id)?;
-    blocking(move || request.run(&shared)).await
+    blocking("read_remotes", move || request.run(&shared)).await
 }
 /// 评估已签发跟踪分支与当前 HEAD，迟到结果不能用于新仓库。
 #[tauri::command]
@@ -88,7 +88,7 @@ pub async fn assess_remote(
                 .ok_or_else(|| OperationError::new("STALE_REQUEST"))?,
         )
     };
-    blocking(move || {
+    blocking("assess_remote", move || {
         let key = CoordinationKey::repository(&ctx.repository)?;
         let result = ctx
             .coordinator
@@ -147,7 +147,7 @@ pub async fn read_conflicts(
 ) -> Result<ConflictState, OperationError> {
     let shared = state.inner().clone();
     let request = ConflictRequest::begin(&shared, &repository_id)?;
-    blocking(move || request.run(&shared)).await
+    blocking("read_conflicts", move || request.run(&shared)).await
 }
 /// 返回三方文本和工作文件指纹，拒绝旧合并会话或刷新前的缓存。
 #[tauri::command]
@@ -168,7 +168,7 @@ pub async fn read_conflict_document(
             .ok_or_else(|| OperationError::new("STALE_CONFLICT"))?;
         (ctx, cache)
     };
-    blocking(move || {
+    blocking("read_conflict_document", move || {
         let key = CoordinationKey::repository(&ctx.repository)?;
         let result = ctx
             .coordinator
@@ -246,7 +246,7 @@ pub async fn choose_clone_parent(
 ) -> Result<Option<CloneParent>, OperationError> {
     let shared = state.inner().clone();
     let request = ParentRequest::begin(&mut *shared.lock()?)?;
-    blocking(move || {
+    blocking("choose_clone_parent", move || {
         let path = app
             .dialog()
             .file()
@@ -268,7 +268,10 @@ pub async fn choose_clone_parent(
 #[tauri::command]
 pub async fn read_ui_preferences(app: tauri::AppHandle) -> Result<UiPreferences, OperationError> {
     let path = settings_path(&app)?;
-    blocking(move || Ok(settings::load(&path)?.ui_preferences)).await
+    blocking("read_ui_preferences", move || {
+        Ok(settings::load(&path)?.ui_preferences)
+    })
+    .await
 }
 /// 校验并持久化两项界面偏好，同时保留 Git 路径设置。
 #[tauri::command]
@@ -278,7 +281,7 @@ pub async fn set_ui_preferences(
     show_labels: bool,
 ) -> Result<UiPreferences, OperationError> {
     let path = settings_path(&app)?;
-    blocking(move || {
+    blocking("set_ui_preferences", move || {
         settings::save_preferences(
             &path,
             UiPreferences {

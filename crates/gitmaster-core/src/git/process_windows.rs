@@ -163,7 +163,12 @@ impl Drop for Attributes {
 }
 /// 返回稳定错误码，不将 Win32 消息或命令行输出到日志。
 fn failed() -> OperationError {
-    OperationError::new("GIT_EXECUTION_FAILED")
+    let os_code = unsafe { GetLastError() };
+    OperationError::new("GIT_EXECUTION_FAILED").with_diagnostic(
+        "windowsProcess",
+        (os_code != 0).then_some(os_code),
+        None,
+    )
 }
 /// Windows 原生 UTF-16 输入可以保留未配对代理项，但不能嵌入 NUL。
 fn wide(value: &OsStr) -> Result<Vec<u16>, OperationError> {
@@ -221,7 +226,7 @@ fn pipe(parent_writes: bool) -> Result<(Handle, Handle), OperationError> {
     let sequence = PIPE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| failed())?
+        .map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"))?
         .as_nanos();
     let name = wide(OsStr::new(&format!(
         r"\\.\pipe\gitmaster-{}-{time}-{sequence}",
@@ -487,10 +492,13 @@ pub(super) fn run(
         }
     })();
     drop(input);
+    let cleanup_started = Instant::now();
     let cleanup = job.terminate_and_wait();
     drop(job);
     cleanup?;
-    let waited = unsafe { WaitForSingleObject(process.0, 0) };
+    // Job 活动数归零可能早于进程句柄变为 signaled，共享回收预算等待后者。
+    let remaining = 5000u32.saturating_sub(cleanup_started.elapsed().as_millis().min(5000) as u32);
+    let waited = unsafe { WaitForSingleObject(process.0, remaining) };
     execution?;
     if waited != WAIT_OBJECT_0 {
         return Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"));

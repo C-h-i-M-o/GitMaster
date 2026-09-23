@@ -51,7 +51,7 @@ pub(crate) struct ProcessOutput {
 #[path = "process_windows.rs"]
 mod windows;
 #[cfg(windows)]
-use windows::run as run_command_with_progress;
+use windows::run as run_platform_with_progress;
 
 /// 返回平台的空设备，隔离配置时不使用用户可写文件。
 #[cfg(any(unix, windows))]
@@ -158,6 +158,26 @@ pub(crate) fn run_git_read_until(
         limit,
         allow_truncate,
         deadline,
+    )
+}
+
+/// 将所有子查询限制在调用者提供的同一个截止时间内。
+pub(crate) fn run_git_read_input(
+    git: &GitExecutable,
+    cwd: &Path,
+    args: &[OsString],
+    input: &[u8],
+    limit: usize,
+) -> Result<ProcessOutput, OperationError> {
+    run_git_until(
+        git,
+        cwd,
+        args,
+        input,
+        ExecutionPolicy::Read,
+        limit,
+        false,
+        Instant::now() + TIMEOUT,
     )
 }
 
@@ -573,6 +593,32 @@ fn remaining(deadline: Instant, maximum: Duration) -> Result<Duration, Operation
         .ok_or_else(|| OperationError::new("TIMEOUT"))
 }
 
+/// 记录进程耗时与退出码，不记录参数、环境变量或管道内容。
+#[cfg(any(unix, windows))]
+fn run_command_with_progress(
+    command: Command,
+    stdin: &[u8],
+    limit: usize,
+    allow_truncate: bool,
+    timeout: Duration,
+    network: bool,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> Result<ProcessOutput, OperationError> {
+    crate::diagnostics::measure("git_process", || {
+        let result = run_platform_with_progress(
+            command,
+            stdin,
+            limit,
+            allow_truncate,
+            timeout,
+            network,
+            on_progress,
+        )?;
+        log::trace!(target: "gitmaster::diagnostic", "进程退出 exit_code={:?} stdout_bytes={} stderr_bytes={}", result.exit_code, result.stdout.len(), result.stderr.len());
+        Ok(result)
+    })
+}
+
 /// 支持平台共用策略入口，各平台执行器均负责有界管道与进程树回收。
 #[cfg(any(unix, windows))]
 fn run_command_with_deadline(
@@ -596,7 +642,7 @@ fn run_command_with_deadline(
 
 /// 网络进度在管道消费时通知业务层，普通读取仍使用相同资源回收路径。
 #[cfg(unix)]
-fn run_command_with_progress(
+fn run_platform_with_progress(
     mut command: Command,
     stdin: &[u8],
     limit: usize,

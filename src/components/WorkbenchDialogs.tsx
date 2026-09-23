@@ -1,3 +1,4 @@
+import { LogSettingsPanel } from "./LogSettingsPanel";
 import type { Workbench } from "../hooks/useWorkbench";
 import { useNativeDialog } from "../hooks/useNativeDialog";
 import { Icon } from "./Icon";
@@ -189,9 +190,17 @@ function SettingsForm({ w }: { w: Workbench }) {
         >
           外观
         </button>
+        <button
+          className={w.settingsCategory === "logging" ? "active" : ""}
+          onClick={w.selectSettings("logging")}
+        >
+          诊断日志
+        </button>
       </nav>
       <div className="settings-content">
-        {w.settingsCategory === "appearance" ? (
+        {w.settingsCategory === "logging" ? (
+          <LogSettingsPanel state={w.logSettings} />
+        ) : w.settingsCategory === "appearance" ? (
           <section className="preference-section">
             <h3>提交图</h3>
             <label>

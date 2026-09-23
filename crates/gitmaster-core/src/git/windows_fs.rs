@@ -87,12 +87,19 @@ mod tests {
         for path in ["..", ".", "中文 目录/child", "C:\\Windows"] {
             assert!(open_directory(&dir, Path::new(path)).is_err());
         }
+        // cap-primitives 的目录能力句柄有意禁止 FILE_SHARE_DELETE，持有期间不能重命名。
+        let captured = child.dir_metadata().unwrap();
+        assert_eq!(
+            dir.rename("中文 目录", &dir, "old")
+                .unwrap_err()
+                .raw_os_error(),
+            Some(32)
+        );
+        drop(child);
+        drop(again);
         dir.rename("中文 目录", &dir, "old").unwrap();
         dir.create_dir("中文 目录").unwrap();
         let replacement = open_directory(&dir, Path::new("中文 目录")).unwrap();
-        assert!(!same(
-            &child.dir_metadata().unwrap(),
-            &replacement.dir_metadata().unwrap()
-        ));
+        assert!(!same(&captured, &replacement.dir_metadata().unwrap()));
     }
 }
