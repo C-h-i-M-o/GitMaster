@@ -678,6 +678,12 @@ computer use 已成功操作本次构建的 macOS Debug `.app`，通过原生目
 | `node --test tests/m2-m3/*.test.ts`                   | 35 通过、0 失败；含 checkoutInit 归一化、中文提示及敏感字段过滤。tests/ 继续本地保留。                                               |
 | `pnpm tauri build --bundles app`                      | 本机 macOS Release 可执行文件及 .app 构建通过；不代表签名、公证、安装器或 Windows 通过。                                             |
 | 最终 Release computer use                             | 原生选择器重新打开同一临时仓库，feature → 预览 main → 确认 → 界面显示完成并核实；系统 Git 核对 HEAD=main、文件字节正确、工作区干净。 |
-| 文档与 diff                                           | 14 份项目 Markdown 本地文件链接无失效目标；`git diff --check` 通过。                                                                 |
+| 文档与 diff                                           | 15 份已跟踪项目 Markdown（含 PRODUCT.md）本地文件链接无失效目标；`git diff --check` 通过。                                           |
 
 代码复核覆盖隔离初始化、条目复用、错误过滤及计时控制流；补充诊断上下文跨线程、嵌套与 panic 恢复回归。不扩大超时，不新增依赖，不改写业务仓库内容。GitHub 同步采用普通快进，最终各分支提交号由远端 refs 核对。
+
+### 本次 GitHub 分支同步
+
+修复源码提交 `f854263cb743a81c9593baf13bb818e8f512bb94` 已通过普通 atomic push 同步到 `main`、`codex/m1-readonly`、`codex/m2-m3` 和 `codex/fix-branch-switch`，随后 `git ls-remote --heads origin` 确认四个远端分支均包含该修复。各分支原有提交均为此提交祖先，无独有工作遗漏，未使用强制推送或改写历史。
+
+原项目目录已快进到最新 main，并按锁文件离线补齐前端依赖；隔离工作树保留修复分支。PRODUCT.md 也已核对，明确 1GB 缓存和干净系统交付仍为目标。本段文档收尾随四个分支继续普通快进同步，最终 HEAD 以 Git refs 和交付回复为准；没有发布 Release、标签或安装器。
