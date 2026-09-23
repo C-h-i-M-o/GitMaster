@@ -377,7 +377,8 @@ pub(super) fn run(
     startup.StartupInfo.hStdError = child_error.0;
     startup.lpAttributeList = attributes.pointer();
     let mut information: PROCESS_INFORMATION = unsafe { zeroed() };
-    if unsafe {
+    let create_started = Instant::now();
+    let created = unsafe {
         CreateProcessW(
             application.as_ptr(),
             line.as_mut_ptr(),
@@ -393,9 +394,12 @@ pub(super) fn run(
             &startup.StartupInfo,
             &mut information,
         )
-    } == 0
-    {
-        return Err(failed());
+    };
+    // 先捕获线程的 GetLastError；日志调用可能覆盖系统错误码。
+    let create_error = (created == 0).then(failed);
+    crate::diagnostics::log_elapsed("git_process_create", create_started.elapsed());
+    if let Some(error) = create_error {
+        return Err(error);
     }
     let process = Handle::owned(information.hProcess)?;
     let primary_thread = Handle::owned(information.hThread)?;
@@ -428,6 +432,9 @@ pub(super) fn run(
         limit
     };
     let mut exit_code = None;
+    let mut drain_elapsed = Duration::ZERO;
+    let mut exit_observed = None;
+    let execution_started = Instant::now();
     let execution = (|| -> Result<(), OperationError> {
         loop {
             if Instant::now() >= deadline {
@@ -453,6 +460,7 @@ pub(super) fn run(
                 }
                 written += count as usize;
             }
+            let drain_started = Instant::now();
             drain(
                 &stdout,
                 &mut output,
@@ -469,6 +477,7 @@ pub(super) fn run(
                 &mut progress,
                 on_progress,
             )?;
+            drain_elapsed += drain_started.elapsed();
             if output.truncated || errors.truncated {
                 return Ok(());
             }
@@ -480,6 +489,8 @@ pub(super) fn run(
                             return Err(failed());
                         }
                         exit_code = Some(code);
+                        // 记录 WaitForSingleObject 首次确认直接子进程退出的时点；此前的管道读取与执行并行重叠。
+                        exit_observed = Some(Instant::now());
                     }
                     WAIT_TIMEOUT => {}
                     _ => return Err(failed()),
@@ -491,6 +502,13 @@ pub(super) fn run(
             thread::sleep(Duration::from_millis(2));
         }
     })();
+    if let Some(observed) = exit_observed {
+        crate::diagnostics::log_elapsed(
+            "git_run_to_observed_exit",
+            observed.duration_since(execution_started),
+        );
+    }
+    crate::diagnostics::log_elapsed("git_pipe_drain", drain_elapsed);
     drop(input);
     let cleanup_started = Instant::now();
     let cleanup = job.terminate_and_wait();
@@ -499,6 +517,7 @@ pub(super) fn run(
     // Job 活动数归零可能早于进程句柄变为 signaled，共享回收预算等待后者。
     let remaining = 5000u32.saturating_sub(cleanup_started.elapsed().as_millis().min(5000) as u32);
     let waited = unsafe { WaitForSingleObject(process.0, remaining) };
+    crate::diagnostics::log_elapsed("git_process_reap", cleanup_started.elapsed());
     execution?;
     if waited != WAIT_OBJECT_0 {
         return Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"));

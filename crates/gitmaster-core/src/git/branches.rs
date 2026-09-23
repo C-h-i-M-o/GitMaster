@@ -9,7 +9,7 @@ use super::{
     *,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::HashMap,
     ffi::OsString,
     path::Path,
     time::{Duration, Instant},
@@ -231,28 +231,13 @@ pub fn prepare_switch_branch(
         let fingerprint = crate::diagnostics::measure("branch_fingerprint", || {
             guard::branch_fingerprint(git, repo, deadline)
         })?;
-        let entries = guard::checkout_tree(git, repo, &selected.oid, deadline)?;
-        let current: BTreeMap<_, _> = fingerprint
-            .index
-            .iter()
-            .map(|entry| (&entry.path, (&entry.mode, &entry.oid)))
-            .collect();
-        let target: BTreeMap<_, _> = entries
-            .iter()
-            .map(|entry| (&entry.path, (&entry.mode, &entry.oid)))
-            .collect();
-        let candidates: BTreeSet<_> = current.keys().chain(target.keys()).copied().collect();
-        let paths = candidates
-            .into_iter()
-            .filter(|path| current.get(path) != target.get(path))
-            .cloned()
-            .collect::<Vec<_>>();
-        let checkout = crate::diagnostics::measure("checkout_capture", || {
+        let (checkout, paths) = crate::diagnostics::measure("checkout_capture", || {
             CapturedCheckout::capture(git, repo, &fingerprint, &selected, deadline)
         })?;
-        if crate::diagnostics::measure("branch_fingerprint", || {
+        let latest = crate::diagnostics::measure("branch_fingerprint", || {
             guard::branch_fingerprint(git, repo, deadline)
-        })? != fingerprint
+        })?;
+        if !crate::diagnostics::measure("branch_fingerprint_compare", || Ok(latest == fingerprint))?
         {
             return Err(OperationError::new("STALE_WRITE_PLAN"));
         }
@@ -1040,6 +1025,77 @@ mod tests {
                 read_repository_state(&f.git, &repo).unwrap().head,
                 state.head
             );
+        }
+    }
+
+    /// 仅本地运行的准备耗时基准，使用隔离仓库和真实核心 API。
+    #[test]
+    #[ignore = "本地分支切换性能基准"]
+    fn benchmark_prepare_switch_branch() {
+        /// 使用最近秩计算 P50/P95，输入为毫秒耗时样本。
+        fn percentile(samples: &mut [u128], percentile: usize) -> u128 {
+            samples.sort_unstable();
+            let rank = samples.len().saturating_mul(percentile).div_ceil(100);
+            samples[rank.saturating_sub(1)]
+        }
+
+        for (label, file_count, ref_count) in [("small", 2usize, 2usize), ("large", 1000, 50)] {
+            let fixture = Fixture::new();
+            for index in 0..file_count {
+                fixture.write(&format!("files/{index:04}.txt"), b"base\n");
+            }
+            fixture.command(&["add", "."]);
+            fixture.command(&["commit", "-m", "base"]);
+            fixture.command(&["checkout", "-b", "target"]);
+            fixture.write("files/0000.txt", b"target\n");
+            fixture.command(&["add", "."]);
+            fixture.command(&["commit", "-m", "target"]);
+            fixture.command(&["checkout", "main"]);
+            for index in 0..ref_count.saturating_sub(2) {
+                fixture.command(&[
+                    "update-ref",
+                    &format!("refs/heads/benchmark-{index:03}"),
+                    "HEAD",
+                ]);
+            }
+
+            let (repo, state) = open_repository(&fixture.git, &fixture.root).unwrap();
+            let branches = BranchSession::new(&fixture.git, &repo).unwrap();
+            assert_eq!(branches.list.branches.len(), ref_count);
+            let target = branches
+                .list
+                .branches
+                .iter()
+                .find(|branch| branch.name == "target")
+                .unwrap()
+                .branch_id
+                .clone();
+            let mut samples = Vec::with_capacity(20);
+            let mut successes = 0usize;
+            for _ in 0..20 {
+                let coordinator = RepositoryCoordinator::new();
+                let started = Instant::now();
+                if prepare_switch_branch(
+                    &coordinator,
+                    &fixture.git,
+                    &repo,
+                    &state,
+                    &branches,
+                    &target,
+                )
+                .is_ok()
+                {
+                    successes += 1;
+                }
+                samples.push(started.elapsed().as_millis());
+            }
+            let p50 = percentile(&mut samples.clone(), 50);
+            let p95 = percentile(&mut samples.clone(), 95);
+            println!(
+                "benchmark={} files={} refs={} runs=20 success_rate={}/20 p50_ms={} p95_ms={}",
+                label, file_count, ref_count, successes, p50, p95
+            );
+            assert_eq!(successes, 20, "{label} 场景成功率不足 20/20");
         }
     }
 }

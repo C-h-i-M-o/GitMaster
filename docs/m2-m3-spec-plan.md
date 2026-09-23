@@ -488,6 +488,7 @@ Windows 避免测试与重编译并行，另执行 `cargo test -p gitmaster-core
 
 ### 分支检出的固定输入实施细化
 
+- 私有仓库初始化使用自己的对象目录，不绑定源 objects，避免准备阶段创建源 info/pack 或在只读对象目录下失败；后续执行才按需要绑定源对象，详见 [专项修复方案](branch-switch-fix-spec-plan.md)。
 - 用私有公共目录固定检出配置和解析后的属性；执行时显式指定真实 git_dir/worktree，设置 `GIT_COMMON_DIR` 指向私有目录、对象目录指向原 common objects。依据 Git 的 [仓库布局契约](https://git-scm.com/docs/gitrepository-layout)，真实 HEAD、index 和 logs/HEAD 仍由原生 switch 写入，不自行实现多文件发布或回滚。
 - 私有配置仅复制内建检出设置及对象格式，关闭全局/系统配置、worktreeConfig、模板、hook、维护及子模块递归。当前与目标路径的七类有效属性在准备时解析，逐路径生成精确 info/attributes，覆盖实时工作树属性对检出的影响。执行阶段以 create_new 获取源/目标真实引用的 Git 锁，取得锁后核对确认 OID，再由原生 switch 读取引用。已有锁不删除，失败或结束只释放自己持有的锁；准备阶段不锁用户引用。Git 2.49 的 files backend 使用 get_common_dir_noenv，实验表明 GIT_COMMON_DIR 不能隔离 refs，所以不依赖私有 refs 绑定目标。
 - 准备不改变原索引、引用或对象。执行前重验指纹、干净状态、目标 OID 和其他 worktree 占用，仍使用原生 `switch --no-guess --no-recurse-submodules --no-overwrite-ignore`；完成后核对真实分支/OID/索引/工作区。应用队列不锁住外部客户端，不能确认时为 unknown，不自动回滚或重试。

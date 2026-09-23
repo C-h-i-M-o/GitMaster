@@ -36,13 +36,38 @@ impl CapturedCheckout {
         expected: &WriteFingerprint,
         target: &BranchSummary,
         deadline: Instant,
-    ) -> Result<Self, OperationError> {
-        Ok(Self {
-            name: target.name.clone(),
-            target_oid: target.oid.clone(),
-            source: expected.head.clone(),
-            tree: CapturedTree::capture(git, repo, expected, &target.oid, deadline)?,
-        })
+    ) -> Result<(Self, Vec<String>), OperationError> {
+        let (tree, entries) =
+            CapturedTree::capture_with_entries(git, repo, expected, &target.oid, deadline)?;
+        // 预览复用同次捕获已校验的目标树；执行前仍独立重验路径、引用与指纹。
+        let current: BTreeMap<_, _> = expected
+            .index
+            .iter()
+            .map(|entry| (&entry.path, (&entry.mode, &entry.oid)))
+            .collect();
+        let target_entries: BTreeMap<_, _> = entries
+            .iter()
+            .map(|entry| (&entry.path, (&entry.mode, &entry.oid)))
+            .collect();
+        let candidates: BTreeSet<_> = current
+            .keys()
+            .chain(target_entries.keys())
+            .copied()
+            .collect();
+        let paths = candidates
+            .into_iter()
+            .filter(|path| current.get(path) != target_entries.get(path))
+            .cloned()
+            .collect();
+        Ok((
+            Self {
+                name: target.name.clone(),
+                target_oid: target.oid.clone(),
+                source: expected.head.clone(),
+                tree,
+            },
+            paths,
+        ))
     }
 
     /// 由原生 switch 执行实际工作区、索引和 HEAD 更新。
@@ -143,7 +168,20 @@ impl CapturedTree {
         target_oid: &str,
         deadline: Instant,
     ) -> Result<Self, OperationError> {
-        let config = guard::parse_config(&inspect_local_config(git, &repo.root, deadline)?)?;
+        Self::capture_with_entries(git, repo, expected, target_oid, deadline).map(|(tree, _)| tree)
+    }
+
+    /// 捕获完成后返回同次校验的目标条目，避免分支预览重复查询和扫描。
+    fn capture_with_entries(
+        git: &GitExecutable,
+        repo: &RepositoryHandle,
+        expected: &WriteFingerprint,
+        target_oid: &str,
+        deadline: Instant,
+    ) -> Result<(Self, Vec<guard::IndexEntry>), OperationError> {
+        let config = crate::diagnostics::measure("checkoutConfig", || {
+            guard::parse_config(&inspect_local_config(git, &repo.root, deadline)?)
+        })?;
         if config
             .get("extensions.refstorage")
             .is_some_and(|value| value != "files")
@@ -190,7 +228,6 @@ impl CapturedTree {
         };
         captured.private_query(
             git,
-            repo,
             &[
                 "init",
                 "--template=",
@@ -251,7 +288,7 @@ impl CapturedTree {
             rules,
         )
         .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
-        Ok(captured)
+        Ok((captured, entries))
     }
 
     /// 固定环境中执行核心生成的参数数组，不接受前端任意命令。
@@ -334,29 +371,39 @@ impl CapturedTree {
         Ok(self)
     }
 
-    /// 私有初始化不接触原仓库的配置、索引或 refs。
+    /// 私有初始化只使用自身对象目录，保留安全阶段与真实退出码。
     fn private_query(
         &self,
         git: &GitExecutable,
-        repo: &RepositoryHandle,
         args: &[&str],
         deadline: Instant,
     ) -> Result<(), OperationError> {
-        let args = args.iter().map(OsString::from).collect::<Vec<_>>();
-        let output = run_isolated_git(
-            git,
-            self.directory.path(),
-            &args,
-            &[],
-            Some(&repo.common_dir.join("objects")),
-            &self.settings,
-            deadline,
-        )?;
-        if output.success {
-            Ok(())
-        } else {
-            Err(OperationError::new("GIT_EXECUTION_FAILED"))
-        }
+        crate::diagnostics::measure("checkoutInit", || {
+            let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+            let output = run_isolated_git(
+                git,
+                self.directory.path(),
+                &args,
+                &[],
+                None,
+                &self.settings,
+                deadline,
+            )
+            .map_err(|error| {
+                let os = error.diagnostic.as_ref().and_then(|value| value.os_code);
+                let exit = error.diagnostic.as_ref().and_then(|value| value.exit_code);
+                error.with_diagnostic("checkoutInit", os, exit)
+            })?;
+            if output.success {
+                Ok(())
+            } else {
+                Err(OperationError::new("GIT_EXECUTION_FAILED").with_diagnostic(
+                    "checkoutInit",
+                    None,
+                    output.exit_code,
+                ))
+            }
+        })
     }
 }
 

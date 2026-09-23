@@ -56,9 +56,8 @@ impl OperationError {
     ) -> Self {
         self.diagnostic = Some(ErrorDiagnostic {
             stage: match stage {
-                "revParse" | "status" | "log" | "revList" | "forEachRef" | "windowsProcess" => {
-                    stage
-                }
+                "revParse" | "status" | "log" | "revList" | "forEachRef" | "windowsProcess"
+                | "checkoutInit" => stage,
                 _ => "gitQuery",
             }
             .to_owned(),

@@ -15,7 +15,8 @@ export type GitDiagnosticStage =
   | "revList"
   | "forEachRef"
   | "gitQuery"
-  | "windowsProcess";
+  | "windowsProcess"
+  | "checkoutInit";
 export type GitEnvironment =
   | {
       status: "ready";

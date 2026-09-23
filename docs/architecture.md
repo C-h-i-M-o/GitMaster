@@ -104,7 +104,7 @@ conflicts 从真实合并元数据和固定索引副本重建会话。MERGE_HEAD
 
 commands/operations.rs 串行准备并保存当前交付计划，环境/仓库和写请求代次阻止迟到工作重新取得执行权。核心持有任务生命周期，桌面 execute 不等待 Git 完成；最近计划映射使重复确认返回同一任务。启动即作废读取缓存，read_operation 始终只查询，不自动安装过期快照。
 
-commands/resources.rs 管理远端/冲突 Arc 缓存与初始化代次，重新读取使旧 ID 映射失效；同仓库远端刷新继承实际 lastFetchedAt。原生 clone 选择器保留规范化父目录能力，取消或新选择使旧 ID 失效。settings.rs 串行读改写 version 2 配置，Git 路径与界面偏好独立更新、互相保留。
+commands/resources.rs 管理远端/冲突 Arc 缓存与初始化代次，重新读取使旧 ID 映射失效；同仓库远端刷新继承实际 lastFetchedAt。原生 clone 选择器保留规范化父目录能力，取消或新选择使旧 ID 失效。settings.rs 串行读改写 version 2 配置，Git 路径、界面偏好与日志级别独立更新、互相保留。
 
 ### 前端控制器与工作区生命周期
 
@@ -117,3 +117,9 @@ useWorkspace 已组合四个控制器；已核实任务终态显式刷新，已�
 ### Windows 平台适配
 
 process_windows.rs 通过 CreateProcessW 挂起创建、Job KILL_ON_JOB_CLOSE、仅三个标准句柄继承和 PIPE_NOWAIT 父端轮询，实现有界 stdin/双输出及整树清理。Windows 环境键按 ordinal 不区分大小写比较；Command 不得使用 env_clear。进程树终止后限时核对 Job ActiveProcesses，清理无法确认返回 unknown。windows_fs.rs 固定 cap-primitives 4.0.3 的按句柄卷号/文件 ID 扩展，缺少身份则拒绝，以能力目录 no-follow 和 reparse-point 检查保护锁、clone 发布与冲突保存。Windows 专项测试已编写但未在本机运行，宿主的 API 类型检查不是 Windows 构建。
+
+## 当前增量实现（2026-09-23）
+
+历史整页批量读取、notify 文件监听/版本标记、d3-force 图形布局与 tauri-plugin-log 可配置日志已接入。监听异常降级为 60 秒核实，入口能力不再执行完整写指纹；完整写保护仍在 prepare/execute。1GB 磁盘缓存及整体 Release 性能目标仍是规划。
+
+分支准备在私有对象目录初始化，再从源仓库读取目标内容；同次捕获的已校验目标条目同时供预览使用，执行前仍重新验证。初始化失败通过 checkoutInit 安全诊断与关联日志定位。分支修复的本机/Windows 验证范围以专项方案与 verification 为准。

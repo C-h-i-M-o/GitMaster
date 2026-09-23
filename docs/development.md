@@ -134,6 +134,6 @@ M1 本轮测试使用锁文件，原生构建、测试数量及限制详见 [Win
 
 ## M2/M3 当前开发说明（2026-09-23）
 
-本轮复用上述 macOS 工具链和已缓存依赖，未安装新工具。当前只安装 aarch64-apple-darwin Rust target，Windows 专项源码/测试需要在对应 Windows 工具链执行；本机补充的 Windows API 宿主类型检查不等价于交叉编译或运行。
+M2/M3 初次交付复用上述 macOS 工具链和缓存，后续分支修复已按授权补齐 Windows 提交所需的锁定依赖（notify、d3-force、日志插件等），未改锁版本或安装新全局工具。当前只安装 aarch64-apple-darwin Rust target，Windows 专项源码/测试需要在对应 Windows 工具链执行；本机补充的 Windows API 宿主类型检查不等价于交叉编译或运行。
 
-已安装依赖的本机检查使用 `pnpm --config.verify-deps-before-run=false <命令>`，避免 pnpm 在运行脚本前重装依赖；Cargo 使用 `--locked --offline`。干净环境仍按前文安装锁定依赖。桌面和核心测试均为真实临时仓库，不使用项目自身演示写操作。完整运行结果见 verification 的 M2/M3 最终验收。
+已安装依赖的本机检查使用 `pnpm --config.verify-deps-before-run=false <命令>`，避免 pnpm 在运行脚本前重装依赖；Cargo 使用 `--locked --offline`。干净环境仍按前文安装锁定依赖。桌面和核心测试均为真实临时仓库，不使用项目自身演示写操作。完整运行结果见 verification 的最新分支切换修复验收。

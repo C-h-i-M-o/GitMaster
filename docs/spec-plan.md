@@ -933,6 +933,6 @@ Windows 日志目录修正：开发进程可能继承 MSIX 目录虚拟化。设
 
 ## 14. Windows 分支切换修复计划与临时版本
 
-2026-09-23 用户最新日志显示：prepare_local_write 运行 31423ms 后，在 checkout_capture 阶段返回 GIT_EXECUTION_FAILED；结合当前源码，失败点指向私有临时仓库初始化。具体 Git 拒绝原因尚未证实，实际切换未开始。本次不修改业务代码，按用户要求保存当前开发成果为 GitHub 临时版本。
+2026-09-23 用户最新日志显示：prepare_local_write 运行 31423ms 后，在 checkout_capture 阶段返回 GIT_EXECUTION_FAILED；结合当前源码，失败点指向私有临时仓库初始化。具体 Git 拒绝原因尚未证实，实际切换未开始。该次交付未修改业务代码，已保存为临时提交 `83881fd`。随后用户授权实施专项修复、跳过当前无法运行的测试、同步文档并推进 main。
 
-合并需求、证据、接口、实施步骤及验收的专项文档见 [Windows 分支切换失败修复方案](branch-switch-fix-spec-plan.md)。开发总结及交付边界见 [临时版本开发总结](temporary-version-summary.md)。专项修复未实施，不把日志功能完成或构建成功等同于分支故障已修复。
+合并需求、证据、接口、实施步骤及验收的专项文档见 [Windows 分支切换失败修复方案](branch-switch-fix-spec-plan.md)。开发总结及交付边界见 [临时版本开发总结](temporary-version-summary.md)。专项修复现已进入实施和验证：私有初始化取消源对象目录绑定，保留 checkoutInit 阶段与真实退出码；Windows 原始故障仍需平台复测。当前结果以专项方案及验证记录最新章节为准，不以构建成功替代功能验收。

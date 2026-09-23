@@ -2,6 +2,8 @@
 
 本项目面向 Git 初学者，品牌为 gitMaster。当前正式版主线为 Tauri/React 与独立 Rust 核心，先完成性能、1GB 缓存、功能与双平台交付。达标可长期保留 Tauri；原生仅是正式版后续可选更新。实际证据及已知失败见验证记录。
 
+当前分支切换修复、诊断与性能测量见 [专项 Spec + Plan](branch-switch-fix-spec-plan.md)，实际通过及跳过项以 [验证记录](verification.md) 最新章节为准。
+
 ## 阅读顺序
 
 1. [需求与实施计划第 12 节](spec-plan.md#12-tauri-正式版与流畅性优先合并需求及实施方案)：当前合并 spec/plan；Tauri 正式路线、缓存、性能、阅读器、P0–P4 发布及 P5 可选演进。[M2 + M3 计划](m2-m3-spec-plan.md)作为当前功能实现对照。

@@ -91,8 +91,10 @@ pnpm --config.verify-deps-before-run=false tauri build --no-bundle
 git diff --check
 ```
 
-- 核心内置测试纳入源码版本管理：计划/队列、只读准备、确认字节暂存、完整索引提交、分支/ref 锁、分页、远端隔离和竞态、普通 merge、冲突保存部分失败及双亲提交。最新 macOS 结果为 193 通过、1 个父测试使用的 ignored 进程夹具；Windows 新增进程与文件身份测试仅编写、未运行。
-- 桌面内置测试验证业务 IPC 调度、迟到/重复请求、资源 ID、环境门禁及设置 v1/v2 迁移。前端本地 34 项测试验证控制器、稳定拓扑和展示行对齐；tests/ 按约定忽略，仅本机可运行，干净 clone 不包含这些文件，不能把命令缺文件写成通过。
+- 核心内置测试纳入源码版本管理：计划/队列、只读准备、确认字节暂存、完整索引提交、分支/ref 锁、分页、远端隔离和竞态、普通 merge、冲突保存部分失败及双亲提交。当前修复 macOS 核心全套为 205 通过、4 ignored（进程夹具由父测试启动；分支性能基准另行显式运行；历史/能力诊断不属于本轮全套执行）。Windows 本次修复测试按环境限制跳过，已有平台历史结果见 verification。
+- 桌面内置测试验证业务 IPC 调度、迟到/重复请求、资源 ID、环境门禁及设置 v1/v2 迁移。前端本地 35 项测试验证控制器、稳定拓扑和展示行对齐；tests/ 按约定忽略，仅本机可运行，干净 clone 不包含这些文件，不能把命令缺文件写成通过。
 - 本地测试额外使用 strict TypeScript 检查：`pnpm --config.verify-deps-before-run=false exec tsc --ignoreConfig --noEmit --allowImportingTsExtensions --jsx react-jsx --target ES2022 --module ESNext --moduleResolution bundler --strict --skipLibCheck --types node,vite/client tests/m2-m3/ui.fixture.ts tests/m2-m3/*.test.ts`。
 - `tests/m2-m3/ui.fixture.html` 明确标识内存替身，只用于真实组件的按钮/草稿/焦点/布局，不作为 Git、原生 IPC 或认证测试。生产浏览器模式仍禁用写入。
-- Windows 平台测试、真实认证、物理跨卷、最低系统/Git 和本机受锁屏阻挡的原生交互按用户授权跳过。保留原因与风险，不以 M1 历史验收或浏览器结果替代。C01–C18 最终证据见 [验证记录](verification.md#m2m3-最终验收2026-09-23)。
+- Windows 平台测试、真实认证、物理跨卷、最低系统/Git 按用户授权跳过。macOS 原生交互最初受锁屏阻挡，后续已补测本次分支流程；其余未测交互单列。保留原因与风险，不以 M1 历史验收或浏览器结果替代。C01–C18 最终证据见 [验证记录](verification.md#m2m3-最终验收2026-09-23)。
+
+本次专项性能基准：`cargo test -p gitmaster-core benchmark_prepare_switch_branch -- --ignored --nocapture --test-threads=1`。使用真实临时仓库各 20 次，成功次数不为 20 会失败；具体构建模式、仓库规模、分布及未证实提速的边界见 [验证记录](verification.md)。

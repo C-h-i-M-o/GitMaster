@@ -660,9 +660,11 @@ fn run_platform_with_progress(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let mut child = command
-        .spawn()
-        .map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"))?;
+    let spawn_started = Instant::now();
+    let spawn_result = command.spawn();
+    crate::diagnostics::log_elapsed("git_process_create", spawn_started.elapsed());
+    let mut child = spawn_result.map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"))?;
+    let process_started = Instant::now();
     let mut input = child.stdin.take();
     let mut stdout = child.stdout.take().expect("已配置 stdout 管道");
     let mut stderr = child.stderr.take().expect("已配置 stderr 管道");
@@ -676,6 +678,8 @@ fn run_platform_with_progress(
     };
     let mut written = 0;
     let mut status = None;
+    let mut drain_elapsed = Duration::ZERO;
+    let mut exit_observed = None;
     let run = (|| -> Result<(), OperationError> {
         nonblocking(input.as_ref().expect("已配置 stdin 管道"))?;
         nonblocking(&stdout)?;
@@ -699,12 +703,14 @@ fn run_platform_with_progress(
                     Err(_) => return Err(OperationError::new("GIT_EXECUTION_FAILED")),
                 }
             }
+            let drain_started = Instant::now();
             drain_pipe(&mut stdout, &mut output, output_limit)?;
             if network {
                 drain_network_stderr(&mut stderr, &mut errors, &mut progress, on_progress)?;
             } else {
                 drain_pipe(&mut stderr, &mut errors, STDERR_LIMIT)?;
             }
+            drain_elapsed += drain_started.elapsed();
             if (!network && errors.truncated) || output.truncated {
                 return Ok(());
             }
@@ -712,6 +718,10 @@ fn run_platform_with_progress(
                 status = child
                     .try_wait()
                     .map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"))?;
+                if status.is_some() {
+                    // 此时点是轮询首次观察到直接子进程退出；轮询前的管道读取与其并行，耗时会重叠。
+                    exit_observed = Some(Instant::now());
+                }
             }
             if status.is_some() && output.closed && errors.closed && input.is_none() {
                 return Ok(());
@@ -719,8 +729,16 @@ fn run_platform_with_progress(
             thread::sleep(Duration::from_millis(2));
         }
     })();
+    if let Some(observed) = exit_observed {
+        crate::diagnostics::log_elapsed(
+            "git_run_to_observed_exit",
+            observed.duration_since(process_started),
+        );
+    }
+    crate::diagnostics::log_elapsed("git_pipe_drain", drain_elapsed);
     // 所有路径都关闭输入、终止本执行器创建的进程组，并等待直接子进程。
     drop(input);
+    let reap_started = Instant::now();
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);
     }
@@ -728,6 +746,7 @@ fn run_platform_with_progress(
     let waited = child
         .wait()
         .map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"));
+    crate::diagnostics::log_elapsed("git_process_reap", reap_started.elapsed());
     run?;
     let status = status.map(Ok).unwrap_or(waited)?;
     if (!network && errors.truncated) || (output.truncated && !allow_truncate) {

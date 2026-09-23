@@ -1,5 +1,7 @@
 # 分阶段验证记录
 
+各节保留当时的执行状态；当前分支切换修复和交付以文末“分支切换修复验收”章节为准，历史未提交、未实施或失败记录不代表最新本机结果。
+
 ## 性能优化首批实施（2026-09-23）
 
 当前在 Windows 上按授权实施 P0 和监听刷新基础，保留此前未提交工作，未提交或发布。新增 notify 8.2.0 已获单独授权。
@@ -612,3 +614,70 @@ Windows 实现使用 Job 树回收、挂起创建和限制句柄继承、非阻�
 - 本次 pnpm typecheck、pnpm build、全量 Prettier 检查、cargo fmt --all -- --check、cargo check -p gitmaster-desktop --locked --offline 通过；Rust 存在 process.rs 的未使用导入警告，遵守本轮范围未修改代码。新文档另行格式化检查。
 - 为尽快交付，未再次运行完整核心/桌面测试或桌面交互；前述 14 通过、10 失败的 Windows 桌面测试记录仍有效，不能以编译成功覆盖已知失败。
 - 交付为 codex/m2-m3 分支的临时源码快照，不创建正式 Release、安装包或标签，不合并 main、不改写历史。开发内容与未完成项见 temporary-version-summary.md；修复步骤见 branch-switch-fix-spec-plan.md。
+
+## 分支切换修复验收（2026-09-23）
+
+基线为从 GitHub 拉取的 Windows 提交 `83881fd`；修复在隔离工作树的 `codex/fix-branch-switch` 实施。用户授权更新文档、提交推送并将所有现有分支与 main 同步到最新；无法运行的 Windows 测试本轮暂时跳过。本节记录当前修复，不覆盖前述 Windows 历史失败。
+
+### 复现与修复
+
+- Git 2.49.0 / macOS 的受控矩阵覆盖 SHA-1/SHA-256、普通路径/中文空格路径，以及私有 init 是否绑定源 objects。普通权限均成功；源 info/pack 缺失时，绑定版本会在源对象库创建目录；源 objects 只读时绑定版本退出 1，而不绑定时成功。
+- 新增 Rust 初始化诊断、只读源对象回归在修复前分别因 diagnostic 缺失与初始化失败而失败；修复后通过。私有初始化使用自己的对象目录，实际检出仍显式读取源对象；原 HEAD、refs、index、config、对象目录和工作文件受既有边界保护。
+- Rust 与前端同步 `checkoutInit` 白名单，保留真实 exitCode 和已有系统错误码；用户看到准备阶段失败，原始 stderr 不进入 DTO 或日志。Windows 创建失败先捕获 GetLastError，再记录计时，避免日志覆盖错误码。
+- 分支预览复用捕获阶段同次目标树条目，省去重复的 read-tree / ls-files / check-attr 三次子进程和目标路径遍历。没有减少第二次指纹检查、确认后 refs/HEAD/工作区/worktree 占用检查和引用锁，也没有跨操作路径缓存。
+- 本机机制复现不证明 Windows 日志中的 53 字节 stderr 原因相同；Windows/MSIX 原始问题仍待该平台复测。
+
+### 准备性能
+
+macOS aarch64 / M5、系统 Git 2.49.0、Rust Debug；每组在新建临时仓库重复准备 20 次，P50/P95 使用 nearest-rank。小仓库 2 文件/2 本地引用；较大样本 1000 文件/50 本地引用，单个目标文件变化。基线已经包含初始化修复，尚未去重；不把 Windows 31423ms 失败样本当成功基线。宿主非独占，数据不支持整体提速结论。
+
+| 采样                          | 小仓库 P50 / P95 | 较大仓库 P50 / P95 | 每组成功率 |
+| ----------------------------- | ---------------- | ------------------ | ---------- |
+| 去重前，无 logger             | 367 / 378 ms     | 587 / 602 ms       | 20/20      |
+| 去重后，无 logger             | 402 / 425 ms     | 634 / 649 ms       | 20/20      |
+| 最终分阶段采样，有本地 logger | 368 / 384 ms     | 599 / 616 ms       | 20/20      |
+
+小仓库的本机 Debug P95 ≤2 秒目标达成；不是 Windows、Release、大文件或正式发布性能结论。当前变化只证明减少重复工作，未证明端到端加速。可重现总耗时命令：`cargo test -p gitmaster-core benchmark_prepare_switch_branch -- --ignored --nocapture --test-threads=1`。阶段采样使用临时 logger，采样后移除；生产固定阶段日志保留。
+
+下表全部来自同一次最终有 logger 采样，单位 ms，0 表示小于 1ms。指纹、路径、属性各 40 样本（每次准备两轮），进程各 660 样本，其余各 20 样本。队列没有竞争；运行是首次观察到退出的墙钟时间，管道是读调用累计耗时，部分阶段相互包含/重叠，不能相加。
+
+| 阶段                       | 小仓库 P50 / P95 | 较大仓库 P50 / P95 |
+| -------------------------- | ---------------- | ------------------ |
+| repository_queue_wait      | 0 / 0            | 0 / 0              |
+| git_process_create         | 0 / 0            | 0 / 0              |
+| git_run_to_observed_exit   | 5 / 5            | 5 / 19             |
+| git_pipe_drain             | 0 / 0            | 0 / 0              |
+| git_process_reap           | 0 / 0            | 0 / 0              |
+| git_process（总计）        | 5 / 5            | 5 / 19             |
+| branch_fingerprint         | 147 / 155        | 230 / 239          |
+| write_path_check           | 0 / 0            | 16 / 17            |
+| write_attribute_read       | 10 / 10          | 33 / 33            |
+| checkoutConfig             | 5 / 5            | 5 / 5              |
+| checkoutInit               | 5 / 5            | 5 / 5              |
+| checkout_capture           | 37 / 37          | 77 / 80            |
+| branch_fingerprint_compare | 0 / 0            | 0 / 0              |
+
+### 原生功能与平台边界
+
+computer use 已成功操作本次构建的 macOS Debug `.app`，通过原生目录选择器打开中文空格路径的专用临时仓库。准备显示正确源 HEAD、目标 OID 和变化文件；取消后从系统 Git 核对 main 与原文件字节不变。再次确认后界面显示“操作已完成并核实”，系统 Git 核对 HEAD=feature、文件为目标内容、工作区干净。外部写入未提交修改后，刷新显示 1 项修改，切换 main 被拒绝并显示“工作区有未保存修改”；HEAD 与该修改保持原样。
+
+- 本轮 Windows target 编译、不同系统版本、MSIX/扩展路径/启动器/reparse-point 及 Windows Tauri 交互均按授权跳过：当前宿主无 Windows 环境。先前 Windows 桌面测试 10 项超时失败尚未在 Windows 重跑，不能宣称已消除。
+- 真实远端认证、签名/公证、安装器和最低系统版本验收没有本轮环境或不属于专项修复；GitHub 交付不作为产品认证验收。
+- 文档索引、总计划、专项计划、接口、M2/M3 实施记录、历史临时总结、验证记录及 README 已同步；其余开发、测试、架构、UI、安全和 AGENTS 文档经核对无本次接口冲突。历史状态保留并增加最新结果入口。
+
+### 最终工程检查与 Release 核验
+
+| 检查                                                  | 结果与范围                                                                                                                           |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `cargo test --workspace --locked --offline`           | 核心 205 通过、0 失败、4 ignored；桌面 25 通过、0 失败；doc-tests 0 失败。核心 12.90 秒、桌面 3.86 秒。                              |
+| ignored 说明                                          | 分支性能基准已显式执行；process_fixture 由父测试启动；历史/能力诊断本轮未额外运行，不计为通过。                                      |
+| `cargo check -p gitmaster-desktop --locked --offline` | 通过，无编译警告。                                                                                                                   |
+| `cargo fmt --all -- --check`                          | 通过。                                                                                                                               |
+| `pnpm typecheck` / `pnpm build`                       | 通过，生产前端 86 模块。                                                                                                             |
+| `pnpm format:check`                                   | 通过；临时依赖曾被扫描导致失败，移至工作树外后按原检查命令通过，未放宽项目检查规则。                                                 |
+| `node --test tests/m2-m3/*.test.ts`                   | 35 通过、0 失败；含 checkoutInit 归一化、中文提示及敏感字段过滤。tests/ 继续本地保留。                                               |
+| `pnpm tauri build --bundles app`                      | 本机 macOS Release 可执行文件及 .app 构建通过；不代表签名、公证、安装器或 Windows 通过。                                             |
+| 最终 Release computer use                             | 原生选择器重新打开同一临时仓库，feature → 预览 main → 确认 → 界面显示完成并核实；系统 Git 核对 HEAD=main、文件字节正确、工作区干净。 |
+| 文档与 diff                                           | 14 份项目 Markdown 本地文件链接无失效目标；`git diff --check` 通过。                                                                 |
+
+代码复核覆盖隔离初始化、条目复用、错误过滤及计时控制流；补充诊断上下文跨线程、嵌套与 panic 恢复回归。不扩大超时，不新增依赖，不改写业务仓库内容。GitHub 同步采用普通快进，最终各分支提交号由远端 refs 核对。

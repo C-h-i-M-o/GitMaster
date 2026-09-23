@@ -113,7 +113,11 @@ impl RepositoryQueues {
         deadline: Instant,
         read: impl FnOnce() -> Result<T, OperationError>,
     ) -> Result<T, OperationError> {
-        let _guard = self.reserve(key)?.enter_until(deadline)?;
+        let queued_at = Instant::now();
+        let reservation = self.reserve(key)?;
+        let entered = reservation.enter_until(deadline);
+        crate::diagnostics::log_elapsed("repository_queue_wait", queued_at.elapsed());
+        let _guard = entered?;
         read()
     }
 
@@ -323,6 +327,7 @@ impl RepositoryCoordinator {
         }
         // 预留在启动线程前完成，因此高频点击不能改变 FIFO 顺序。
         let reservation = self.queues.reserve(&pending.key)?;
+        let queued_at = Instant::now();
         let pending = session.pending.take().expect("已验证一次性计划");
         let handle = OperationHandle {
             operation_id: operation_id(),
@@ -350,30 +355,35 @@ impl RepositoryCoordinator {
             started: Instant::now(),
         };
         let failure_reporter = reporter.clone();
+        let diagnostic_context = crate::diagnostics::capture_context();
         drop(session);
         let spawned = std::thread::Builder::new()
             .name(format!("gitmaster-operation-{}", handle.operation_id))
             .spawn(move || {
-                let entered = reservation.enter_until(pending.deadline);
-                // 排队等待也可能跨过计划期限，出队后不得执行已经过期的确认。
-                let result = if entered.is_err() || Instant::now() >= pending.deadline {
-                    OperationResult::Failed {
-                        operation_id: reporter.handle.operation_id.clone(),
-                        kind: reporter.kind,
-                        error: OperationError::new("STALE_WRITE_PLAN"),
-                        clone_recovery: None,
-                        refresh: WriteRefresh::Failed {
-                            error: OperationError::new("STALE_REQUEST"),
-                        },
-                    }
-                } else {
-                    let _ = reporter.report(OperationPhase::Checking, None);
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        (pending.work)(&reporter)
-                    }))
-                    .unwrap_or_else(|_| reporter.unknown())
-                };
-                reporter.finish(result);
+                crate::diagnostics::with_context(diagnostic_context, || {
+                    let entered = reservation.enter_until(pending.deadline);
+                    // 从预留队列位置到工作线程获得队列锁，包含线程创建与调度；反映请求实际等待时长。
+                    crate::diagnostics::log_elapsed("repository_queue_wait", queued_at.elapsed());
+                    // 排队等待也可能跨过计划期限，出队后不得执行已经过期的确认。
+                    let result = if entered.is_err() || Instant::now() >= pending.deadline {
+                        OperationResult::Failed {
+                            operation_id: reporter.handle.operation_id.clone(),
+                            kind: reporter.kind,
+                            error: OperationError::new("STALE_WRITE_PLAN"),
+                            clone_recovery: None,
+                            refresh: WriteRefresh::Failed {
+                                error: OperationError::new("STALE_REQUEST"),
+                            },
+                        }
+                    } else {
+                        let _ = reporter.report(OperationPhase::Checking, None);
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            (pending.work)(&reporter)
+                        }))
+                        .unwrap_or_else(|_| reporter.unknown())
+                    };
+                    reporter.finish(result);
+                });
             });
         if spawned.is_err() {
             failure_reporter.finish(OperationResult::Failed {

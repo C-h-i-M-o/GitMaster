@@ -55,7 +55,11 @@ export function describeGitError(error: OperationError): string {
     UNRESOLVED_CONFLICTS: "仍有未解决冲突。",
     WRITE_OUTCOME_UNKNOWN: "写入结果未知，请重新读取状态。",
   };
-  const message = map[error.code] ?? "操作未完成，请刷新状态后重试。";
+  const message =
+    error.code === "GIT_EXECUTION_FAILED" &&
+    error.diagnostic?.stage === "checkoutInit"
+      ? "分支切换准备失败：临时仓库初始化失败"
+      : (map[error.code] ?? "操作未完成，请刷新状态后重试。");
   const diagnostic = error.diagnostic;
   if (!diagnostic) return message;
   const stages: Record<string, string> = {
@@ -66,6 +70,7 @@ export function describeGitError(error: OperationError): string {
     forEachRef: "读取引用",
     gitQuery: "查询 Git",
     windowsProcess: "启动 Windows 进程",
+    checkoutInit: "初始化临时仓库",
   };
   const details = [`阶段：${stages[diagnostic.stage] ?? "Git 操作"}`];
   if (diagnostic.osCode !== undefined)

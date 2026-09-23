@@ -83,6 +83,7 @@ function normalizeDiagnostic(value: unknown): ErrorDiagnostic | undefined {
     "forEachRef",
     "gitQuery",
     "windowsProcess",
+    "checkoutInit",
   ]);
   if (typeof stage !== "string" || !stages.has(stage)) return undefined;
   const validInt = (item: unknown, min: number, max: number): item is number =>

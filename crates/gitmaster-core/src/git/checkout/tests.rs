@@ -51,6 +51,7 @@ fn capture_target(
         Instant::now() + Duration::from_secs(120),
     )
     .unwrap()
+    .0
 }
 
 /// 确认后目标被外部移动，执行也不能检出后来加入的树。
@@ -75,7 +76,8 @@ fn captured_checkout_rejects_live_target_move_before_writing() {
         .into_iter()
         .find(|branch| branch.name == "feature")
         .unwrap();
-    let captured = CapturedCheckout::capture(&f.git, &repo, &expected, &target, deadline).unwrap();
+    let (captured, _) =
+        CapturedCheckout::capture(&f.git, &repo, &expected, &target, deadline).unwrap();
     // 直接调用已经通过执行前检查的检出层，精确模拟最后检查之后的竞态。
     f.command(&["update-ref", "refs/heads/feature", "main"]);
     let error = captured.execute(&f.git, &repo, deadline).unwrap_err();
@@ -361,4 +363,93 @@ fn checkout_rejects_late_worktree_occupation() {
         query(&f.git, &f.root, &["branch", "--show-current"], 1024).unwrap(),
         b"main\n"
     );
+}
+
+/// 私有初始化非零退出必须穿透真实进程边界，不能丢失阶段和退出码或暴露输出。
+#[cfg(unix)]
+#[test]
+fn private_init_failure_preserves_safe_diagnostic() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let executable = tempfile::tempdir().unwrap();
+    let path = executable.path().join("拒绝初始化 git");
+    fs::write(
+        &path,
+        b"#!/bin/sh\nprintf '%s\\n' 'SECRET_PATH_TOKEN' >&2\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    let git = GitExecutable {
+        path,
+        ..f.git.clone()
+    };
+    let captured = CapturedTree {
+        directory: tempfile::tempdir().unwrap(),
+        settings: Vec::new(),
+        global_attributes: None,
+    };
+    let private_path = captured.directory.path().to_owned();
+    let error = captured
+        .private_query(
+            &git,
+            &["init", "--template=", "--initial-branch=gitmaster-private"],
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap_err();
+    drop(captured);
+    assert!(!private_path.exists());
+    assert_eq!(error.code, "GIT_EXECUTION_FAILED");
+    assert!(!format!("{error:?}").contains("SECRET_PATH_TOKEN"));
+    let diagnostic = error.diagnostic.expect("必须保留初始化诊断");
+    assert_eq!(diagnostic.stage, "checkoutInit");
+    assert_eq!(diagnostic.exit_code, Some(1));
+    assert_eq!(diagnostic.os_code, None);
+}
+
+/// 准备切换不应向源对象存储创建目录；源对象只读仍可捕获隔离检出环境。
+#[cfg(unix)]
+#[test]
+fn capture_with_readonly_source_objects_does_not_initialize_source_store() {
+    use std::os::unix::fs::PermissionsExt;
+    for format in ["sha1", "sha256"] {
+        let f = Fixture::new();
+        if format == "sha256" {
+            fs::remove_dir_all(f.root.join(".git")).unwrap();
+            f.command(&["init", "--object-format=sha256", "-b", "main"]);
+            f.command(&["config", "user.name", "测试"]);
+            f.command(&["config", "user.email", "test@example.invalid"]);
+        }
+        f.write("中文 目录/a", b"base\n");
+        f.command(&["add", "."]);
+        f.command(&["commit", "-m", "base"]);
+        f.command(&["switch", "-c", "feature"]);
+        f.write("中文 目录/a", b"feature\n");
+        f.command(&["add", "."]);
+        f.command(&["commit", "-m", "feature"]);
+        f.command(&["switch", "main"]);
+        let (repo, _) = open_repository(&f.git, &f.root).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let fingerprint = write_guard::branch_fingerprint(&f.git, &repo, deadline).unwrap();
+        let target = query(&f.git, &f.root, &["rev-parse", "feature"], 256).unwrap();
+        let target = std::str::from_utf8(&target).unwrap().trim();
+        let objects = repo.common_dir.join("objects");
+        for name in ["info", "pack"] {
+            fs::remove_dir(objects.join(name)).unwrap();
+        }
+        let before = metadata_bytes(&repo);
+        let index = fs::read(repo.git_dir.join("index")).unwrap();
+        fs::set_permissions(&objects, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = CapturedTree::capture(&f.git, &repo, &fingerprint, target, deadline);
+        fs::set_permissions(&objects, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(metadata_bytes(&repo), before);
+        assert_eq!(fs::read(repo.git_dir.join("index")).unwrap(), index);
+        assert_eq!(fs::read(f.root.join("中文 目录/a")).unwrap(), b"base\n");
+        assert!(!objects.join("info").exists());
+        assert!(!objects.join("pack").exists());
+        assert!(
+            result.is_ok(),
+            "源对象只读时准备必须成功：{:?}",
+            result.err()
+        );
+    }
 }

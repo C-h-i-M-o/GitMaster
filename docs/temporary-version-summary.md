@@ -1,5 +1,7 @@
 # gitMaster 临时版本开发总结
 
+> 本文保留 Windows 临时提交 `83881fd` 的历史状态；后续分支切换修复与当前验收见 [专项方案](branch-switch-fix-spec-plan.md) 和 [验证记录](verification.md)。
+
 日期：2026-09-23。提交范围：以 `0daa54ec332b357a19281facd3b6efeee7b4400a` 为基线，本次临时版本提交中的改动；最终提交号由 Git 历史确定。交付分支：`codex/m2-m3`。
 
 ## 1. 功能优化

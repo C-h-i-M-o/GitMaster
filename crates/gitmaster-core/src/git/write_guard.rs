@@ -192,38 +192,45 @@ fn fingerprint_with_head_policy(
     let dir = cap_std::fs::Dir::open_ambient_dir(&repo.root, cap_std::ambient_authority())
         .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
     let mut path_input = Vec::new();
-    for path in &all_paths {
-        check_time(deadline)?;
-        validate_path(path)?;
-        check_file_path(&dir, path)?;
-        path_input.extend_from_slice(path.as_bytes());
-        path_input.push(0);
-    }
-    let mut attributes = Vec::new();
-    let mut work_attributes = Vec::new();
-    for cached in [false, true] {
-        let mut args = vec!["check-attr", "-z"];
-        if cached {
-            args.push("--cached");
+    crate::diagnostics::measure("write_path_check", || {
+        for path in &all_paths {
+            check_time(deadline)?;
+            validate_path(path)?;
+            check_file_path(&dir, path)?;
+            path_input.extend_from_slice(path.as_bytes());
+            path_input.push(0);
         }
-        args.extend([
-            "--stdin",
-            "filter",
-            "merge",
-            "working-tree-encoding",
-            "text",
-            "eol",
-            "ident",
-            "crlf",
-            "conflict-marker-size",
-        ]);
-        let bytes = local_query(git, repo, &args, &path_input, None, deadline)?;
-        validate_attributes(&bytes)?;
-        if !cached {
-            work_attributes = bytes.clone();
-        }
-        attributes.extend(bytes);
-    }
+        Ok(())
+    })?;
+    let (attributes, work_attributes) =
+        crate::diagnostics::measure("write_attribute_read", || {
+            let mut attributes = Vec::new();
+            let mut work_attributes = Vec::new();
+            for cached in [false, true] {
+                let mut args = vec!["check-attr", "-z"];
+                if cached {
+                    args.push("--cached");
+                }
+                args.extend([
+                    "--stdin",
+                    "filter",
+                    "merge",
+                    "working-tree-encoding",
+                    "text",
+                    "eol",
+                    "ident",
+                    "crlf",
+                    "conflict-marker-size",
+                ]);
+                let bytes = local_query(git, repo, &args, &path_input, None, deadline)?;
+                validate_attributes(&bytes)?;
+                if !cached {
+                    work_attributes = bytes.clone();
+                }
+                attributes.extend(bytes);
+            }
+            Ok((attributes, work_attributes))
+        })?;
     let conversion = super::staging::ConversionPolicy::capture(&config, &work_attributes, paths)?;
     let mut files = BTreeMap::new();
     for path in paths {
