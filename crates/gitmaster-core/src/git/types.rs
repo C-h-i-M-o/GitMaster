@@ -59,6 +59,9 @@ pub struct FileChange {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryState {
+    /// 仅后端保存索引内容身份，前端通过 snapshot_id 绑定此快照。
+    #[serde(skip)]
+    pub(crate) index_identity: [u8; 32],
     pub repository_id: String,
     pub snapshot_id: String,
     pub root_path: String,
@@ -105,6 +108,22 @@ pub enum LocalWriteRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RemoteWriteRequest {
+    #[serde(rename_all = "camelCase")]
+    PublishBranch {
+        remote_id: String,
+        target_branch_name: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetUpstream {
+        remote_id: String,
+        target_branch_name: String,
+    },
+    SyncPush,
+    SyncFastForward,
+    #[serde(rename_all = "camelCase")]
+    FetchAll {
+        remote_id: String,
+    },
     #[serde(rename_all = "camelCase")]
     Fetch {
         remote_id: String,
@@ -244,6 +263,8 @@ pub struct OperationHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OperationKind {
+    SetUpstream,
+    SaveFile,
     Stage,
     Unstage,
     Commit,
@@ -476,6 +497,7 @@ pub struct ProjectFile {
 pub enum ProjectFileKind {
     Tracked,
     Untracked,
+    Ignored,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -483,13 +505,59 @@ pub struct RemoteState {
     pub repository_id: String,
     pub remotes: Vec<RemoteSummary>,
     pub remote_branches: Vec<RemoteBranch>,
+    pub branch_upstreams: Vec<BranchUpstream>,
     pub last_fetched_at: Option<String>,
+}
+/// 本地分支的上游映射由 Git 解析，不从展示名称拆分远端和目标分支。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchUpstream {
+    pub branch_name: String,
+    pub remote_name: String,
+    pub remote_id: Option<String>,
+    pub target_ref: String,
+    pub tracking_ref: String,
+}
+/// 当前分支同步入口的只读目标；不代表已获取最新远端或已获写入计划。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTarget {
+    pub repository_id: String,
+    pub snapshot_id: String,
+    pub branch_name: String,
+    pub upstream: SyncUpstream,
+}
+/// 区分从未配置与配置无法唯一解析，防止首次同步误覆盖已有配置。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum SyncUpstream {
+    Missing,
+    #[serde(rename_all = "camelCase")]
+    Configured {
+        remote_id: String,
+        target_branch_name: String,
+        remote_branch_id: Option<String>,
+    },
+    Unresolved {
+        reason: SyncUpstreamReason,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncUpstreamReason {
+    Incomplete,
+    Ambiguous,
+    LocalRepository,
+    UnsupportedTarget,
+    RemoteMissing,
+    MappingMissing,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteSummary {
     pub remote_id: String,
     pub name: String,
+    pub fetched_branch_names: Option<Vec<String>>,
     pub fetch_display_url: String,
     pub push_display_url: String,
 }

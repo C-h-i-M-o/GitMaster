@@ -14,7 +14,9 @@ interface WriteConfirmationProps {
 export function WriteConfirmation({
   workbench,
 }: WriteConfirmationProps): ReactNode {
-  const preview = workbench.operations.preview;
+  const preview = workbench.operations.immediate
+    ? null
+    : workbench.operations.preview;
   const dialog = useNativeDialog(
     preview !== null,
     workbench.operations.discardPreview,

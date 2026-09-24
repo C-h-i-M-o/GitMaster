@@ -440,6 +440,18 @@ impl Replacement {
         original: &FileBytes,
         deadline: Instant,
     ) -> Result<(), OperationError> {
+        self.publish_with_limit(root, path, original, MAX, deadline)
+    }
+
+    /// 通用文件编辑使用自身完整读取上限，其他发布保护与冲突保存一致。
+    fn publish_with_limit(
+        self,
+        root: &Path,
+        path: &str,
+        original: &FileBytes,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<(), OperationError> {
         let (current, name) = parent(root, path)?;
         let current_meta = current
             .dir_metadata()
@@ -448,7 +460,7 @@ impl Replacement {
             .dir
             .dir_metadata()
             .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
-        let file = read_regular(root, path, MAX, deadline)?;
+        let file = read_regular(root, path, limit, deadline)?;
         if !same_inode(&current_meta, &owned_meta)
             || file.bytes != original.bytes
             || file.identity != original.identity
@@ -471,6 +483,19 @@ impl Replacement {
             _ => false,
         }
     }
+}
+
+/// 只替换已捕获的普通工作文件，不触碰 Git 索引或提交对象。
+pub(crate) fn replace_regular(
+    root: &Path,
+    path: &str,
+    original: &FileBytes,
+    bytes: &[u8],
+    limit: usize,
+    deadline: Instant,
+) -> Result<(), OperationError> {
+    Replacement::new(root, path, original, bytes, deadline)?
+        .publish_with_limit(root, path, original, limit, deadline)
 }
 
 impl Drop for Replacement {

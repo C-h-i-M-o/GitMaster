@@ -335,13 +335,18 @@ impl ProjectFilesRequest {
         })
     }
     /// 创建列表时不持有主锁，迟到结果拒绝安装。
-    fn run(self, shared: &DesktopState) -> Result<ProjectFileList, OperationError> {
+    fn run(
+        self,
+        shared: &DesktopState,
+        include_ignored: bool,
+    ) -> Result<ProjectFileList, OperationError> {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
         let cache = self.ctx.coordinator.read(&key, || {
-            git::files::ProjectFilesSession::new(
+            git::files::ProjectFilesSession::new_with_ignored(
                 self.ctx.git.clone(),
                 self.ctx.repository.clone(),
                 self.ctx.state.clone(),
+                include_ignored,
             )
         })?;
         let list = cache.list();
@@ -380,11 +385,16 @@ impl ProjectFileAccess {
     }
     /// 读取只使用核心目录能力；完成后核对缓存仍然有效。
     fn run(self, shared: &DesktopState, file_id: &str) -> Result<FileDiff, OperationError> {
+        self.run_with(shared, |cache| cache.read(file_id))
+    }
+    /// 预览和完整编辑文档共用队列与结果发布校验。
+    fn run_with<T>(
+        self,
+        shared: &DesktopState,
+        read: impl FnOnce(&git::files::ProjectFilesSession) -> Result<T, OperationError>,
+    ) -> Result<T, OperationError> {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
-        let result = self
-            .ctx
-            .coordinator
-            .read(&key, || self.cache.read(file_id))?;
+        let result = self.ctx.coordinator.read(&key, || read(&self.cache))?;
         let desktop = shared.lock()?;
         self.ctx.check(&desktop)?;
         if !desktop
@@ -404,10 +414,14 @@ pub async fn read_project_files(
     state: State<'_, DesktopState>,
     repository_id: String,
     snapshot_id: String,
+    include_ignored: Option<bool>,
 ) -> Result<ProjectFileList, OperationError> {
     let shared = state.inner().clone();
     let request = ProjectFilesRequest::begin(&shared, &repository_id, &snapshot_id)?;
-    blocking("read_project_files", move || request.run(&shared)).await
+    blocking("read_project_files", move || {
+        request.run(&shared, include_ignored.unwrap_or(false))
+    })
+    .await
 }
 
 /// 按本次列表 fileId 读取项目文件内容，列表刷新后旧 ID 拒绝。
@@ -421,6 +435,22 @@ pub async fn read_project_file(
     let shared = state.inner().clone();
     let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
     blocking("read_project_file", move || request.run(&shared, &file_id)).await
+}
+
+/// 获取完整可编辑文档，不能把截断预览升级为可保存内容。
+#[tauri::command]
+pub async fn read_editable_file(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    file_id: String,
+) -> Result<git::files::EditableFile, OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    blocking("read_editable_file", move || {
+        request.run_with(&shared, |cache| cache.read_editable(&file_id))
+    })
+    .await
 }
 
 #[cfg(test)]

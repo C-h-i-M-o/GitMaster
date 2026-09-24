@@ -31,9 +31,9 @@ struct Snapshot {
 }
 /// 无损读取的普通文件字节及目录项身份。
 #[derive(PartialEq, Eq)]
-struct FileBytes {
-    bytes: Vec<u8>,
-    identity: String,
+pub(crate) struct FileBytes {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) identity: String,
 }
 /// 可编辑 UTF-8 文本与输出字节策略，BOM 不混入编辑草稿。
 struct Text {
@@ -400,7 +400,7 @@ fn decode(bytes: &[u8]) -> Result<Text, OperationError> {
 }
 
 /// 沿目录能力检查每个祖先，普通文件以不跟随链接且非阻塞方式有界读取。
-fn read_regular(
+pub(crate) fn read_regular(
     root: &Path,
     path: &str,
     limit: usize,
@@ -554,6 +554,7 @@ mod tests;
 
 mod save;
 pub use save::prepare_save;
+pub(crate) use save::replace_regular;
 mod finish;
 pub use finish::prepare_finish;
 #[cfg(test)]

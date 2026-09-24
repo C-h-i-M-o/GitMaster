@@ -700,3 +700,225 @@ computer use 已成功操作本次构建的 macOS Debug `.app`，通过原生目
 - 全量后串行复测两个用例：普通路径再次通过；linked worktree 已成功执行切换，但旧测试的精确字节断言期望 LF、实际为 CRLF。仅给该 SHA-256 临时测试仓库显式设置 core.autocrlf=false，消除系统换行默认值对该用例的影响，不修改应用换行策略。
 - 修正夹具后，`cargo test -p gitmaster-core captured_checkout_supports_sha256_linked_worktree_and_preserves_metadata --locked --offline -- --nocapture --test-threads=1`：1 通过，92.58 秒。实际切换成功，目标文件字节、HEAD、reflog 与公共 refs/config 保护断言全部通过。普通路径专项已先失败后通过，并在全量结束后的串行复测再次通过；全量失败记录仍有效，未重跑全套或宣称全绿。
 - 用户随后确认本部分功能验证通过，并授权提交全部当前改动。该人工验收不覆盖上述全量自动化测试失败，也不代表 macOS、Release 安装包、签名或干净系统验收通过；本次仅本地提交，不推送或发布。
+
+## 2026-09-24 M2/M3 补充开发第一批（进行中）
+
+- 已接入分支头标签、合并暂存按钮、二级统一差异面板、操作记录列表/详情，以及暂存/取消暂存/创建分支直接执行。这里只记录第一批，不代表全部补充需求完成。
+- 新增本地测试 `tests/m2-m3/supplement-presentation.test.ts`、`supplement-history.test.ts`、`supplement-direct-actions.test.ts`：10 通过、0 失败；覆盖混合方向、差异行号、未跟踪原文、HEAD 区分、事件去重与有界记录、合并待提交提示、直接动作防双击及过期拒绝。
+- `pnpm build`（包含 typecheck）通过，96 模块；随后合并结果提示修正的 `pnpm typecheck` 与 10 项测试通过；`git diff --check` 通过。
+- 未执行本轮 Rust、原生桌面、macOS 或真实网络认证测试。多标签、PTY、文件编辑、远程同步及设置迁移尚未完成；依赖安装授权仍待答复。
+- 当前本机缺少旧 `tests/m2-m3` 用例，基线通配运行 0 项，不能当作历史测试回归通过。测试保持本地排除，未提交/推送。
+
+## 2026-09-24 M2/M3 补充开发第二批（进行中）
+
+- `cargo test -p gitmaster-desktop settings::tests --locked --offline -- --test-threads=1`：10 通过，0 失败；覆盖 v1/v2 迁移、默认值、非法字段保留原文件、过期 revision 拒绝、旧单项保存保留新增配置。测试进程退出码 0；既有进程模块未使用导入和 Windows 链接器警告仍存在。
+- 新增 `supplement-settings-draft.test.ts`：先因目标模块不存在失败；实现后 2 通过，检查分类恢复互不影响及删除默认 profile 的引用完整性。
+- 新增前端设置契约、服务、草稿 hook 后 `pnpm typecheck` 通过；这些模块尚未接入设置界面，不能据此声称统一设置交互完成。
+- 底部记录标签已有本地行为测试；PTY 尚未接入，没有进行终端命令执行或原生 UI 验收。未验证 macOS、安装包或真实远端认证。
+
+## 2026-09-24 M2/M3 统一设置界面接入（进行中）
+
+- 新增 SettingsPanel/useSettingsForm，接入统一草稿、六类表单和未保存确认；旧设置表单不再挂载。
+- `pnpm build` 退出码 0，包含严格类型检查，101 模块。随后增加 Git 环境检测期间的应用门禁，追加 `pnpm typecheck` 退出码 0；14 项现有补充专项全部通过，`git diff --check` 通过。这些测试尚未覆盖设置表单完整交互。
+- 本轮未进行原生窗口、系统选择器和跨平台交互验证；终端执行、项目文件编辑、外部程序启动仍不能由设置页面通过构建推断为完成。
+
+## 2026-09-24 已加载差异上下文折叠
+
+- `supplement-diff-folds.test.ts` 先因实现模块缺失失败，实现后 2 项通过；覆盖展开后的逐行无损还原、变化行保留和注释分界保护。
+- `pnpm typecheck` 退出码 0。未进行原生点击/键盘交互或长文件性能验收，不能据此宣称完整差异查看验收完成。
+
+## 2026-09-24 项目文件树
+
+- 新增文件树专项先因目标模块缺失失败，实现后通过，覆盖目录优先、大小写区分、祖先保留及原始文件标识。
+- `pnpm typecheck` 退出码 0。尚未验证大目录性能、原生文件树交互及编辑保存；当前文件内容仍为只读。
+
+## 2026-09-24 上游身份读取
+
+- `cargo test -p gitmaster-core upstream_snapshot_preserves_remote_and_target_identity --locked --offline -- --test-threads=1`：1 通过，13.18 秒。仅使用临时仓库和无网络配置，未访问或写入用户远端。
+- 现有 `remote_metadata_is_read_only_and_session_bound` 专项：1 通过，22.38 秒，验证只读元数据行为和会话绑定。既有测试辅助函数及未使用导入警告保留，未无关清理。
+- `pnpm typecheck`、`git diff --check` 通过。新增映射不是同步执行完成证明；全分支 fetch、push/快进编排和首次 upstream 设置仍待实现。
+
+## 2026-09-24 直接提交的索引版本保护
+
+- `commit_rejects_replaced_index_before_prepare` 修复前实际接受旧页面快照并失败，加入索引摘要后 1 通过（23.54 秒）。所有 Git 写入仅在隔离临时仓库。
+- 前端直接动作 3 项通过，`pnpm typecheck` 与 `cargo check -p gitmaster-desktop --locked --offline` 通过（桌面检查 21.52 秒）。
+- 现有 `whole_index_preview_is_readonly_and_rejects_external_index` 首次复测失败于测试 helper 的 10 秒等待期限，34.84 秒退出；编译结束后不改变期限串行复测通过（38.27 秒）。首次失败记录仍保留，新增状态读取成本和负载下稳定性尚需性能验证。
+
+## 2026-09-24 系统文件管理器入口
+
+- 新增当前项目根目录打开 IPC 与页面按钮，复用现有 opener，无新增安装依赖。
+- `pnpm typecheck` 通过；Rust 首次检查发现临时 MutexGuard 解引用类型问题，改为具名锁作用域后 `cargo check -p gitmaster-desktop --locked --offline` 通过（5.34 秒）。
+- 未实际触发系统文件管理器，尚未做 Windows/macOS 原生打开验收；不将编译通过描述为外部打开全部完成。
+
+## 2026-09-24 外部应用选项
+
+- VS Code/系统终端选项、可用性查询及默认选择已接入；`pnpm typecheck`、Windows `cargo check -p gitmaster-desktop --locked --offline` 通过。
+- `cargo test -p gitmaster-desktop commands::external::tests --locked --offline -- --test-threads=1`：2 通过，编译耗时 1 分 23 秒。验证包含中文、空格和 shell 特殊字符的项目路径仅作为参数或工作目录；测试不启动应用。
+- 标准安装路径发现尚未覆盖自定义安装位置；没有实际外部窗口、macOS 或安装包验收结果。
+
+## 2026-09-24 编辑文本字节契约
+
+- `cargo test -p gitmaster-core files::editor_text::tests --locked --offline -- --test-threads=1`：2 通过，编译 13.42 秒，测试无磁盘写入。
+- 验证完整文本往返保留 BOM、各类换行及无尾换行，拒绝二进制、非法 UTF-8 和超限输入。文件读取身份、并发修改拒绝、落盘保存和编辑器交互尚未实现或验证，不据此宣称文件编辑完成。
+
+## 2026-09-24 完整编辑文档读取
+
+- `editable_document_is_complete_and_versioned`：1 通过，28.50 秒。临时仓库核对 BOM、CRLF、未知 ID 拒绝，以及同状态下外部更改产生不同版本。
+- `cargo check -p gitmaster-desktop --locked --offline` 通过（14.29 秒），`pnpm typecheck` 和 `git diff --check` 通过。
+- 新增桌面读取 IPC 与前端契约；仍未实现落盘保存、编辑器交互或跨平台文件身份专项。本结果不代表编辑保存完成。
+
+## 2026-09-24 核心文件保存
+
+- `editor_save_preserves_git_and_rejects_stale_bytes` 先因方法缺失失败，实现后 1 通过（23.73 秒）。只操作 Fixture 临时仓库，核对实际字节、HEAD、索引和过期版本拒绝。
+- `git diff --check` 通过。桌面保存生命周期、编辑器、系统权限/链接替换专项及 macOS 尚未验收；不可据此宣称项目文件编辑任务完成。
+
+## 2026-09-24 文件保存任务链
+
+- prepare_file_save / SaveFile / 前端 saveFile 已接入现有准备、执行、排队和操作记录链；`cargo check -p gitmaster-desktop --locked --offline` 通过（11.49 秒），`pnpm typecheck` 通过。
+- 前端直接动作专项 4 项通过，包括重复点击文件保存只执行一次。
+- 核心 `editor_save_preserves_git_and_rejects_stale_bytes` 改为通过真实协调器执行后 1 通过（85.17 秒）。该用例实际核对落盘字节与 Git 不变；耗时偏高，尚无大文件或交互性能通过结论。
+
+## 2026-09-24 编辑标签草稿状态
+
+- `supplement-editor-tabs.test.ts`：先因目标模块缺失失败，实现后 2 通过；覆盖独立草稿、脏标签关闭拒绝、外部内容变化及保存期间继续编辑保护。
+- `pnpm typecheck` 通过。尚未接入 Monaco、页面、多文件保存或窗口退出提醒，未做原生交互验收。
+
+## 2026-09-24 全分支 fetch 草案
+
+- `remote::fetch_all::tests` 首次运行 2 项通过，验证解析约束与创建/更新事务、不 prune 和符号引用冲突拒绝。新增 `stale_transaction_publishes_no_new_branch` 真实 Git 事务专项 1 通过（74.09 秒），核对旧 OID 不匹配时无新引用部分发布。
+- 核心 cargo check 与前端 typecheck 通过；补充引用格式和命名空间重叠门禁后，桌面 cargo check 通过（34.98 秒）。未进行完整下载、认证或用户远端操作，未接入顶栏刷新。
+
+### 手动刷新与完整分支下载验证（2026-09-24）
+
+- `pnpm typecheck`：通过；`pnpm exec vite build`：通过（108 modules）。
+- `node --test tests/m2-m3/supplement-direct-actions.test.ts`：5 项通过，包含 FetchAll 指定远端、防双击、直接执行、过期计划拒绝。
+- `cargo test -p gitmaster-core downloads_all_branches_without_tags_or_local_changes --locked --offline -- --test-threads=1`：修复测试传输路径后 1 项通过（106.89 秒）。临时源仓库 main 与 feature/new 均下载到跟踪引用，标签未下载，本地 HEAD、索引和原有工作文件保持不变，成功获取时间已记录。测试以本地传输替换网络，不代表真实 HTTPS/SSH 认证验收。
+- 保留失败过程：首次返回 NETWORK_FAILED；加入仅测试用 stderr 断言后定位 Git unpack-objects 的 Invalid argument。测试替身直接传递 Windows 扩展路径，生产 process.rs 已使用 dunce::simplified；替身对齐后通过，未放宽生产传输策略。
+- 顶栏刷新与多远端选择已接线，实际桌面操作和网络失败的完整用户反馈尚未验收。同步远程、首次上游设置、真实终端和编辑器仍未完成。
+- `cargo check -p gitmaster-desktop --locked --offline`：通过（17.45 秒），保留原有 process.rs 未使用导入警告；不代表原生运行验收。
+
+### 刷新准备失败回退（2026-09-24）
+
+- `node --test tests/m2-m3/supplement-direct-actions.test.ts`：7 项通过。新增准备错误返回原错误、无任务执行；执行响应丢失且查询失败时保留 unverified 与 busy，返回已启动/可能启动而不触发本地回退。
+- 页面接入无远端提示；获取准备或读取远端列表失败后补读本地状态，错误保持到下一次手动刷新或切换仓库。本轮未验证桌面交互，不将控制器测试视为 UI 验收。
+
+### 同步目标只读识别（2026-09-24）
+
+- 配置解析单测 upstream_config_distinguishes_missing_partial_and_ambiguous：1 通过，覆盖分支名大小写、斜杠、缺失、重复、本地及非分支目标。
+- 临时仓库回归 sync_target_preserves_unfetched_upstream_and_rejects_changed_config：1 通过（48.96 秒），验证尚未 fetch 的已有上游和外部配置变化拒绝，无真实联网或用户仓库写入。
+- `pnpm typecheck` 与 `cargo check -p gitmaster-desktop --locked --offline` 通过（后者 18.92 秒，保留已有未使用导入警告）。仅验证编译和上述接口行为；完整同步、配置写入与 UI 尚未完成。
+- 补充回归 sync_target_checks_missing_partial_and_dirty_state：1 通过（54.58 秒），真实临时仓库验证 missing、部分配置为 unresolved、外部文件变化拒绝旧快照、当前脏状态拒绝同步。相关 TS 格式检查通过。
+
+### 同步推送执行门禁（2026-09-24）
+
+- `cargo test -p gitmaster-core sync_push_stops_when_worktree_changes_after_prepare --locked --offline -- --test-threads=1`：1 通过（79.83 秒），临时 bare 远端未改变；准备后新增的未跟踪文件保留，结果为 WORKTREE_DIRTY。
+- `pnpm typecheck`、`cargo check -p gitmaster-desktop --locked --offline` 通过；`node --test tests/windows-history/errors.test.ts` 3 通过；相关 TS 格式检查通过。
+- 当前新增 SyncPush 写请求尚未挂载同步按钮；不能将此项测试当作完整同步功能或真实认证验收。
+- `cargo test -p gitmaster-core sync_push_updates_only_upstream_and_missing_target_requires_setup --locked --offline -- --test-threads=1`：1 通过（88.42 秒）。真实本地传输验证仅上游 refs/heads/main 改变，修改配置指向不存在目标后准备返回 SYNC_TARGET_MISSING，未创建额外远端引用。
+- SyncFastForward 桌面编译检查通过（9.07 秒）；真实快进测试进行中。上述本地传输不是 HTTPS/SSH 认证验收。
+- `cargo test -p gitmaster-core sync_fast_forward_uses_current_upstream_only --locked --offline -- --test-threads=1`：1 通过（91.12 秒）。main 的上游配置为 origin/release，存在排序更靠前的其他跟踪分支；执行准确快进到 release，其他本地分支及跟踪引用不变。新增 TS 契约通过 typecheck。
+
+### 自动同步编排验证（2026-09-24）
+
+- `node --test tests/m2-m3/supplement-direct-actions.test.ts tests/m2-m3/supplement-sync.test.ts`：17 通过、0 失败。
+- 真实控制器配合 IPC 替身覆盖：获取后重新签发 ID、领先/落后/一致/分叉行为、无上游不联网、获取失败不继续、切换源分支不推送、双击去重、终态刷新等待、响应丢失不继续写入。
+- `pnpm typecheck` 通过。尚未挂载同步页面，未进行真实桌面同步或网络认证验收。
+
+### 上游配置写入验证（2026-09-24）
+
+- `cargo test -p gitmaster-core sets_only_current_upstream_and_rejects_stale_configuration --locked --offline -- --test-threads=1` 首次 1 通过（94.35 秒），新增自动 rebase 隔离场景后复测 1 通过（79.43 秒）。
+- 临时仓库验证：main 配置指向 team/origin 的 release，其他分支上游、当前 rebase=false、HEAD 和索引保持不变；准备后修改配置，执行拒绝并保留外部设置。
+- `pnpm typecheck`、核心/桌面 cargo check、git diff --check 通过。仅临时仓库操作，无真实远端写入。PublishBranch 的新目标发布回归仍在运行。
+- 首次发布回归 `publish_branch_requires_new_target_and_preserves_other_refs`：1 通过（130.86 秒）；目标存在则拒绝，新目标创建后其他远端引用与本地 HEAD 保持不变。
+- 新增实际 fetch 分支清单后的桌面编译与 typecheck 通过；清单发布/继承以及保留旧跟踪引用时同步仍判定目标缺失的扩展回归进行中。
+- 清单扩展回归：sync_target_preserves_unfetched_upstream_and_rejects_changed_config 1 通过（84.29 秒），downloads_all_branches_without_tags_or_local_changes 1 通过（85.57 秒）。前者验证旧跟踪引用仍存在时根据实际清单识别目标缺失，后者验证真实下载生成清单及会话继承。
+- 相关前端控制器测试的 strict TypeScript 静态检查与 git diff --check 通过；完整 UI 尚未挂载/验收。
+
+### 同步 UI 接入后的分步失败回归（2026-09-24）
+
+- 新增三项回归首次均失败：发布成功但刷新失败、上游设置成功但刷新失败、设置后获取失败时，已完成步骤的提示丢失。修复后同步测试 16/16 通过；直接操作测试 9/9 通过。
+- pnpm typecheck 通过。测试文件独立 strict 检查首次命令缺少 TypeScript 6 的 ignoreConfig，随后发现测试替身缺 retryable；补齐并使用项目 bundler 模块解析与 node 类型后检查通过。
+- 以上为真实控制器配合内存 IPC 替身，未操作用户真实仓库、上游或远端。不代表原生弹窗、真实认证或双平台验收通过。
+
+### 忽略文件展示验证（2026-09-24）
+
+- cargo test -p gitmaster-core lists_tracked_and_non_ignored_untracked --locked --offline -- --test-threads=1：1 通过（33.77 秒）。验证默认隐藏与开关开启后的忽略内容读取、强制跟踪优先去重、元数据排除、旧 ID 拒绝；仅临时仓库。
+- cargo check -p gitmaster-desktop --tests --locked --offline 通过，含命令适配层测试代码编译；存在原有未使用导入警告。
+- pnpm build 通过（包含 typecheck，111 modules）。尚未运行原生开关交互与大目录性能验收；平面列表上限仍为 10,000，按目录加载待实现。
+
+### 多文档草稿与保存边界验证（2026-09-24）
+
+- 编辑控制器首次回归 8/9 通过，外部变化用例揭示 FILE_CHANGED 在前端白名单中缺失，错误被归一化为 GIT_EXECUTION_FAILED。补齐已定义编辑与外部打开契约错误码后通过。
+- supplement-file-editor、supplement-editor-tabs、supplement-direct-actions、supplement-sync 四组共 35 项通过，覆盖草稿独立、外部修改拒绝、保存期间输入、保存关闭、迟到读取、未知结果、重复保存及等待真实终态刷新。
+- pnpm typecheck 与新控制器测试文件 strict TypeScript 检查通过。以上使用内存 IPC 替身；不代表 Monaco UI、原生关闭/退出保护或磁盘端到端保存已验收。
+
+### 刷新分阶段反馈验证（2026-09-24）
+
+- supplement-refresh-result、supplement-direct-actions、supplement-sync：30 项通过；覆盖网络成功/本地失败、网络失败/本地成功、未知结果、排队读取及时间戳格式化。
+- pnpm typecheck、测试文件 strict 检查和 pnpm build 通过（112 modules）。
+- Cua 普通浏览器访问 127.0.0.1:1420，确认顶部刷新按钮及“最近获取：记录暂不可用”显示、无顶部重复新建/上传入口。此页面未连接原生 IPC，无真实仓库/远端操作；真实网络成败组合仍须桌面验收。
+- 提示字号改为 11px 并增加两侧间距后，再次截图确认当前预览宽度下按钮和提示无重叠；未覆盖窄屏及实际日期长文本。
+
+### 操作历史目标捕获验证（2026-09-24）
+
+- supplement-direct-actions：12 项通过；新增执行响应前切换 main 到 other，记录仍显示 main → release；恢复任务不显示当前 main 为原始来源。
+- supplement-history 与 supplement-sync：20 项通过。pnpm typecheck、直接操作测试文件 strict 检查通过。
+- 当前为控制器与摘要验证，不代表真实多项目原生任务切换验收。列表 minmax 与详情断行调整后，仍需长路径视觉检查。
+
+### 全量补充前端与多标签浏览器验证（2026-09-24）
+
+- node --experimental-strip-types --test tests/m2-m3/*.test.ts：56/56 通过。
+- Cua 普通浏览器确认操作记录与操作记录 2 的“主分支”/“第二条”筛选独立；右方向键切换焦点与标签，折叠并展开后第二个筛选保留。
+- 分隔条 AX 初始误报 100，补充最大值与像素文案后显示 300；Up 调整后 320。1000×520 下初始主区预留不足，经调整预留 240px 后重新加载验证面板 147px、主区可达。临时视口已恢复。
+- pnpm typecheck 通过。普通浏览器不连接 Git，未验证活跃真实任务、终端、原生编辑或原生退出行为。
+
+### 设置校验定位与默认项保护验证（2026-09-24）
+
+- supplement-settings-draft 与 supplement-settings-fields：4/4 通过。默认配置删除必须先由用户修改默认选择；其他分类草稿保留；错误映射能区分配置序号，未知字段不路由。
+- pnpm typecheck、设置字段测试 strict 检查通过。错误定位控件已接入，但尚未以真实桌面后端校验错误验证聚焦和滚动，不把映射单测视为完整 UI 验收。
+
+### 核心整体回归启动与编辑编码边界（2026-09-24）
+
+- cargo test -p gitmaster-core --locked --offline -- --test-threads=2 已开始运行 188 项；当前无最终结果，不能标记全量通过。测试使用核心现有临时仓库夹具，未授权或执行用户真实仓库写入。
+- 全量运行开始后新增混合换行拒绝进入可保存模型的规则，因此该运行不覆盖新规则；后续须针对 editor_text 重新编译测试。
+- supplement-editor-errors 1 项通过，覆盖混合换行、编码、二进制和编辑大小限制在归一化后保留明确中文原因且不泄露 stderr；pnpm typecheck 通过。
+
+### 编辑重新读取与核心回归失败记录（2026-09-24）
+
+- supplement-file-editor 12/12 通过：明确放弃才替换、读取失败仍保留草稿、期间新输入不丢失、关闭后迟到结果不重开、保存开始废弃在途读取。应用 typecheck 和测试 strict 检查通过。
+- 全量核心测试运行中出现 create_supports_sha256_repository FAILED；尚待完整错误详情。使用同一已编译二进制单独运行该用例并开启 nocapture，尚未取得结果。原全量测试没有中断或重启。
+
+### 核心测试等待问题确认（2026-09-24）
+
+- 原二进制单独诊断 create_supports_sha256_repository 失败（133.98 秒），明确 panic 位于 branches.rs 测试 finish 的 10 秒等待断言“分支操作未及时完成”，未取得操作终态。
+- 同模块生产 LOCAL_BUDGET 为 120 秒。测试等待改为该预算加 5 秒终态交付余量，保持全部结果和 Git 状态断言，不修改生产超时。
+- 原全量运行因已确认的等待缺陷停止：终止前已有 5 个分支测试报失败，仅 SHA-256 用例完成明确原因诊断，不能推定其他失败都已解决。原进程已退出，没有后台重复全量执行。
+- 新源码重新编译的 editor_text 两项测试通过，覆盖混合换行拒绝、受支持文本字节往返、编码/二进制/大小限制。修正后的 SHA-256 用例复测进行中。
+
+### 分支等待修正复测与格式门禁（2026-09-24）
+
+- create_supports_sha256_repository 修正测试等待后 1/1 通过（37.49 秒），保留原 SHA-256 引用长度、HEAD 与目标一致及成功结果断言。
+- cargo fmt --all -- --check 首次失败；差异仅位于本轮已修改/新增 Rust 文件。整理格式后该检查与 git diff --check 通过，不改变生产操作预算。
+- 分支模块其余用例继续使用最新语义代码编译的二进制逐项复测；设置持久化测试运行中。原全量仍未通过，后续须重新执行完整核心回归。
+- 桌面设置持久化回归完成：cargo test -p gitmaster-desktop settings::tests --locked --offline -- --test-threads=1，10/10 通过（测试 0.62 秒，构建 1 分 46 秒）；覆盖 v1/v2 迁移、无效 profile/偏好/日志级别不改文件、过期设置拒绝、旧入口保存保留其他字段及损坏文件保留。不代表原生设置窗口交互已通过。
+
+### 差异上下文补读契约验证（2026-09-24）
+
+- supplement-diff-context 与 windows-history/refresh 共 8/8 通过；验证补读保留 staged 侧与原快照，切换文件后的迟到结果不覆盖当前差异，以及既有刷新门禁回归。
+- pnpm build、cargo check -p gitmaster-desktop --tests --locked --offline、cargo check -p gitmaster-core --tests --locked --offline、cargo fmt --all -- --check、git diff --check 通过。保留既有 Rust 未使用项警告。
+- 新增真实 Git 上下文测试已编译但尚未执行；当前分支模块旧二进制复测仍在运行，不重复覆盖其可执行文件。UI、实际 Git 返回上下文及截断场景仍待验收。
+
+### 最新补充回归与剩余分支失败（2026-09-24）
+
+- node --experimental-strip-types --test tests/m2-m3/*.test.ts：65/65 通过、0 失败，耗时 6.49 秒。仅证明所覆盖纯函数和控制器行为，不替代 PTY、编辑器 UI 或原生 IPC 验收。
+- 分支模块逐项复测结束：8 通过、1 失败、1 忽略，耗时 641.63 秒；switch_is_readonly_until_execution_and_checks_actual_target 未返回预期成功结果，尚未确定原因。已保留成功断言并补充实际返回值用于单例诊断。
+- 最新 cargo fmt --all -- --check 与 git diff --check 通过；没有重新宣称核心全量通过。
+- cargo test -p gitmaster-core --locked --offline expanded_context_reads_hidden_lines_and_rejects_excess -- --nocapture --test-threads=1：1/1 通过（23.89 秒），使用临时 Git 仓库验证默认省略行、20 行上下文、真实增删内容和 2001 行请求拒绝。尚未验证原生按钮交互或大文件阅读性能。
+
+### 暂停收尾检查（2026-09-24）
+
+- 用户要求暂停功能开发并保存、提交阶段成果，完整清单见 m2-m3-supplement-handoff.md。没有为收尾继续补齐缺失功能。
+- 剩余分支单例诊断结束：switch_is_readonly_until_execution_and_checks_actual_target，0 通过、1 失败，169.35 秒；准备阶段 branches.rs:814 的 unwrap 收到 TIMEOUT。该次失败位置早于上一轮成功结果断言，根因仍未确定，不将两次失败未经证实归为同一原因。
+- pnpm build 收尾重跑通过，包含 TypeScript 检查，114 modules；cargo check -p gitmaster-desktop --locked --offline 重跑通过（17.90 秒），保留既有未使用导入警告。
+- pnpm format:check 首次指出补充进度与验证记录两份文档格式不符；随后仅整理收尾文档格式并重新检查，最终结果见后续记录。没有将失败测试标记通过。
+- 整理后 pnpm format:check 全仓通过，cargo fmt --all -- --check 与 git diff --check 通过。收尾未重跑耗时的完整核心回归，保留上述失败结论；未启动新功能开发、安装包或发布验证。

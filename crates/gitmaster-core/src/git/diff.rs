@@ -19,6 +19,21 @@ pub fn read_file_diff(
     change_id: &str,
     side: DiffSide,
 ) -> Result<FileDiff, OperationError> {
+    read_file_diff_with_context(git, repository, snapshot, change_id, side, 3)
+}
+
+/// 按用户选择读取有界上下文，仍只接受已签发的文件身份。
+pub fn read_file_diff_with_context(
+    git: &GitExecutable,
+    repository: &RepositoryHandle,
+    snapshot: &RepositoryState,
+    change_id: &str,
+    side: DiffSide,
+    context_lines: u16,
+) -> Result<FileDiff, OperationError> {
+    if context_lines > 2000 {
+        return Err(OperationError::new("INVALID_INPUT"));
+    }
     if snapshot.repository_id != repository.id {
         return Err(OperationError::new("STALE_REQUEST"));
     }
@@ -55,7 +70,7 @@ pub fn read_file_diff(
     if side == DiffSide::Untracked {
         return preview(repository, &change.path);
     }
-    let stats = diff_args(change, side, true);
+    let stats = diff_args(change, side, true, context_lines);
     let out = run_git(git, &repository.root, &stats, 65536, false)?;
     if !out.success {
         return Err(command_error(&out.stderr));
@@ -70,7 +85,7 @@ pub fn read_file_diff(
     let out = run_git(
         git,
         &repository.root,
-        &diff_args(change, side, false),
+        &diff_args(change, side, false, context_lines),
         MAX_BYTES,
         true,
     )?;
@@ -81,7 +96,12 @@ pub fn read_file_diff(
 }
 
 /// 固定参数和 literal pathspec，不让文件名成为选项或路径模式。
-fn diff_args(change: &FileChange, side: DiffSide, stats: bool) -> Vec<OsString> {
+fn diff_args(
+    change: &FileChange,
+    side: DiffSide,
+    stats: bool,
+    context_lines: u16,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--literal-pathspecs",
         "-c",
@@ -103,7 +123,7 @@ fn diff_args(change: &FileChange, side: DiffSide, stats: bool) -> Vec<OsString> 
     if stats {
         args.extend(["--numstat".into(), "-z".into()]);
     } else {
-        args.push("--unified=3".into());
+        args.push(format!("--unified={context_lines}").into());
     }
     args.push("--".into());
     args.push(change.path.clone().into());
@@ -348,6 +368,48 @@ mod tests {
             cap_std::fs::Dir::open_ambient_dir(&f.root, cap_std::ambient_authority()).unwrap();
         assert!(dir.open("link").is_err());
         assert!(dir.open("../secret").is_err());
+    }
+
+    /// 补读返回默认差异省略的真实上下文，超出契约上限时拒绝。
+    #[test]
+    fn expanded_context_reads_hidden_lines_and_rejects_excess() {
+        let f = Fixture::new();
+        let original = (0..60)
+            .map(|index| format!("line{index}\n"))
+            .collect::<String>();
+        f.write("text", original.as_bytes());
+        f.command(&["add", "text"]);
+        f.command(&["commit", "-m", "base"]);
+        f.write(
+            "text",
+            original.replace("line30\n", "changed30\n").as_bytes(),
+        );
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let id = &state.changes[0].change_id;
+        let FileDiff::Text {
+            content: standard, ..
+        } = read_file_diff(&f.git, &repo, &state, id, DiffSide::Unstaged).unwrap()
+        else {
+            panic!("预期文本差异");
+        };
+        let FileDiff::Text {
+            content: expanded,
+            truncated,
+        } = read_file_diff_with_context(&f.git, &repo, &state, id, DiffSide::Unstaged, 20).unwrap()
+        else {
+            panic!("预期展开差异");
+        };
+        assert!(!standard.contains(" line15\n"));
+        assert!(expanded.contains(" line15\n"));
+        assert!(expanded.contains("+changed30\n"));
+        assert!(expanded.contains("-line30\n"));
+        assert!(!truncated);
+        assert_eq!(
+            read_file_diff_with_context(&f.git, &repo, &state, id, DiffSide::Unstaged, 2001)
+                .unwrap_err()
+                .code,
+            "INVALID_INPUT"
+        );
     }
 
     /// 截断必须恰好保留最多五千行，不能多显示下一行。

@@ -17,6 +17,14 @@ use std::{
 const NETWORK_BUDGET: Duration = Duration::from_secs(15 * 60);
 const MAX_COMMITS: usize = 1000;
 
+/// 手动推送、同步已有上游与首次发布使用不同目标存在性规则。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PushPolicy {
+    Explicit,
+    SyncExisting,
+    PublishNew,
+}
+
 /// 生产入口固定受限网络执行器，测试只替换传输层。
 type NetworkRunner = fn(
     &GitExecutable,
@@ -41,6 +49,7 @@ struct PushPlan {
     old_oid: Option<String>,
     objects: PathBuf,
     scratch: tempfile::TempDir,
+    require_clean: bool,
 }
 
 /// 查询真实远端并准备单目标普通推送；不更新本地或远端引用。
@@ -76,6 +85,97 @@ fn prepare_with_runner(
     target_branch: &str,
     runner: NetworkRunner,
 ) -> Result<WritePreview, OperationError> {
+    prepare_with_policy(
+        coordinator,
+        git,
+        repo,
+        state,
+        remotes,
+        remote_id,
+        target_branch,
+        runner,
+        PushPolicy::Explicit,
+    )
+}
+
+/// 同步推送目标只取当前分支上游，不允许前端另选其他分支。
+pub fn prepare_sync_push(
+    coordinator: &RepositoryCoordinator,
+    git: &GitExecutable,
+    repo: &RepositoryHandle,
+    state: &RepositoryState,
+    remotes: &RemoteSession,
+) -> Result<WritePreview, OperationError> {
+    prepare_sync_with_runner(coordinator, git, repo, state, remotes, run_network_git)
+}
+
+/// 测试可替换传输，目标解析和同步门禁保持生产逻辑。
+fn prepare_sync_with_runner(
+    coordinator: &RepositoryCoordinator,
+    git: &GitExecutable,
+    repo: &RepositoryHandle,
+    state: &RepositoryState,
+    remotes: &RemoteSession,
+    runner: NetworkRunner,
+) -> Result<WritePreview, OperationError> {
+    let key = CoordinationKey::repository(repo)?;
+    let target = coordinator.read(&key, || remotes.sync_target(state))?;
+    let SyncUpstream::Configured {
+        remote_id,
+        target_branch_name,
+        ..
+    } = target.upstream
+    else {
+        return Err(OperationError::new("SYNC_UPSTREAM_REQUIRED"));
+    };
+    prepare_with_policy(
+        coordinator,
+        git,
+        repo,
+        state,
+        remotes,
+        &remote_id,
+        &target_branch_name,
+        runner,
+        PushPolicy::SyncExisting,
+    )
+}
+
+/// 用户明确选择新目标后仅发布当前干净分支；已有目标不得被此路径推进。
+pub fn prepare_publish_branch(
+    coordinator: &RepositoryCoordinator,
+    git: &GitExecutable,
+    repo: &RepositoryHandle,
+    state: &RepositoryState,
+    remotes: &RemoteSession,
+    remote_id: &str,
+    target_branch: &str,
+) -> Result<WritePreview, OperationError> {
+    prepare_with_policy(
+        coordinator,
+        git,
+        repo,
+        state,
+        remotes,
+        remote_id,
+        target_branch,
+        run_network_git,
+        PushPolicy::PublishNew,
+    )
+}
+
+/// 同步策略贯穿准备和执行；普通手动推送保留原有工作区规则。
+fn prepare_with_policy(
+    coordinator: &RepositoryCoordinator,
+    git: &GitExecutable,
+    repo: &RepositoryHandle,
+    state: &RepositoryState,
+    remotes: &RemoteSession,
+    remote_id: &str,
+    target_branch: &str,
+    runner: NetworkRunner,
+    policy: PushPolicy,
+) -> Result<WritePreview, OperationError> {
     let generation = coordinator.begin_prepare()?;
     if !cfg!(any(unix, windows)) {
         return Err(OperationError::new("UNSUPPORTED_WRITE_CONFIGURATION"));
@@ -103,6 +203,9 @@ fn prepare_with_runner(
     let deadline = Instant::now() + NETWORK_BUDGET;
     let key = CoordinationKey::repository(repo)?;
     let (plan, pending_commits) = coordinator.read_until(&key, deadline, || {
+        if policy != PushPolicy::Explicit {
+            crate::git::write_guard::validate_snapshot(git, repo, state, deadline)?;
+        }
         query_until(
             git,
             &repo.root,
@@ -167,9 +270,16 @@ fn prepare_with_runner(
             old_oid: None,
             objects,
             scratch,
+            require_clean: policy != PushPolicy::Explicit,
         };
         plan.verify(deadline)?;
         plan.old_oid = plan.remote_oid(runner, deadline)?;
+        if policy == PushPolicy::SyncExisting && plan.old_oid.is_none() {
+            return Err(OperationError::new("SYNC_TARGET_MISSING"));
+        }
+        if policy == PushPolicy::PublishNew && plan.old_oid.is_some() {
+            return Err(OperationError::new("TARGET_EXISTS"));
+        }
         let pending = plan.pending_commits(deadline)?;
         // 网络预览期间本地可以被外部改动，返回确认框前再次验证固定来源。
         plan.verify(deadline)?;
@@ -227,7 +337,7 @@ impl PushPlan {
             deadline,
         )
     }
-    /// 固定配置、对象目录和 HEAD，不因无关工作文件脏而禁止上传已提交内容。
+    /// 固定配置、对象目录和 HEAD；同步策略额外要求工作区持续干净。
     fn verify(&self, deadline: Instant) -> Result<(), OperationError> {
         self.auth.verify(&self.git, &self.repo.root, deadline)?;
         validate_push_hook(&self.repo, &self.auth)?;
@@ -245,6 +355,17 @@ impl PushPlan {
         let objects = std::fs::canonicalize(self.repo.common_dir.join("objects"))
             .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
         let fresh = read_repository_state_until(&self.git, &self.repo, deadline)?;
+        if self.require_clean {
+            if !matches!(fresh.head, HeadState::Branch { .. }) {
+                return Err(OperationError::new("DETACHED_HEAD_WRITE_BLOCKED"));
+            }
+            if !fresh.changes.is_empty() {
+                return Err(OperationError::new("WORKTREE_DIRTY"));
+            }
+            if !fresh.operations.is_empty() {
+                return Err(OperationError::new("OPERATION_IN_PROGRESS"));
+            }
+        }
         if <[u8; 32]>::from(Sha256::digest(effective)) != self.config_digest
             || objects != self.objects
             || fresh.head != self.head

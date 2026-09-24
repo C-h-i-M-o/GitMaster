@@ -20,6 +20,8 @@ export function describeOperationKind(kind: OperationKind): string {
       integrate: "整合远端",
       saveConflict: "保存冲突解决",
       finishMerge: "完成合并",
+      saveFile: "保存项目文件",
+      setUpstream: "设置当前分支上游",
     } satisfies Record<OperationKind, string>
   )[kind];
 }

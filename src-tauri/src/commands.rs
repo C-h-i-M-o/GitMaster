@@ -4,13 +4,16 @@ use gitmaster_core::git::{
     environment::{describe_git, resolve_git},
     *,
 };
+mod external;
 mod monitoring;
 mod operations;
+mod preferences;
 mod readonly;
 mod resources;
 
 pub use monitoring::*;
 pub use operations::*;
+pub use preferences::*;
 pub use readonly::*;
 pub use resources::*;
 
@@ -306,6 +309,7 @@ pub async fn read_file_diff(
     snapshot_id: String,
     change_id: String,
     side: DiffSide,
+    context_lines: Option<u16>,
 ) -> Result<FileDiff, OperationError> {
     let shared = state.inner().clone();
     let (git, handle, snapshot, epoch, token, coordinator) = {
@@ -331,7 +335,14 @@ pub async fn read_file_diff(
     blocking("read_file_diff", move || {
         let key = git::coordinator::CoordinationKey::repository(&handle)?;
         let diff = coordinator.read(&key, || {
-            git::diff::read_file_diff(&git, &handle, &snapshot, &change_id, side)
+            git::diff::read_file_diff_with_context(
+                &git,
+                &handle,
+                &snapshot,
+                &change_id,
+                side,
+                context_lines.unwrap_or(3),
+            )
         })?;
         shared.lock()?.check_repository(epoch, token)?;
         Ok(diff)

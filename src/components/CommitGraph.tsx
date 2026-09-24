@@ -1,6 +1,7 @@
 import { useCommitGraph, laneColor } from "../hooks/useCommitGraph";
 import type { Workbench } from "../hooks/useWorkbench";
 import { Icon } from "./Icon";
+import { BranchHeads } from "./BranchHeads";
 import { describeGitError } from "../ui/gitPresentation";
 /** 以真实提交和父关系绘制可导航画布，拖动仅改变展示坐标。 */
 export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
@@ -113,12 +114,11 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
               <text x="27" y="13" className="node-meta">
                 {node.oid.slice(0, 7)} · {node.commit.authorName}
               </text>
-              {(w.preferences.saved?.showLabels ?? true) &&
-                node.refs.length > 0 && (
-                  <text x="27" y="34" className="node-ref">
-                    {node.refs.map((ref) => ref.name).join(" · ")}
-                  </text>
-                )}
+              <BranchHeads
+                refs={node.refs}
+                head={w.repo.repository?.head}
+                oid={node.oid}
+              />
             </g>
           ))}
         </g>

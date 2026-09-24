@@ -99,6 +99,7 @@ pub(crate) fn validate_snapshot(
     }
     let fresh = read_repository_state_until(git, repo, deadline)?;
     if fresh.head != state.head
+        || fresh.index_identity != state.index_identity
         || fresh.changes != state.changes
         || fresh.operations != state.operations
     {

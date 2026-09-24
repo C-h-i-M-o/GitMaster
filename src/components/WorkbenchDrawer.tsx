@@ -1,3 +1,4 @@
+import { ProjectFilesPanel } from "./ProjectFilesPanel";
 import { useConflictScroll } from "../hooks/useConflictScroll";
 import type { Workbench } from "../hooks/useWorkbench";
 import type { DiffSide } from "../types/git";
@@ -67,33 +68,7 @@ function Changes({ w }: { w: Workbench }) {
             {w.groups.conflicted.length} 个文件存在冲突，打开冲突处理
           </button>
         )}
-        <div className="button-row">
-          <button
-            className="secondary"
-            disabled={!w.canWrite("stage") || w.selected.stage.length === 0}
-            onClick={w.prepareSelection("stage")}
-          >
-            暂存所选 ({w.selected.stage.length})
-          </button>
-          <button
-            className="secondary"
-            disabled={!w.canWrite("unstage") || w.selected.unstage.length === 0}
-            onClick={w.prepareSelection("unstage")}
-          >
-            取消暂存 ({w.selected.unstage.length})
-          </button>
-        </div>
         {w.repo.error && <p role="alert">{describeGitError(w.repo.error)}</p>}
-        {w.repo.selected && (
-          <h4 className="preview-path">
-            {
-              w.repo.repository?.changes.find(
-                (change) => change.changeId === w.repo.selected?.changeId,
-              )?.path
-            }
-          </h4>
-        )}
-        <ContentPreview value={w.repo.diff} loading={w.repo.diffLoading} />
       </div>
       <div className="drawer-bottom">
         {w.writeReason("commit") && (
@@ -112,14 +87,31 @@ function Changes({ w }: { w: Workbench }) {
         <p className="muted small">
           提交会包含全部 {w.groups.staged.length} 个已暂存文件。
         </p>
-        <button
-          className="primary wide"
-          disabled={!w.canWrite("commit") || !w.fields.message.trim()}
-          title={w.writeReason("commit")}
-          onClick={w.prepareCommit}
-        >
-          预览提交
-        </button>
+        <p className="muted small" id="selection-reason">
+          {w.selection.reason}
+        </p>
+        <div className="changes-actions">
+          <button
+            className="secondary"
+            disabled={
+              w.selection.kind === "none" ||
+              w.selection.kind === "mixed" ||
+              !w.canWrite(w.selection.kind)
+            }
+            aria-describedby="selection-reason"
+            onClick={w.prepareSelected}
+          >
+            {w.selection.label}
+          </button>
+          <button
+            className="primary"
+            disabled={!w.canWrite("commit") || !w.fields.message.trim()}
+            title={w.writeReason("commit")}
+            onClick={w.prepareCommit}
+          >
+            提交
+          </button>
+        </div>
       </div>
     </>
   );
@@ -200,31 +192,6 @@ function CommitDetails({ w }: { w: Workbench }) {
       {w.history.error && (
         <p role="alert">{describeGitError(w.history.error)}</p>
       )}
-    </div>
-  );
-}
-/** 项目文件只读展示使用后端签发 ID，保留受限内容说明。 */
-function ProjectFiles({ w }: { w: Workbench }) {
-  return (
-    <div className="drawer-scroll">
-      <p className="muted">已跟踪文件与未忽略的新文件 · 只读</p>
-      <div className="project-file-list">
-        {w.projectFiles?.files.map((file) => (
-          <button
-            className="file-row file-button"
-            key={file.fileId}
-            onClick={w.inspectProjectFile(file.fileId)}
-          >
-            <Icon name="files" />
-            <span className="file-name">{file.path}</span>
-            {file.kind === "untracked" && (
-              <span className="file-status">新文件</span>
-            )}
-          </button>
-        ))}
-      </div>
-      {w.projectPath && <h3 className="preview-path">{w.projectPath}</h3>}
-      <ContentPreview value={w.projectDiff} loading={w.projectLoading} />
     </div>
   );
 }
@@ -393,7 +360,7 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
   if (!w.drawer) return null;
   return (
     <aside
-      className={`workbench-drawer ${w.drawer === "conflicts" ? "merge-drawer" : ""}`}
+      className={`workbench-drawer ${w.drawer === "conflicts" ? "merge-drawer" : w.drawer === "files" ? "files-drawer" : ""}`}
       aria-label={
         {
           changes: "本地修改",
@@ -427,7 +394,7 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
       ) : w.drawer === "detail" ? (
         <CommitDetails w={w} />
       ) : w.drawer === "files" ? (
-        <ProjectFiles w={w} />
+        <ProjectFilesPanel key={w.repo.repository?.repositoryId} w={w} />
       ) : (
         <Conflicts w={w} />
       )}

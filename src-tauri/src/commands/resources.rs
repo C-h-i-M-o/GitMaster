@@ -12,6 +12,47 @@ use std::{
 };
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
+
+/// 在系统文件管理器打开当前仓库根目录；前端仅能提交仓库身份。
+#[tauri::command]
+pub async fn open_project_folder(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    application: settings::ExternalAppId,
+) -> Result<(), OperationError> {
+    let shared = state.inner().clone();
+    let ctx = {
+        let session = shared.lock()?;
+        Context::capture(&session, &repository_id)?
+    };
+    blocking("open_project_folder", move || {
+        let root = dunce::canonicalize(&ctx.repository.root)
+            .map_err(|_| OperationError::new("PROJECT_FOLDER_UNAVAILABLE"))?;
+        if !root.is_dir() {
+            return Err(OperationError::new("PROJECT_FOLDER_UNAVAILABLE"));
+        }
+        {
+            let session = shared.lock()?;
+            ctx.check(&session)?;
+        }
+        match application {
+            settings::ExternalAppId::FileManager => app
+                .opener()
+                .open_path(root.to_string_lossy(), None::<&str>)
+                .map_err(|_| OperationError::new("EXTERNAL_OPEN_FAILED")),
+            _ => super::external::launch(&application, &root),
+        }
+    })
+    .await
+}
+
+/// 只报告白名单外部软件的可用性，不启动任何程序。
+#[tauri::command]
+pub fn read_external_availability() -> super::external::ExternalAvailability {
+    super::external::availability()
+}
 
 /// 远端初始化捕获请求代次，同仓库刷新继承真实获取时间。
 pub(super) struct RemoteRequest {
@@ -67,6 +108,42 @@ pub async fn read_remotes(
     let shared = state.inner().clone();
     let request = RemoteRequest::begin(&shared, &repository_id)?;
     blocking("read_remotes", move || request.run(&shared)).await
+}
+/// 读取当前干净分支的上游配置；绑定当前仓库快照与远端会话。
+#[tauri::command]
+pub async fn read_sync_target(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+) -> Result<SyncTarget, OperationError> {
+    let shared = state.inner().clone();
+    let (ctx, cache) = {
+        let s = shared.lock()?;
+        let ctx = Context::capture(&s, &repository_id)?;
+        ctx.check_snapshot(&snapshot_id)?;
+        let cache = s
+            .remotes
+            .clone()
+            .ok_or_else(|| OperationError::new("STALE_REQUEST"))?;
+        (ctx, cache)
+    };
+    blocking("read_sync_target", move || {
+        let key = CoordinationKey::repository(&ctx.repository)?;
+        let result = ctx
+            .coordinator
+            .read(&key, || cache.sync_target(&ctx.state))?;
+        let s = shared.lock()?;
+        ctx.check(&s)?;
+        if !s
+            .remotes
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &cache))
+        {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
+        Ok(result)
+    })
+    .await
 }
 /// 评估已签发跟踪分支与当前 HEAD，迟到结果不能用于新仓库。
 #[tauri::command]

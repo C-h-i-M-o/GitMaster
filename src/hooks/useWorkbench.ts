@@ -1,7 +1,11 @@
 import { useLogSettings } from "./useLogSettings";
+import { useManualRefresh } from "./useManualRefresh";
+import { useRemoteSync } from "./useRemoteSync";
+import { selectionAction } from "../ui/selectionAction";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useWorkspace } from "./useWorkspace";
-import { usePreferences } from "./usePreferences";
+import { useAppSettings } from "./useAppSettings";
+import type { SettingsCategory } from "../types/settings";
 import * as api from "../services/git";
 import { normalizeOperationError } from "../services/gitErrors";
 import { describeGitError, groupChanges } from "../ui/gitPresentation";
@@ -30,17 +34,106 @@ export function useWorkbench() {
   const workspace = useWorkspace();
   const { repo, operations, conflicts } = workspace;
   const repository = repo.repository;
-  const preferences = usePreferences(!workspace.preview);
+  const manualRefresh = useManualRefresh(
+    repo,
+    workspace.preview || operations.busy || repo.loading || conflicts.dirty,
+    operations.runRemote,
+    repo.refresh,
+    repo.getSnapshot,
+    operations.getSnapshot,
+  );
   const logSettings = useLogSettings(!workspace.preview);
+  const syncRemote = useRemoteSync(
+    {
+      repository: () => {
+        const current = repo.getSnapshot();
+        return current.loading || current.stale ? null : current.repository;
+      },
+      blocked: () =>
+        workspace.preview ||
+        conflicts.dirty ||
+        manualRefresh.busy ||
+        operations.getSnapshot().busy,
+      readRemotes: api.readRemotes,
+      readSyncTarget: api.readSyncTarget,
+      assessRemote: api.assessRemote,
+      execute: operations.runRemote,
+    },
+    repository?.repositoryId,
+  );
+  useEffect(() => {
+    workspace.setRemoteWorkflowActive(syncRemote.busy || manualRefresh.busy);
+    return () => workspace.setRemoteWorkflowActive(false);
+  }, [workspace.setRemoteWorkflowActive, syncRemote.busy, manualRefresh.busy]);
+  const appSettings = useAppSettings(!workspace.preview, settingsApplied);
+  const preferences = {
+    saved: appSettings.saved?.settings.uiPreferences ?? null,
+  };
+  const [settingsPending, setSettingsPending] = useState<
+    "close" | "reload" | null
+  >(null);
+  /** 持久化成功才更新运行环境；普通外观设置不会清空项目。 */
+  function settingsApplied(gitChanged: boolean): void {
+    logSettings.reload();
+    if (gitChanged) {
+      repo.clear();
+      void workspace.git.refresh();
+    }
+  }
+  /** 应用设置失败时保持表单与所有输入。 */
+  async function applySettings(): Promise<void> {
+    if (
+      !operations.busy &&
+      !conflicts.dirty &&
+      workspace.git.status !== "loading"
+    )
+      await appSettings.save();
+  }
+  /** 恢复当前分类仅变更内存草稿。 */
+  function restoreSettings(): void {
+    appSettings.restore(settingsCategory);
+  }
+  /** 重新读取前处理尚未保存的编辑。 */
+  function reloadSettings(): void {
+    if (appSettings.dirty) setSettingsPending("reload");
+    else void appSettings.reload();
+  }
+  /** 取消待执行的关闭或重读，保留编辑。 */
+  function keepSettings(): void {
+    setSettingsPending(null);
+  }
+  /** 用户明确丢弃后执行原动作。 */
+  function discardSettings(): void {
+    if (appSettings.activity !== "idle") return;
+    const next = settingsPending;
+    setSettingsPending(null);
+    appSettings.cancel();
+    if (next === "reload") void appSettings.reload();
+    else if (next === "close") setModal(null);
+  }
+  /** 保存并关闭只有在持久化成功后才离开。 */
+  async function saveSettingsAndContinue(): Promise<void> {
+    if (
+      operations.busy ||
+      conflicts.dirty ||
+      workspace.git.status === "loading"
+    )
+      return;
+    const next = settingsPending;
+    if (!(await appSettings.save())) return;
+    setSettingsPending(null);
+    if (next === "reload") void appSettings.reload();
+    else if (next === "close") setModal(null);
+  }
   const [drawer, setDrawer] = useState<Drawer>(null);
+  const [changeDetailOpen, setChangeDetailOpen] = useState(false);
   const [modal, setModal] = useState<Modal>(null);
   const [showOperations, setShowOperations] = useState(false);
   const [branchesExpanded, setBranchesExpanded] = useState(true);
   const [projectMenu, setProjectMenu] = useState(false);
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
-  const [settingsCategory, setSettingsCategory] = useState<
-    "general" | "appearance" | "logging"
-  >("general");
+  const [settingsCategory, setSettingsCategory] =
+    useState<SettingsCategory>("general");
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [context, setContext] = useState<WriteContext | null>(null);
   const [resourceError, setResourceError] = useState<OperationError | null>(
@@ -50,6 +143,7 @@ export function useWorkbench() {
     null,
   );
   const [projectDiff, setProjectDiff] = useState<FileDiff | null>(null);
+  const [includeIgnored, setIncludeIgnored] = useState(false);
   const [projectPath, setProjectPath] = useState("");
   const [projectLoading, setProjectLoading] = useState(false);
   const [selected, setSelected] = useState<
@@ -98,9 +192,7 @@ export function useWorkbench() {
     setBranchesExpanded((value) => !value);
   }
   /** 设置分类切换不改变已保存值。 */
-  function selectSettings(
-    category: "general" | "appearance" | "logging",
-  ): () => void {
+  function selectSettings(category: SettingsCategory): () => void {
     return () => setSettingsCategory(category);
   }
   useEffect(() => {
@@ -121,6 +213,7 @@ export function useWorkbench() {
     setProjectLoading(false);
     setResourceError(null);
     setSelected({ stage: [], unstage: [] });
+    setChangeDetailOpen(false);
     return () => {
       resourceGeneration.current += 1;
     };
@@ -223,14 +316,30 @@ export function useWorkbench() {
     }
     if (done.result.outcome === "needsResolution") setDrawer("conflicts");
   }, [workspace.completion]);
-  const blocked = operations.busy || repo.loading || repo.stale;
+  const blocked =
+    operations.busy || syncRemote.busy || repo.loading || repo.stale;
+  /** 为禁用按钮附近和辅助技术提供明确的同步门禁原因。 */
+  function syncReason(): string {
+    if (workspace.preview) return "请在桌面应用中同步远程";
+    if (!repository) return "请先打开仓库";
+    if (syncRemote.busy) return syncRemote.phaseLabel;
+    if (operations.busy || manualRefresh.busy) return "请先等待当前操作完成";
+    if (repo.loading || repo.stale) return "请先完成仓库刷新";
+    if (conflicts.dirty) return "请先保存或放弃未保存的草稿";
+    if (repository.head.kind !== "branch") return "请切换到已有提交的本地分支";
+    if (repository.operations.length) return "请先完成当前合并或其他 Git 操作";
+    if (repository.changes.length) return "请先处理工作区、暂存区和未跟踪文件";
+    return "";
+  }
   const canOpenWrite =
     Boolean(repository) && !workspace.preview && !blocked && !conflicts.dirty;
   const canSwitchBranch =
     canOpenWrite &&
     (!context || context.capabilities.switchBranch.status === "allowed");
   /** 能力与当前快照一致才开放写入口，详细拒绝原因保留在后端预览。 */
-  function canWrite(kind: Exclude<OperationKind, "clone">): boolean {
+  function canWrite(
+    kind: Exclude<OperationKind, "clone" | "saveFile" | "setUpstream">,
+  ): boolean {
     return (
       !blocked &&
       !conflicts.dirty &&
@@ -238,7 +347,9 @@ export function useWorkbench() {
     );
   }
   /** 提供按钮和读屏可使用的能力门禁原因。 */
-  function writeReason(kind: Exclude<OperationKind, "clone">): string {
+  function writeReason(
+    kind: Exclude<OperationKind, "clone" | "saveFile" | "setUpstream">,
+  ): string {
     if (workspace.preview) return "请在桌面应用中使用 Git 功能";
     if (!repository) return "请先打开仓库";
     if (operations.busy) return "请先完成当前确认或任务";
@@ -270,7 +381,7 @@ export function useWorkbench() {
   function openModal(next: Modal): () => void {
     return () => {
       if (!operations.busy && !conflicts.dirty) {
-        preferences.resetDraft();
+        if (next === "settings") appSettings.cancel();
         setProjectMenu(false);
         setModal(next);
       }
@@ -278,6 +389,13 @@ export function useWorkbench() {
   }
   /** 关闭表单，不取消任何后台任务。 */
   function closeModal(): void {
+    if (modal === "settings") {
+      if (appSettings.activity !== "idle") return;
+      if (appSettings.dirty) {
+        setSettingsPending("close");
+        return;
+      }
+    }
     if (operations.activity === "preparing") operations.discardPreview();
     setModal(null);
   }
@@ -309,26 +427,56 @@ export function useWorkbench() {
   /** 查看单文件差异，不隐式勾选或暂存。 */
   function inspectChange(id: string, side: DiffSide): () => void {
     return () => {
+      setChangeDetailOpen(true);
       void repo.selectDiff(id, side);
     };
+  }
+  /** 返回文件列表时保留勾选与提交说明。 */
+  function closeChangeDetail(): void {
+    setChangeDetailOpen(false);
+  }
+  /** 按档位补读当前文件上下文，沿用差异请求代次和后端内容上限。 */
+  function expandChangeContext(): void {
+    const selected = repo.selected;
+    if (
+      !selected ||
+      selected.side === "untracked" ||
+      repo.diffLoading ||
+      repo.diff?.kind !== "text" ||
+      repo.diff.truncated
+    )
+      return;
+    const current = selected.contextLines ?? 3;
+    if (current >= 2000) return;
+    void repo.selectDiff(
+      selected.changeId,
+      selected.side,
+      Math.min(2000, Math.max(20, current * 5)),
+    );
+  }
+  const selection = selectionAction(selected.stage, selected.unstage);
+  /** 合并按钮只能提交唯一方向，混合选择即使程序调用也拒绝。 */
+  function prepareSelected(): void {
+    if (selection.kind === "stage" || selection.kind === "unstage")
+      prepareSelection(selection.kind)();
   }
   /** 选中项进入后端精确路径预览。 */
   function prepareSelection(kind: "stage" | "unstage"): () => void {
     return () => {
       if (canWrite(kind))
-        void operations.prepareLocal({ kind, changeIds: selected[kind] });
+        void operations.runLocal({ kind, changeIds: selected[kind] });
     };
   }
   /** 提交确认整个已暂存索引，成功后才清除这次提交说明。 */
   function prepareCommit(): void {
     if (!canWrite("commit")) return;
     pendingCommit.current = fields.message;
-    void operations.prepareLocal({ kind: "commit", message: fields.message });
+    void operations.runLocal({ kind: "commit", message: fields.message });
   }
   /** 创建分支只创建引用，不切换工作区。 */
   function prepareBranch(): void {
     if (canWrite("createBranch"))
-      void operations.prepareLocal({
+      void operations.runLocal({
         kind: "createBranch",
         name: fields.branchName,
       });
@@ -481,8 +629,13 @@ export function useWorkbench() {
     setProjectLoading(true);
     setProjectFiles(null);
     setProjectDiff(null);
+    setProjectPath("");
     void api
-      .readProjectFiles(repository.repositoryId, repository.snapshotId)
+      .readProjectFiles(
+        repository.repositoryId,
+        repository.snapshotId,
+        includeIgnored,
+      )
       .then((value) => {
         if (alive.current && generation === fileGeneration.current)
           setProjectFiles(value);
@@ -498,7 +651,11 @@ export function useWorkbench() {
     return () => {
       fileGeneration.current += 1;
     };
-  }, [drawer, repository, workspace.preview]);
+  }, [drawer, repository, workspace.preview, includeIgnored]);
+  /** 仅改变项目文件可见范围，不修改忽略规则或文件内容。 */
+  function changeIncludeIgnored(event: ChangeEvent<HTMLInputElement>): void {
+    setIncludeIgnored(event.target.checked);
+  }
   /** 只预览当前签发列表中的项目文件。 */
   function inspectProjectFile(id: string): () => void {
     return () => {
@@ -526,6 +683,9 @@ export function useWorkbench() {
   }
   return {
     ...workspace,
+    manualRefresh,
+    syncRemote,
+    syncReason,
     branchesExpanded,
     projectMenu,
     recentProjects,
@@ -535,6 +695,14 @@ export function useWorkbench() {
     toggleBranches,
     selectSettings,
     preferences,
+    appSettings,
+    settingsPending,
+    applySettings,
+    restoreSettings,
+    reloadSettings,
+    keepSettings,
+    discardSettings,
+    saveSettingsAndContinue,
     logSettings,
     drawer,
     modal,
@@ -543,10 +711,17 @@ export function useWorkbench() {
     context,
     resourceError,
     projectFiles,
+    includeIgnored,
+    changeIncludeIgnored,
     projectDiff,
     projectPath,
     projectLoading,
     selected,
+    selection,
+    prepareSelected,
+    changeDetailOpen,
+    closeChangeDetail,
+    expandChangeContext,
     fields,
     cloneParent,
     parentChoosing,

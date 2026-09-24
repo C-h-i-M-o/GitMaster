@@ -1,8 +1,8 @@
-import { LogSettingsPanel } from "./LogSettingsPanel";
+import { SettingsPanel } from "./SettingsPanel";
+import { SyncSetupDialog } from "./SyncSetupDialog";
 import type { Workbench } from "../hooks/useWorkbench";
 import { useNativeDialog } from "../hooks/useNativeDialog";
 import { Icon } from "./Icon";
-import { GitEnvironmentPanel } from "./GitEnvironmentPanel";
 import { describeGitError } from "../ui/gitPresentation";
 /** 克隆表单必须先取得原生目录选择器签发的父目录。 */
 function CloneForm({ w }: { w: Workbench }) {
@@ -66,7 +66,7 @@ function RemoteForm({ w }: { w: Workbench }) {
     <>
       <p className="muted">
         当前关系来自本地远端跟踪引用。最后 fetch：
-        {remote.remote?.lastFetchedAt ?? "本次会话尚无记录"}
+        {formatFetchedAt(remote.remote?.lastFetchedAt)}
       </p>
       <label>
         远端
@@ -173,100 +173,64 @@ function RemoteForm({ w }: { w: Workbench }) {
     </>
   );
 }
-/** 设置仅暴露真实已实现的偏好与 Git 环境入口。 */
-function SettingsForm({ w }: { w: Workbench }) {
-  return (
-    <div className="settings-layout">
-      <nav aria-label="设置分类">
-        <button
-          className={w.settingsCategory === "general" ? "active" : ""}
-          onClick={w.selectSettings("general")}
-        >
-          常规
-        </button>
-        <button
-          className={w.settingsCategory === "appearance" ? "active" : ""}
-          onClick={w.selectSettings("appearance")}
-        >
-          外观
-        </button>
-        <button
-          className={w.settingsCategory === "logging" ? "active" : ""}
-          onClick={w.selectSettings("logging")}
-        >
-          诊断日志
-        </button>
-      </nav>
-      <div className="settings-content">
-        {w.settingsCategory === "logging" ? (
-          <LogSettingsPanel state={w.logSettings} />
-        ) : w.settingsCategory === "appearance" ? (
-          <section className="preference-section">
-            <h3>提交图</h3>
-            <label>
-              节点弹性 <output>{w.preferences.draft.elasticity}</output>
-              <input
-                type="range"
-                min={1}
-                max={10}
-                step={1}
-                value={w.preferences.draft.elasticity}
-                onChange={w.preferences.changeElasticity}
-                disabled={w.preferences.loading || w.preferences.saving}
-              />
-            </label>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={w.preferences.draft.showLabels}
-                onChange={w.preferences.changeLabels}
-                disabled={w.preferences.loading || w.preferences.saving}
-              />
-              显示提交说明与引用标签
-            </label>
-            <p className="muted small">
-              遵循系统“减少动态效果”设置。保存成功后应用到画布。
-            </p>
-            {w.preferences.error && (
-              <div role="alert">
-                <p>{describeGitError(w.preferences.error)}</p>
-                <button className="secondary" onClick={w.preferences.reload}>
-                  重新读取设置
-                </button>
-              </div>
-            )}
-            <button
-              className="primary"
-              disabled={
-                w.preferences.loading ||
-                w.preferences.saving ||
-                w.preferences.saved === null
-              }
-              onClick={w.preferences.save}
-            >
-              {w.preferences.saving ? "正在保存…" : "保存偏好"}
-            </button>
-          </section>
-        ) : (
-          <GitEnvironmentPanel
-            {...w.git}
-            onRefresh={w.git.refresh}
-            onChoose={w.chooseGit}
-            onReset={w.resetGit}
-            onInstall={w.install}
-            choosing={w.choosing || w.operations.busy || w.conflicts.dirty}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
 /** 原生模态承载业务表单，执行仍统一走单独的写入确认框。 */
 export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
   const dialog = useNativeDialog(w.modal !== null, w.closeModal);
+  const refreshRemote = useNativeDialog(
+    w.manualRefresh.choices !== null,
+    w.manualRefresh.cancel,
+  );
   const discard = useNativeDialog(w.discardPending, w.keepDraft);
+  const settingsDiscard = useNativeDialog(
+    w.settingsPending !== null,
+    w.keepSettings,
+  );
   return (
     <>
+      <SyncSetupDialog workbench={w} />
+      <dialog
+        ref={refreshRemote.dialogRef}
+        onCancel={refreshRemote.onCancel}
+        className="gm-dialog"
+        aria-labelledby="refresh-remote-title"
+      >
+        <div className="dialog-body">
+          <h2 id="refresh-remote-title">选择要获取更新的远端</h2>
+          <p className="muted">
+            将获取所选远端的全部分支更新，本地分支和文件保持不变。
+          </p>
+          <label>
+            远端
+            <select
+              value={w.manualRefresh.selected}
+              onChange={w.manualRefresh.select}
+            >
+              <option value="">请选择远端</option>
+              {w.manualRefresh.choices?.remotes.map((remote) => (
+                <option key={remote.remoteId} value={remote.remoteId}>
+                  {remote.name} · {remote.fetchDisplayUrl}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="dialog-actions">
+          <button className="secondary" onClick={w.manualRefresh.cancel}>
+            取消
+          </button>
+          <button
+            className="primary"
+            disabled={
+              !w.manualRefresh.selected ||
+              w.manualRefresh.busy ||
+              w.operations.busy
+            }
+            onClick={w.manualRefresh.confirm}
+          >
+            获取更新并刷新
+          </button>
+        </div>
+      </dialog>
       <dialog
         ref={dialog.dialogRef}
         onCancel={dialog.onCancel}
@@ -317,11 +281,11 @@ export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
                 }
                 onClick={w.prepareBranch}
               >
-                预览创建分支
+                创建分支
               </button>
             </>
           ) : w.modal === "settings" ? (
-            <SettingsForm w={w} />
+            <SettingsPanel w={w} />
           ) : null}
           {w.operations.error && (
             <p role="alert">{describeGitError(w.operations.error)}</p>
@@ -332,6 +296,43 @@ export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
           {w.operations.activity === "preparing" && (
             <p role="status">正在准备预览，请稍候…</p>
           )}
+        </div>
+      </dialog>
+      <dialog
+        ref={settingsDiscard.dialogRef}
+        onCancel={settingsDiscard.onCancel}
+        className="gm-dialog"
+        aria-labelledby="settings-discard-title"
+      >
+        <div className="dialog-body">
+          <h2 id="settings-discard-title">设置尚未应用</h2>
+          <p>是否保存当前设置更改？</p>
+          {w.appSettings.error && (
+            <p role="alert">保存失败，草稿已保留。请继续编辑并检查提示。</p>
+          )}
+        </div>
+        <div className="dialog-actions">
+          <button
+            className="secondary"
+            disabled={w.appSettings.activity !== "idle"}
+            onClick={w.keepSettings}
+          >
+            继续编辑
+          </button>
+          <button
+            className="secondary"
+            disabled={w.appSettings.activity !== "idle"}
+            onClick={w.discardSettings}
+          >
+            放弃更改
+          </button>
+          <button
+            className="primary"
+            disabled={w.appSettings.activity !== "idle" || w.operations.busy}
+            onClick={w.saveSettingsAndContinue}
+          >
+            保存并继续
+          </button>
         </div>
       </dialog>
       <dialog
@@ -356,3 +357,4 @@ export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
     </>
   );
 }
+import { formatFetchedAt } from "../ui/refreshResult";

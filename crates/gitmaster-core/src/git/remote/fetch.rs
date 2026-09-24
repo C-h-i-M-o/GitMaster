@@ -21,7 +21,7 @@ const NETWORK_BUDGET: Duration = Duration::from_secs(15 * 60);
 const PRIVATE_REF: &str = "refs/remotes/gitmaster/selected";
 
 /// 生产入口固定使用受限网络 runner；测试替身只在本模块测试中传入。
-type NetworkRunner = fn(
+pub(super) type NetworkRunner = fn(
     &GitExecutable,
     &Path,
     &[OsString],

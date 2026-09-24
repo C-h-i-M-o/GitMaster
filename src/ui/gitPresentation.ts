@@ -17,6 +17,20 @@ export function describeGitError(error: OperationError): string {
     STALE_REQUEST: "内容已变化，请重新刷新。",
     FILE_UNAVAILABLE: "文件已不可用，请刷新仓库。",
     SETTINGS_IO: "应用设置读取或保存失败。",
+    FILE_EDIT_TOO_LARGE:
+      "文件超过 2 MiB 编辑上限，请使用只读查看或外部编辑器。",
+    FILE_EDIT_BINARY: "二进制内容不能在文本编辑器中修改。",
+    FILE_EDIT_ENCODING: "文件不是有效 UTF-8，请使用支持原编码的外部编辑器。",
+    FILE_EDIT_LINE_ENDING:
+      "文件包含混合换行，当前仅支持只读查看，请使用外部编辑器修改。",
+    FILE_EDIT_UNSUPPORTED:
+      "此文件不是可安全编辑的普通文件，请使用外部工具处理。",
+    FILE_CHANGED: "文件已被其他程序修改或替换，请核对后重新读取。",
+    PROJECT_FOLDER_UNAVAILABLE:
+      "项目文件夹已移动、删除或无法访问，请重新打开项目。",
+    EXTERNAL_OPEN_FAILED: "无法启动所选外部应用，请检查安装和系统关联后重试。",
+    EXTERNAL_APP_UNAVAILABLE:
+      "未找到所选外部应用，请安装后重试或选择其他打开方式。",
     INVALID_INPUT: "输入不符合要求。",
     EMPTY_SELECTION: "请至少选择一项。",
     STALE_WRITE_PLAN: "写入预览已过期，请重新准备。",
@@ -27,6 +41,9 @@ export function describeGitError(error: OperationError): string {
     WORKTREE_DIRTY: "工作区有未保存修改。",
     INDEX_LOCKED: "索引正被其他 Git 进程锁定，请等待该进程结束后重试。",
     HEAD_REQUIRED: "当前仓库还没有提交，请先创建第一个版本。",
+    SYNC_UPSTREAM_REQUIRED:
+      "当前分支的上游尚未配置或无法唯一识别，请先设置同步目标。",
+    SYNC_TARGET_MISSING: "远端目标分支已不存在，请重新选择同步目标。",
     DETACHED_HEAD_WRITE_BLOCKED:
       "当前为分离头指针，请创建并切换到具名分支后再写入。",
     REPOSITORY_OPERATION_ACTIVE:

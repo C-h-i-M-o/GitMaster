@@ -23,12 +23,13 @@ export function useWorkspace() {
   const git = useGitEnvironment();
   const repo = useRepository();
   const enabled = isDesktop() && git.environment?.status === "ready";
+  const [remoteWorkflowActive, setRemoteWorkflowActive] = useState(false);
   // 仓库刷新期间停用旧历史会话，忽略后端返回的过期结果。
   const history = useHistory(repo.repository, enabled && !repo.loading);
   // 首屏历史优先占用仓库队列；失败时仍开放远端入口。
   const remote = useRemote(
     repo.repository,
-    enabled && Boolean(history.page || history.error),
+    enabled && !remoteWorkflowActive && Boolean(history.page || history.error),
   );
   const conflicts = useConflicts(repo.repository, enabled);
   const pendingSave = useRef<{ id: string; content: string } | null>(null);
@@ -75,6 +76,7 @@ export function useWorkspace() {
     // 焦点变化不能中断正在读取的历史；显式刷新仍由独立入口处理。
     repo.setAutoRefreshBlocked(
       operations.busy ||
+        remoteWorkflowActive ||
         conflicts.dirty ||
         history.loading ||
         history.loadingMore ||
@@ -85,6 +87,7 @@ export function useWorkspace() {
   }, [
     repo.setAutoRefreshBlocked,
     operations.busy,
+    remoteWorkflowActive,
     conflicts.dirty,
     history.loading,
     history.loadingMore,
@@ -177,6 +180,7 @@ export function useWorkspace() {
     return git.refresh();
   }, [operations.busy, conflicts.dirty, git.refresh]);
   return {
+    setRemoteWorkflowActive,
     git: { ...git, refresh: refreshGit },
     repo: { ...repo, refresh: refreshRepository },
     operations: { ...operations, prepareConflict },
@@ -195,6 +199,7 @@ export function useWorkspace() {
       git.status !== "loading" &&
       !choosing &&
       !operations.busy &&
+      !remoteWorkflowActive &&
       !conflicts.dirty,
     preview: !isDesktop(),
   };

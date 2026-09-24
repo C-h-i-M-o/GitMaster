@@ -13,8 +13,20 @@ import type {
   WritePreview,
 } from "../types/git.ts";
 import { normalizeOperationError } from "../services/gitErrors.ts";
+import { captureOperationTarget } from "../ui/operationTarget.ts";
+import {
+  updateOperationHistory,
+  type OperationHistoryEntry,
+} from "../ui/operationHistory.ts";
 
 export interface OperationsApi {
+  prepareFileSave(
+    id: string,
+    snapshot: string,
+    fileId: string,
+    version: string,
+    content: string,
+  ): Promise<WritePreview>;
   prepareLocalWrite(
     id: string,
     snapshot: string,
@@ -40,6 +52,8 @@ export type Confirmation =
   | { type: "clone"; value: ClonePreview };
 export type OperationActivity =
   "idle" | "preparing" | "executing" | "querying" | "running" | "unverified";
+export type FetchStartResult =
+  "started" | "skipped" | { error: OperationError };
 export interface OperationEvent {
   operationId: string;
   repositoryId: string | null;
@@ -56,7 +70,9 @@ export interface OperationsViewState {
   record: OperationRecord | null;
   error: OperationError | null;
   events: OperationEvent[];
+  history: OperationHistoryEntry[];
   busy: boolean;
+  immediate: boolean;
 }
 export interface CompletionScope {
   repositoryId: string | null;
@@ -73,6 +89,7 @@ export type OperationSchedule = (
 ) => () => void;
 interface Owner extends CompletionScope {
   key: string;
+  target: string;
 }
 interface Recovery {
   baseline: string | null;
@@ -96,7 +113,9 @@ export function createOperationsController(
     record: null,
     error: null,
     events: [],
+    history: [],
     busy: false,
+    immediate: false,
   };
   let repository: RepositoryState | null = null;
   let enabled = false;
@@ -109,6 +128,9 @@ export function createOperationsController(
   let owner: Owner | null = null;
   let recovery: Recovery | null = null;
   let completedId: string | null = null;
+  let settledId: string | null = null;
+  let settledVerified = false;
+  const runs = new Set<() => void>();
   let onComplete: CompletionHandler | null = null;
   const listeners = new Set<() => void>();
   /** 发布不可变状态；busy 包括未核实任务和当前确认框。 */
@@ -119,6 +141,7 @@ export function createOperationsController(
       busy: state.activity !== "idle" || state.preview !== null,
     };
     if (active) for (const listener of listeners) listener();
+    for (const check of runs) check();
   }
   /** 停止定时器，并使在途读取结果失效。 */
   function stopQuery(): void {
@@ -155,10 +178,13 @@ export function createOperationsController(
     onComplete = handler;
   }
   /** 重新准备会替换旧确认，重复点击在同步门禁处返回。 */
-  async function prepare(task: () => Promise<Confirmation>): Promise<void> {
+  async function prepare(
+    task: () => Promise<Confirmation>,
+    immediate = false,
+  ): Promise<void> {
     if (!active || !enabled || state.activity !== "idle") return;
     const token = ++generation;
-    update({ activity: "preparing", preview: null, error: null });
+    update({ activity: "preparing", preview: null, error: null, immediate });
     try {
       const preview = await task();
       if (current(token)) {
@@ -169,6 +195,11 @@ export function createOperationsController(
         )
           throw { code: "STALE_WRITE_PLAN" };
         update({ activity: "idle", preview });
+        if (immediate) {
+          await confirm();
+          if (state.activity === "idle" && state.preview === preview)
+            update({ preview: null });
+        }
       }
     } catch (error: unknown) {
       if (current(token))
@@ -188,6 +219,46 @@ export function createOperationsController(
       ),
     }));
   }
+  /** 页面明确范围后的低风险动作直接执行，仍经过原预检和一次性计划。 */
+  function runLocal(
+    request: Exclude<LocalWriteRequest, { kind: "switchBranch" }>,
+  ): Promise<void> {
+    const repo = repository;
+    if (!repo) return Promise.resolve();
+    return prepare(
+      async () => ({
+        type: "write",
+        value: await api.prepareLocalWrite(
+          repo.repositoryId,
+          repo.snapshotId,
+          request,
+        ),
+      }),
+      true,
+    );
+  }
+  /** 保存按钮明确提交文件版本和完整草稿，复用直接执行与结果查询。 */
+  function saveFile(
+    fileId: string,
+    version: string,
+    content: string,
+  ): Promise<void> {
+    const repo = repository;
+    if (!repo) return Promise.resolve();
+    return prepare(
+      async () => ({
+        type: "write",
+        value: await api.prepareFileSave(
+          repo.repositoryId,
+          repo.snapshotId,
+          fileId,
+          version,
+          content,
+        ),
+      }),
+      true,
+    );
+  }
   /** 远端准备只能由显式表单动作触发，push 可能查询真实远端。 */
   function prepareRemote(request: RemoteWriteRequest): Promise<void> {
     const repo = repository;
@@ -200,6 +271,107 @@ export function createOperationsController(
         request,
       ),
     }));
+  }
+  /** 编辑保存等待真实终态，用于准确确认提交文本和关闭保护。 */
+  function runFileSave(
+    next: RepositoryState,
+    fileId: string,
+    version: string,
+    content: string,
+  ): Promise<OperationResult> {
+    return runWrite(next, () =>
+      api.prepareFileSave(
+        next.repositoryId,
+        next.snapshotId,
+        fileId,
+        version,
+        content,
+      ),
+    );
+  }
+  /** 同步编排等待本次任务及终态本地刷新。 */
+  function runRemote(
+    next: RepositoryState,
+    request: RemoteWriteRequest,
+  ): Promise<OperationResult> {
+    return runWrite(next, () =>
+      api.prepareRemoteWrite(next.repositoryId, next.snapshotId, request),
+    );
+  }
+  /** 自动后续动作只接受本次已核实任务，不把恢复记录当作写入许可。 */
+  async function runWrite(
+    next: RepositoryState,
+    createPreview: () => Promise<WritePreview>,
+  ): Promise<OperationResult> {
+    if (
+      !active ||
+      !enabled ||
+      state.busy ||
+      repository?.repositoryId !== next.repositoryId
+    )
+      throw { code: "STALE_REQUEST" };
+    setRepository(next, enabled);
+    const previous = state.handle;
+    await prepare(
+      async () => ({
+        type: "write",
+        value: await createPreview(),
+      }),
+      true,
+    );
+    const handle = getSnapshot().handle;
+    if (!handle || handle === previous)
+      throw getSnapshot().error ?? { code: "STALE_REQUEST" };
+    return new Promise<OperationResult>((resolve, reject) => {
+      /** 仓库切换、查询失败或卸载时结束前端等待，不取消后台任务。 */
+      const check = (): void => {
+        const latest = getSnapshot();
+        const fail =
+          !active ||
+          !enabled ||
+          repository?.repositoryId !== next.repositoryId ||
+          latest.handle?.operationId !== handle.operationId;
+        if (fail || latest.activity === "unverified" || latest.error) {
+          runs.delete(check);
+          reject(latest.error ?? { code: "STALE_REQUEST" });
+        } else if (settledId === handle.operationId && latest.record?.result) {
+          runs.delete(check);
+          if (!owner?.verified || !settledVerified)
+            reject({ code: "WRITE_OUTCOME_UNKNOWN" });
+          else resolve(latest.record.result);
+        }
+      };
+      runs.add(check);
+      check();
+    });
+  }
+  /** 手动刷新明确选定远端后直接获取全部分支，不弹出低风险二次确认。 */
+  async function fetchAll(remoteId: string): Promise<FetchStartResult> {
+    const repo = repository;
+    if (!repo || !active || !enabled || state.activity !== "idle")
+      return "skipped";
+    const previousHandle = state.handle;
+    await prepare(
+      async () => ({
+        type: "write",
+        value: await api.prepareRemoteWrite(
+          repo.repositoryId,
+          repo.snapshotId,
+          { kind: "fetchAll", remoteId },
+        ),
+      }),
+      true,
+    );
+    const latest = getSnapshot();
+    if (latest.handle !== previousHandle || latest.activity === "unverified")
+      return "started";
+    if (
+      repository?.repositoryId === repo.repositoryId &&
+      latest.activity === "idle" &&
+      latest.error
+    )
+      return { error: latest.error };
+    return "skipped";
   }
   /** 冲突保存将文档指纹原样传入当前合并会话。 */
   function prepareConflict(
@@ -279,11 +451,20 @@ export function createOperationsController(
       record,
       error: null,
       events: appendEvent(record),
+      history: updateOperationHistory(
+        state.history,
+        record,
+        owner?.repositoryId === record.progress.handle.repositoryId
+          ? owner.target
+          : `${record.progress.handle.repositoryId ?? "下载任务"} · 历史目标未记录`,
+        Date.now(),
+      ),
       activity: result ? "idle" : "running",
     });
     if (result) {
       stopQuery();
       recovery = null;
+      settledVerified = false;
       if (
         notify &&
         owner &&
@@ -297,10 +478,13 @@ export function createOperationsController(
             repositoryId: owner.repositoryId,
             verified: owner.verified,
           });
+          settledVerified = true;
         } catch (error: unknown) {
           if (current(token)) update({ error: normalizeOperationError(error) });
         }
       }
+      settledId = result.operationId;
+      update({});
     }
   }
   /** 查询失败保留操作身份，不自动重复执行；用户可仅重试查询。 */
@@ -391,6 +575,7 @@ export function createOperationsController(
     const token = generation;
     const executionOwner: Owner = {
       key,
+      target: captureOperationTarget(preview.value, repository),
       repositoryId:
         preview.type === "write" ? preview.value.repositoryId : null,
       verified: true,
@@ -474,6 +659,7 @@ export function createOperationsController(
       }
       owner = {
         key,
+        target: `${record.progress.handle.repositoryId ?? "下载任务"} · 历史目标未记录`,
         repositoryId: record.progress.handle.repositoryId,
         verified: false,
       };
@@ -522,7 +708,12 @@ export function createOperationsController(
     setRepository,
     setCompletionHandler,
     prepareLocal,
+    runLocal,
+    saveFile,
+    runFileSave,
     prepareRemote,
+    runRemote,
+    fetchAll,
     prepareConflict,
     prepareClone,
     discardPreview,

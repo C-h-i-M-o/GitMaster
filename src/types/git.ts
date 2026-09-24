@@ -56,6 +56,8 @@ export type FileDiff =
     };
 
 export type OperationKind =
+  | "setUpstream"
+  | "saveFile"
   | "stage"
   | "unstage"
   | "commit"
@@ -73,6 +75,11 @@ export type LocalWriteRequest =
   | { kind: "createBranch"; name: string }
   | { kind: "switchBranch"; branchId: string };
 export type RemoteWriteRequest =
+  | { kind: "publishBranch"; remoteId: string; targetBranchName: string }
+  | { kind: "setUpstream"; remoteId: string; targetBranchName: string }
+  | { kind: "syncPush" }
+  | { kind: "syncFastForward" }
+  | { kind: "fetchAll"; remoteId: string }
   | { kind: "fetch"; remoteId: string; remoteBranchId: string }
   | { kind: "push"; remoteId: string; targetBranchName: string }
   | {
@@ -282,7 +289,19 @@ export interface CommitFileList {
     deletions: number | null;
   }>;
 }
-export type ProjectFileKind = "tracked" | "untracked";
+export type ProjectFileKind = "tracked" | "untracked" | "ignored";
+/** 完整编辑文档与文件身份版本，独立于可截断的预览结果。 */
+export interface EditableFile {
+  fileId: string;
+  path: string;
+  version: string;
+  text: {
+    content: string;
+    bom: boolean;
+    lineEnding: "none" | "lf" | "crlf" | "cr" | "mixed";
+    contentVersion: string;
+  };
+}
 export interface ProjectFileList {
   repositoryId: string;
   snapshotId: string;
@@ -294,9 +313,17 @@ export interface RemoteState {
     remoteId: string;
     name: string;
     fetchDisplayUrl: string;
+    fetchedBranchNames: string[] | null;
     pushDisplayUrl: string;
   }>;
   remoteBranches: Array<{ remoteBranchId: string; name: string; oid: string }>;
+  branchUpstreams: Array<{
+    branchName: string;
+    remoteName: string;
+    remoteId: string | null;
+    targetRef: string;
+    trackingRef: string;
+  }>;
   lastFetchedAt: string | null;
 }
 export type RemoteRelation =
@@ -311,6 +338,30 @@ export interface RemoteAssessment {
   behind: number;
   relation: RemoteRelation;
   observedAt: string;
+}
+/** 同步入口只读解析；configured 仍须联网核验后才能生成写计划。 */
+export interface SyncTarget {
+  repositoryId: string;
+  snapshotId: string;
+  branchName: string;
+  upstream:
+    | { status: "missing" }
+    | {
+        status: "configured";
+        remoteId: string;
+        targetBranchName: string;
+        remoteBranchId: string | null;
+      }
+    | {
+        status: "unresolved";
+        reason:
+          | "incomplete"
+          | "ambiguous"
+          | "localRepository"
+          | "unsupportedTarget"
+          | "remoteMissing"
+          | "mappingMissing";
+      };
 }
 export type ConflictEditorSupport =
   { status: "supported" } | { status: "unsupported"; reason: string };

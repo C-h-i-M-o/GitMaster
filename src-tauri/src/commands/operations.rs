@@ -64,6 +64,7 @@ impl Preparation {
 
 /// 写请求保存后端当前签发的资源映射，前端不能自行提供路径或引用。
 enum Input {
+    File(String, String, String, Arc<git::files::ProjectFilesSession>),
     Local(LocalWriteRequest, Option<Arc<git::branches::BranchSession>>),
     Remote(RemoteWriteRequest, Arc<git::remote::RemoteSession>),
     Conflict(ConflictWriteRequest, Arc<git::conflicts::ConflictSession>),
@@ -75,6 +76,29 @@ struct WritePreparation {
     input: Input,
 }
 impl WritePreparation {
+    /// 文件保存使用当前列表签发 ID，完整版本由核心再次验证。
+    fn file(
+        shared: &DesktopState,
+        repository_id: &str,
+        snapshot_id: &str,
+        file_id: String,
+        version: String,
+        content: String,
+    ) -> Result<Self, OperationError> {
+        let mut s = shared.lock()?;
+        let ctx = Context::capture(&s, repository_id)?;
+        ctx.check_snapshot(snapshot_id)?;
+        let cache = s
+            .project_files
+            .clone()
+            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let ticket = Preparation::begin(&mut s)?;
+        Ok(Self {
+            ticket,
+            ctx,
+            input: Input::File(file_id, version, content, cache),
+        })
+    }
     /// 先检查快照和分支映射，再登记本地写准备。
     fn local(
         shared: &DesktopState,
@@ -147,6 +171,10 @@ impl WritePreparation {
     fn check(&self, s: &Session) -> Result<(), OperationError> {
         self.ticket.check(s)?;
         let valid = match &self.input {
+            Input::File(_, _, _, cache) => s
+                .project_files
+                .as_ref()
+                .is_some_and(|c| Arc::ptr_eq(c, cache)),
             Input::Local(_, Some(cache)) => {
                 s.branches.as_ref().is_some_and(|c| Arc::ptr_eq(c, cache))
             }
@@ -175,6 +203,7 @@ impl WritePreparation {
         let r = &self.ctx.repository;
         let s = &self.ctx.state;
         let preview = match &self.input {
+            Input::File(id, version, content, cache) => cache.prepare_save(c, id, version, content),
             Input::Local(request, branches) => match request {
                 LocalWriteRequest::Stage { change_ids } => {
                     git::write::prepare_index_change(c, g, r, s, change_ids, true)
@@ -202,6 +231,37 @@ impl WritePreparation {
                 }
             },
             Input::Remote(request, cache) => match request {
+                RemoteWriteRequest::PublishBranch {
+                    remote_id,
+                    target_branch_name,
+                } => git::remote::prepare_publish_branch(
+                    c,
+                    g,
+                    r,
+                    s,
+                    cache,
+                    remote_id,
+                    target_branch_name,
+                ),
+                RemoteWriteRequest::SetUpstream {
+                    remote_id,
+                    target_branch_name,
+                } => git::remote::prepare_set_upstream(
+                    c,
+                    g,
+                    r,
+                    s,
+                    cache,
+                    remote_id,
+                    target_branch_name,
+                ),
+                RemoteWriteRequest::SyncPush => git::remote::prepare_sync_push(c, g, r, s, cache),
+                RemoteWriteRequest::SyncFastForward => {
+                    git::remote::prepare_sync_fast_forward(c, g, r, s, cache)
+                }
+                RemoteWriteRequest::FetchAll { remote_id } => {
+                    git::remote::prepare_fetch_all(c, g, r, s, cache, remote_id)
+                }
                 RemoteWriteRequest::Fetch {
                     remote_id,
                     remote_branch_id,
@@ -266,6 +326,28 @@ fn execute(
         s.executed.pop_front();
     }
     Ok(handle)
+}
+
+/// 准备当前签发文件的版本化保存计划，执行复用后台任务接口。
+#[tauri::command]
+pub async fn prepare_file_save(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    file_id: String,
+    version: String,
+    content: String,
+) -> Result<WritePreview, OperationError> {
+    let shared = state.inner().clone();
+    let prepare = WritePreparation::file(
+        &shared,
+        &repository_id,
+        &snapshot_id,
+        file_id,
+        version,
+        content,
+    )?;
+    blocking("prepare_file_save", move || prepare.run(&shared)).await
 }
 
 /// 读取真实能力提示；不会创建写计划，allowed 仍需独立确认。

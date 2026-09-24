@@ -75,7 +75,7 @@ impl Fixture {
     fn files(&self) -> ProjectFileList {
         ProjectFilesRequest::begin(&self.shared, &self.repository_id, &self.snapshot_id)
             .unwrap()
-            .run(&self.shared)
+            .run(&self.shared, false)
             .unwrap()
     }
 }
@@ -203,7 +203,10 @@ fn late_initializers_cannot_overwrite_newer_slots() {
     let old_files =
         ProjectFilesRequest::begin(&f.shared, &f.repository_id, &f.snapshot_id).unwrap();
     let latest_files = f.files();
-    assert_eq!(old_files.run(&f.shared).unwrap_err().code, "STALE_REQUEST");
+    assert_eq!(
+        old_files.run(&f.shared, false).unwrap_err().code,
+        "STALE_REQUEST"
+    );
     assert!(
         ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
             .unwrap()

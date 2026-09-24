@@ -150,6 +150,7 @@ export function useRepository() {
     ...state,
     open: controller.open,
     refresh: controller.refresh,
+    getSnapshot: controller.getSnapshot,
     setAutoRefreshBlocked: controller.setAutoRefreshBlocked,
     selectDiff: controller.selectDiff,
     clear: controller.clear,

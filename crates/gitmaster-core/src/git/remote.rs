@@ -3,19 +3,27 @@
 mod auth;
 mod clone;
 mod fetch;
+mod fetch_all;
+pub use fetch_all::prepare_fetch_all;
 mod push;
+mod sync_target;
+mod upstream;
+pub use sync_target::prepare_sync_fast_forward;
+pub use upstream::prepare_set_upstream;
 mod url;
 pub use clone::prepare_clone;
 pub use fetch::prepare_fetch;
+pub use push::prepare_publish_branch;
 pub use push::prepare_push;
+pub use push::prepare_sync_push;
 use sha2::{Digest, Sha256};
 
 use super::{
     process::{inspect_local_config, run_git_read_until},
     repository::{next_id, query_until, read_repository_state_until},
     types::{
-        HeadState, RemoteAssessment, RemoteBranch, RemoteRelation, RemoteState, RemoteSummary,
-        RepositoryHandle, RepositoryState,
+        BranchUpstream, HeadState, RemoteAssessment, RemoteBranch, RemoteRelation, RemoteState,
+        RemoteSummary, RepositoryHandle, RepositoryState,
     },
     GitExecutable, OperationError,
 };
@@ -36,8 +44,10 @@ pub struct RemoteSession {
     repo: RepositoryHandle,
     remotes: BTreeMap<String, RemoteRecord>,
     branches: BTreeMap<String, BranchRecord>,
+    branch_upstreams: Vec<BranchUpstream>,
     config_digest: [u8; 32],
     last_fetched_at: Arc<Mutex<Option<String>>>,
+    fetched_branches: Arc<Mutex<BTreeMap<String, Vec<String>>>>,
 }
 
 /// 保留全部有效配置中的地址，不将多个 push URL 隐藏成单一目标。
@@ -127,7 +137,7 @@ impl RemoteSession {
             &repo.root,
             &[
                 "for-each-ref",
-                "--format=%(refname)%00%(objectname)%00%(symref)",
+                "--format=%(refname)%00%(objectname)%00%(symref)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)",
                 "refs/heads",
                 "refs/remotes",
             ],
@@ -135,6 +145,7 @@ impl RemoteSession {
             Some(deadline),
         )?;
         let mut branches = BTreeMap::new();
+        let mut branch_upstreams = Vec::new();
         let mut total = 0;
         for row in refs.split(|b| *b == b'\n').filter(|r| !r.is_empty()) {
             total += 1;
@@ -142,13 +153,25 @@ impl RemoteSession {
                 return Err(OperationError::new("OUTPUT_LIMIT"));
             }
             let fields: Vec<&[u8]> = row.split(|b| *b == 0).collect();
-            if fields.len() != 3 {
+            if fields.len() != 6 {
                 return Err(OperationError::new("PARSE_FAILED"));
             }
             if !fields[2].is_empty() {
                 continue;
             }
             let reference = text(fields[0])?;
+            if let Some(branch_name) = reference.strip_prefix("refs/heads/") {
+                if !fields[4].is_empty() || !fields[5].is_empty() {
+                    branch_upstreams.push(BranchUpstream {
+                        branch_name: branch_name.to_owned(),
+                        remote_name: text(fields[4])?,
+                        remote_id: None,
+                        target_ref: text(fields[5])?,
+                        tracking_ref: text(fields[3])?,
+                    });
+                }
+                continue;
+            }
             let Some(name) = reference.strip_prefix("refs/remotes/") else {
                 continue;
             };
@@ -162,27 +185,41 @@ impl RemoteSession {
                 },
             );
         }
+        let remotes: BTreeMap<String, RemoteRecord> = records
+            .into_values()
+            .map(|record| (next_id(), record))
+            .collect();
+        for upstream in &mut branch_upstreams {
+            upstream.remote_id = remotes
+                .iter()
+                .find(|(_, record)| record.name == upstream.remote_name)
+                .map(|(id, _)| id.clone());
+        }
         Ok(Self {
             git: git.clone(),
             repo: repo.clone(),
-            remotes: records
-                .into_values()
-                .map(|record| (next_id(), record))
-                .collect(),
+            remotes,
             branches,
+            branch_upstreams,
             config_digest: Sha256::digest(&config).into(),
             last_fetched_at: Arc::new(Mutex::new(None)),
+            fetched_branches: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
     /// 返回绑定会话的远端、跟踪分支和脱敏配置地址；未执行获取时不伪造时间。
     pub fn state(&self) -> RemoteState {
+        let fetched = self
+            .fetched_branches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut remotes = self
             .remotes
             .iter()
             .map(|(id, r)| RemoteSummary {
                 remote_id: id.clone(),
                 name: r.name.clone(),
+                fetched_branch_names: fetched.get(&r.name).cloned(),
                 fetch_display_url: display_urls(&r.fetch),
                 push_display_url: display_urls(if r.push.is_empty() { &r.fetch } else { &r.push }),
             })
@@ -202,6 +239,7 @@ impl RemoteSession {
             repository_id: self.repo.id.clone(),
             remotes,
             remote_branches,
+            branch_upstreams: self.branch_upstreams.clone(),
             last_fetched_at: self
                 .last_fetched_at
                 .lock()
@@ -213,7 +251,10 @@ impl RemoteSession {
     /// 刷新映射和引用时保留当前应用会话已验证的获取时间。
     pub fn refreshed(&self) -> Result<Self, OperationError> {
         let mut refreshed = Self::new(&self.git, &self.repo)?;
-        refreshed.last_fetched_at = self.last_fetched_at.clone();
+        if refreshed.config_digest == self.config_digest {
+            refreshed.last_fetched_at = self.last_fetched_at.clone();
+            refreshed.fetched_branches = self.fetched_branches.clone();
+        }
         Ok(refreshed)
     }
 
@@ -408,6 +449,38 @@ fn display_urls(values: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// 上游身份必须来自 Git 配置，远端名和分支名都允许包含斜杠。
+    #[test]
+    fn upstream_snapshot_preserves_remote_and_target_identity() {
+        let f = Fixture::new();
+        commit(&f, "initial");
+        f.command(&[
+            "remote",
+            "add",
+            "team/origin",
+            "https://example.com/repository.git",
+        ]);
+        f.command(&["config", "branch.main.remote", "team/origin"]);
+        f.command(&["config", "branch.main.merge", "refs/heads/release/stable"]);
+        let (repo, _) = open_repository(&f.git, &f.root).unwrap();
+        let state = RemoteSession::new(&f.git, &repo).unwrap().state();
+        let upstream = state
+            .branch_upstreams
+            .iter()
+            .find(|item| item.branch_name == "main")
+            .unwrap();
+        assert_eq!(upstream.remote_name, "team/origin");
+        assert_eq!(upstream.target_ref, "refs/heads/release/stable");
+        assert_eq!(
+            upstream.tracking_ref,
+            "refs/remotes/team/origin/release/stable"
+        );
+        assert_eq!(
+            upstream.remote_id.as_ref(),
+            Some(&state.remotes[0].remote_id)
+        );
+        assert!(state.remote_branches.is_empty());
+    }
     use super::url::display;
     use super::*;
     use crate::git::repository::query;

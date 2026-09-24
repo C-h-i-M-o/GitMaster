@@ -1,13 +1,27 @@
 //! 当前工作树项目文件的只读列表与按需内容读取。
+pub mod editor_text;
 use super::{
     diff::preview,
     repository::{next_id, query, read_repository_state},
     FileDiff, GitExecutable, OperationError, ProjectFile, ProjectFileKind, ProjectFileList,
     RepositoryHandle, RepositoryState,
 };
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 const MAX_FILES: usize = 10_000;
+
+/// 完整编辑文档绑定文件身份，不能使用只读截断结果构造。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableFile {
+    pub file_id: String,
+    pub path: String,
+    pub version: String,
+    pub text: editor_text::EditorText,
+}
 
 /// 绑定仓库快照的项目文件会话；文件 ID 只在本会话内有效。
 pub struct ProjectFilesSession {
@@ -18,11 +32,139 @@ pub struct ProjectFilesSession {
 }
 
 impl ProjectFilesSession {
+    /// 生成一次性保存计划，执行由原协调器排队并发布标准任务结果。
+    pub fn prepare_save(
+        self: &std::sync::Arc<Self>,
+        coordinator: &super::coordinator::RepositoryCoordinator,
+        file_id: &str,
+        expected_version: &str,
+        content: &str,
+    ) -> Result<super::WritePreview, OperationError> {
+        let generation = coordinator.begin_prepare()?;
+        let key = super::coordinator::CoordinationKey::repository(&self.repository)?;
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let document = coordinator.read_until(&key, deadline, || self.read_editable(file_id))?;
+        if document.version != expected_version {
+            return Err(OperationError::new("FILE_CHANGED"));
+        }
+        editor_text::encode(&document.text, content)?;
+        let session = self.clone();
+        let id = file_id.to_owned();
+        let version = expected_version.to_owned();
+        let draft = content.to_owned();
+        let plan = coordinator.prepare(
+            generation,
+            Some(self.repository.id.clone()),
+            key,
+            super::OperationKind::SaveFile,
+            move |reporter| {
+                let deadline = reporter.deadline(Duration::from_secs(120));
+                let result = session.save_editable(&id, &version, &draft);
+                super::write::operation_result(
+                    reporter,
+                    &session.git,
+                    &session.repository,
+                    result,
+                    false,
+                    None,
+                    None,
+                    deadline,
+                )
+            },
+        )?;
+        Ok(super::WritePreview {
+            plan_id: plan.plan_id,
+            repository_id: self.repository.id.clone(),
+            snapshot_id: self.state.snapshot_id.clone(),
+            kind: super::OperationKind::SaveFile,
+            head: self.state.head.clone(),
+            parent_oids: Vec::new(),
+            paths: vec![document.path],
+            author: None,
+            message: None,
+            target: None,
+            warnings: Vec::new(),
+            expires_at: plan.expires_at,
+        })
+    }
+    /// 保存完整草稿前复核页面版本；调用方必须持有仓库协调队列。
+    pub fn save_editable(
+        &self,
+        file_id: &str,
+        expected_version: &str,
+        content: &str,
+    ) -> Result<(), OperationError> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        super::write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
+        let (_, path, _) = self
+            .files
+            .iter()
+            .find(|(id, _, _)| id == file_id)
+            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let original = super::conflicts::read_regular(
+            &self.repository.root,
+            path,
+            editor_text::MAX_EDIT_BYTES,
+            deadline,
+        )
+        .map_err(editor_read_error)?;
+        if file_version(&self.repository.id, file_id, path, &original) != expected_version {
+            return Err(OperationError::new("FILE_CHANGED"));
+        }
+        let document = editor_text::decode(&original.bytes)?;
+        let bytes = editor_text::encode(&document, content)?;
+        if bytes == original.bytes {
+            return Ok(());
+        }
+        super::conflicts::replace_regular(
+            &self.repository.root,
+            path,
+            &original,
+            &bytes,
+            editor_text::MAX_EDIT_BYTES,
+            deadline,
+        )
+        .map_err(editor_read_error)
+    }
+    /// 复用经过符号链接和文件身份检查的有界读取，返回完整 UTF-8 编辑文档。
+    pub fn read_editable(&self, file_id: &str) -> Result<EditableFile, OperationError> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        super::write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
+        let (_, path, _) = self
+            .files
+            .iter()
+            .find(|(id, _, _)| id == file_id)
+            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let file = super::conflicts::read_regular(
+            &self.repository.root,
+            path,
+            editor_text::MAX_EDIT_BYTES,
+            deadline,
+        )
+        .map_err(editor_read_error)?;
+        let text = editor_text::decode(&file.bytes)?;
+        Ok(EditableFile {
+            file_id: file_id.to_owned(),
+            path: path.clone(),
+            version: file_version(&self.repository.id, file_id, path, &file),
+            text,
+        })
+    }
     /// 从已验证的仓库状态建立文件列表，不扫描忽略目录。
     pub fn new(
         git: GitExecutable,
         repository: RepositoryHandle,
         state: RepositoryState,
+    ) -> Result<Self, OperationError> {
+        Self::new_with_ignored(git, repository, state, false)
+    }
+
+    /// 按用户开关包含忽略文件；文件身份和内容读取仍受原会话约束。
+    pub fn new_with_ignored(
+        git: GitExecutable,
+        repository: RepositoryHandle,
+        state: RepositoryState,
+        include_ignored: bool,
     ) -> Result<Self, OperationError> {
         if state.repository_id != repository.id {
             return Err(OperationError::new("STALE_REQUEST"));
@@ -46,15 +188,39 @@ impl ProjectFilesSession {
             &["ls-files", "-z", "--others", "--exclude-standard"],
             8 * 1024 * 1024,
         )?;
+        let ignored = if include_ignored {
+            query(
+                &git,
+                &repository.root,
+                &[
+                    "ls-files",
+                    "-z",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                ],
+                8 * 1024 * 1024,
+            )?
+        } else {
+            Vec::new()
+        };
         let mut entries = BTreeMap::new();
         for (output, kind) in [
             (tracked, ProjectFileKind::Tracked),
             (untracked, ProjectFileKind::Untracked),
+            (ignored, ProjectFileKind::Ignored),
         ] {
             for raw in output.split(|b| *b == 0).filter(|raw| !raw.is_empty()) {
                 let path = std::str::from_utf8(raw)
                     .map_err(|_| OperationError::new("UNSUPPORTED_PATH_ENCODING"))?
                     .to_owned();
+                // Git 元数据不进入文件访问能力，即使用户开启忽略文件。
+                if path
+                    .split('/')
+                    .any(|part| part.eq_ignore_ascii_case(".git"))
+                {
+                    continue;
+                }
                 entries.entry(path).or_insert(kind);
             }
         }
@@ -115,10 +281,120 @@ impl ProjectFilesSession {
     }
 }
 
+/// 共用安全读取原语的历史错误码在编辑入口转换为对应文件错误。
+fn editor_read_error(error: OperationError) -> OperationError {
+    match error.code.as_str() {
+        "OUTPUT_LIMIT" => OperationError::new("FILE_EDIT_TOO_LARGE"),
+        "UNSUPPORTED_CONFLICT" => OperationError::new("FILE_EDIT_UNSUPPORTED"),
+        "STALE_CONFLICT" => OperationError::new("FILE_CHANGED"),
+        _ => error,
+    }
+}
+
+/// 内容和目录项身份共同构成版本，替换为同字节文件也不沿用旧授权。
+fn file_version(
+    repository_id: &str,
+    file_id: &str,
+    path: &str,
+    file: &super::conflicts::FileBytes,
+) -> String {
+    let mut digest = Sha256::new();
+    for part in [
+        repository_id.as_bytes(),
+        file_id.as_bytes(),
+        path.as_bytes(),
+        file.identity.as_bytes(),
+        &file.bytes,
+    ] {
+        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(part);
+    }
+    format!("{:x}", digest.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::git::repository::{open_repository, tests::Fixture};
+
+    /// 编辑保存只替换工作文件，旧文档版本不能覆盖外部修改。
+    #[test]
+    fn editor_save_preserves_git_and_rejects_stale_bytes() {
+        let f = Fixture::new();
+        f.write("text", b"\xef\xbb\xbfline\r\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let head = std::fs::read(repo.git_dir.join("HEAD")).unwrap();
+        let session = std::sync::Arc::new(
+            ProjectFilesSession::new(f.git.clone(), repo.clone(), state).unwrap(),
+        );
+        let id = session.list().files[0].file_id.clone();
+        let document = session.read_editable(&id).unwrap();
+        let coordinator = super::super::coordinator::RepositoryCoordinator::new();
+        let plan = session
+            .prepare_save(&coordinator, &id, &document.version, "changed\r\n")
+            .unwrap();
+        let handle = coordinator.execute(Some(&repo.id), &plan.plan_id).unwrap();
+        let limit = Instant::now() + Duration::from_secs(120);
+        loop {
+            let record = coordinator
+                .read_operation(Some(&handle.operation_id))
+                .unwrap()
+                .unwrap();
+            if let Some(result) = record.result {
+                assert!(
+                    matches!(
+                        result,
+                        super::super::OperationResult::Succeeded {
+                            kind: super::super::OperationKind::SaveFile,
+                            ..
+                        }
+                    ),
+                    "{result:?}"
+                );
+                break;
+            }
+            assert!(Instant::now() < limit, "文件保存任务超时");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read(f.root.join("text")).unwrap(),
+            b"\xef\xbb\xbfchanged\r\n"
+        );
+        assert_eq!(std::fs::read(repo.git_dir.join("HEAD")).unwrap(), head);
+        assert!(query(&f.git, &f.root, &["ls-files", "--stage"], 4096)
+            .unwrap()
+            .is_empty());
+        f.write("text", b"external");
+        assert_eq!(
+            session
+                .save_editable(&id, &document.version, "overwrite")
+                .unwrap_err()
+                .code,
+            "FILE_CHANGED"
+        );
+        assert_eq!(std::fs::read(f.root.join("text")).unwrap(), b"external");
+    }
+
+    /// 文档身份区分相同状态字母下的外部内容更新，正文保留 BOM 和换行。
+    #[test]
+    fn editable_document_is_complete_and_versioned() {
+        let f = Fixture::new();
+        f.write("text", b"\xef\xbb\xbfa\r\nb");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new(f.git.clone(), repo, state).unwrap();
+        let id = &session.list().files[0].file_id;
+        let before = session.read_editable(id).unwrap();
+        assert_eq!(before.text.content, "a\r\nb");
+        assert!(before.text.bom);
+        f.write("text", b"new\n");
+        let after = session.read_editable(id).unwrap();
+        assert_ne!(before.version, after.version);
+        assert_eq!(after.text.content, "new\n");
+        assert_eq!(
+            session.read_editable("unknown").unwrap_err().code,
+            "FILE_UNAVAILABLE"
+        );
+    }
 
     /// 忽略文件不进入列表，tracked 与 untracked 路径各只出现一次。
     #[test]
@@ -132,7 +408,7 @@ mod tests {
         f.command(&["add", "tracked", ".gitignore"]);
         f.command(&["add", "-f", "forced"]);
         let (repo, state) = open_repository(&f.git, &f.root).unwrap();
-        let session = ProjectFilesSession::new(f.git.clone(), repo, state).unwrap();
+        let session = ProjectFilesSession::new(f.git.clone(), repo.clone(), state.clone()).unwrap();
         let list = session.list();
         assert!(list
             .files
@@ -147,6 +423,38 @@ mod tests {
             .iter()
             .any(|x| x.path == "new" && x.kind == ProjectFileKind::Untracked));
         assert!(!list.files.iter().any(|x| x.path == "ignored"));
+        let expanded =
+            ProjectFilesSession::new_with_ignored(f.git.clone(), repo, state, true).unwrap();
+        let expanded_list = expanded.list();
+        let ignored = expanded_list
+            .files
+            .iter()
+            .find(|file| file.path == "ignored")
+            .unwrap();
+        assert_eq!(ignored.kind, ProjectFileKind::Ignored);
+        assert!(
+            matches!(expanded.read(&ignored.file_id).unwrap(), FileDiff::Text { content, .. } if content == "no\n")
+        );
+        assert_eq!(
+            expanded_list
+                .files
+                .iter()
+                .filter(|file| file.path == "forced")
+                .count(),
+            1
+        );
+        assert!(expanded_list
+            .files
+            .iter()
+            .any(|file| file.path == "forced" && file.kind == ProjectFileKind::Tracked));
+        assert!(!expanded_list.files.iter().any(|file| file
+            .path
+            .split('/')
+            .any(|part| part.eq_ignore_ascii_case(".git"))));
+        assert_eq!(
+            expanded.read(&list.files[0].file_id).unwrap_err().code,
+            "FILE_UNAVAILABLE"
+        );
     }
 
     /// 二进制内容可识别，文件 ID 不可跨会话复用，状态变化会使读取失效。

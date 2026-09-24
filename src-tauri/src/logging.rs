@@ -48,6 +48,19 @@ fn apply(level: LogLevel) {
     });
 }
 
+/// 与旧日志入口共用更新锁，完整设置持久化成功后才更新日志过滤。
+pub(crate) fn save_with_level<T>(
+    level: Option<LogLevel>,
+    save: impl FnOnce() -> Result<T, settings::SettingsError>,
+) -> Result<T, settings::SettingsError> {
+    let _guard = UPDATE
+        .lock()
+        .map_err(|_| OperationError::new("SETTINGS_IO"))?;
+    let result = save()?;
+    apply(effective(level, cfg!(debug_assertions)));
+    Ok(result)
+}
+
 /// 日志服务状态不影响 Git 命令的可用性。
 pub struct LogState {
     directory: PathBuf,

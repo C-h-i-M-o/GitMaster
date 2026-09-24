@@ -1,4 +1,6 @@
+mod models;
 use gitmaster_core::git::OperationError;
+pub use models::*;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -14,7 +16,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// 应用级设置，不保存仓库内容或凭据。
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]
@@ -22,6 +24,9 @@ pub struct Settings {
     pub version: u8,
     pub git_path: Option<String>,
     pub ui_preferences: UiPreferences,
+    pub terminal: TerminalPreferences,
+    pub editor: EditorPreferences,
+    pub external_open: ExternalOpenPreferences,
 }
 
 /// 用户界面偏好；弹性值限定在 1 到 10。
@@ -75,6 +80,12 @@ struct StoredSettings {
     git_path: Option<String>,
     #[serde(default)]
     ui_preferences: Option<UiPreferences>,
+    #[serde(default)]
+    terminal: Option<TerminalPreferences>,
+    #[serde(default)]
+    editor: Option<EditorPreferences>,
+    #[serde(default)]
+    external_open: Option<ExternalOpenPreferences>,
 }
 
 /// 在全局设置锁已持有时读取并解析配置。
@@ -83,10 +94,13 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Settings {
-                version: 2,
+                version: 3,
                 log_level: None,
                 git_path: None,
                 ui_preferences: UiPreferences::default(),
+                terminal: TerminalPreferences::default(),
+                editor: EditorPreferences::default(),
+                external_open: ExternalOpenPreferences::default(),
             })
         }
         Err(_) => return Err(OperationError::new("SETTINGS_IO")),
@@ -95,18 +109,43 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
         serde_json::from_slice(&bytes).map_err(|_| OperationError::new("SETTINGS_IO"))?;
     let preferences = match stored.version {
         1 => UiPreferences::default(),
-        2 => stored
+        2 | 3 => stored
             .ui_preferences
             .ok_or_else(|| OperationError::new("SETTINGS_IO"))?,
         _ => return Err(OperationError::new("SETTINGS_IO")),
     };
     validate(&preferences)?;
-    Ok(Settings {
-        version: 2,
+    let settings = Settings {
+        version: 3,
         log_level: stored.log_level,
         git_path: stored.git_path,
         ui_preferences: preferences,
-    })
+        terminal: if stored.version == 3 {
+            stored
+                .terminal
+                .ok_or_else(|| OperationError::new("SETTINGS_IO"))?
+        } else {
+            TerminalPreferences::default()
+        },
+        editor: if stored.version == 3 {
+            stored
+                .editor
+                .ok_or_else(|| OperationError::new("SETTINGS_IO"))?
+        } else {
+            EditorPreferences::default()
+        },
+        external_open: if stored.version == 3 {
+            stored
+                .external_open
+                .ok_or_else(|| OperationError::new("SETTINGS_IO"))?
+        } else {
+            ExternalOpenPreferences::default()
+        },
+    };
+    if !models::validate(&settings).is_empty() {
+        return Err(OperationError::new("SETTINGS_IO"));
+    }
+    Ok(settings)
 }
 
 /// 读取设置；缺失使用默认值，损坏时保留原文件并返回错误。
@@ -115,9 +154,81 @@ pub fn load(path: &Path) -> Result<Settings, OperationError> {
     read_unlocked(path)
 }
 
+/// 全量设置快照的版本仅用于防止过期覆盖，不作为授权令牌。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSnapshot {
+    pub settings: Settings,
+    pub revision: String,
+}
+
+/// 表单错误只携带固定字段与脱敏原因。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsError {
+    pub code: String,
+    pub field_errors: Vec<FieldError>,
+}
+impl From<OperationError> for SettingsError {
+    /// 保留稳定错误码，不透传底层错误原文。
+    fn from(error: OperationError) -> Self {
+        Self {
+            code: error.code,
+            field_errors: Vec::new(),
+        }
+    }
+}
+
+/// 对规范化设置内容产生进程内可比较的变更标识，不记录原文。
+fn snapshot(settings: Settings) -> Result<SettingsSnapshot, OperationError> {
+    use std::hash::{Hash, Hasher};
+    let bytes = serde_json::to_vec(&settings).map_err(|_| OperationError::new("SETTINGS_IO"))?;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hash);
+    Ok(SettingsSnapshot {
+        settings,
+        revision: format!("v3-{:016x}", hash.finish()),
+    })
+}
+
+/// 在同一配置锁下读取内容和变更标识。
+pub fn read_snapshot(path: &Path) -> Result<SettingsSnapshot, OperationError> {
+    let _guard = lock()?;
+    snapshot(read_unlocked(path)?)
+}
+
+/// 应用完整设置时先校验版本及所有字段，再一次持久化；失败保留原配置。
+pub fn save_all(
+    path: &Path,
+    expected_revision: &str,
+    settings: Settings,
+) -> Result<SettingsSnapshot, SettingsError> {
+    let _guard = lock()?;
+    let old = snapshot(read_unlocked(path)?)?;
+    if old.revision != expected_revision {
+        return Err(SettingsError {
+            code: "STALE_SETTINGS".into(),
+            field_errors: Vec::new(),
+        });
+    }
+    let field_errors = models::validate(&settings);
+    if settings.version != 3 || !field_errors.is_empty() {
+        return Err(SettingsError {
+            code: "INVALID_INPUT".into(),
+            field_errors,
+        });
+    }
+    let next = snapshot(settings)?;
+    write_unlocked(path, &next.settings)?;
+    Ok(next)
+}
+
 /// 在同目录同步临时文件后原子替换，只清理本次创建的文件。
 fn write_unlocked(path: &Path, settings: &Settings) -> Result<(), OperationError> {
     validate(&settings.ui_preferences)?;
+    if !models::validate(settings).is_empty() {
+        return Err(OperationError::new("INVALID_INPUT"));
+    }
     let parent = path
         .parent()
         .ok_or_else(|| OperationError::new("SETTINGS_IO"))?;
@@ -156,10 +267,13 @@ pub fn save(path: &Path, git_path: Option<String>) -> Result<(), OperationError>
     write_unlocked(
         path,
         &Settings {
-            version: 2,
+            version: 3,
             log_level: current.log_level,
             git_path,
             ui_preferences: current.ui_preferences,
+            terminal: current.terminal,
+            editor: current.editor,
+            external_open: current.external_open,
         },
     )
 }
@@ -174,10 +288,13 @@ pub fn save_preferences(
     write_unlocked(
         path,
         &Settings {
-            version: 2,
+            version: 3,
             log_level: current.log_level,
             git_path: current.git_path,
             ui_preferences: preferences.clone(),
+            terminal: current.terminal,
+            editor: current.editor,
+            external_open: current.external_open,
         },
     )?;
     Ok(preferences)
@@ -186,6 +303,82 @@ pub fn save_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    /// 过期草稿不能覆盖其他分类已保存的设置。
+    fn stale_settings_draft_is_rejected() {
+        let p = path();
+        let first = read_snapshot(&p).unwrap();
+        let mut draft = first.settings.clone();
+        draft.editor.font_size = 18;
+        let saved = save_all(&p, &first.revision, draft).unwrap();
+        assert_eq!(saved.settings.editor.font_size, 18);
+        assert!(save_all(&p, &first.revision, first.settings).is_err());
+        assert_eq!(load(&p).unwrap().editor.font_size, 18);
+        cleanup(&p);
+    }
+    #[test]
+    /// 非法终端引用拒绝整个设置事务且返回对应字段。
+    fn invalid_profile_preserves_all_categories() {
+        let p = path();
+        save(&p, None).unwrap();
+        let old = fs::read(&p).unwrap();
+        let snapshot = read_snapshot(&p).unwrap();
+        let mut draft = snapshot.settings;
+        draft.ui_preferences.elasticity = 9;
+        draft.terminal.default_profile_id = "missing".into();
+        let error = save_all(&p, &snapshot.revision, draft).unwrap_err();
+        assert!(error
+            .field_errors
+            .iter()
+            .any(|e| e.field == "terminal.defaultProfileId"));
+        assert_eq!(fs::read(&p).unwrap(), old);
+        cleanup(&p);
+    }
+    #[test]
+    /// 旧分类保存接口必须保留新版本终端及编辑器字段。
+    fn legacy_setters_preserve_new_preferences() {
+        let p = path();
+        let snapshot = read_snapshot(&p).unwrap();
+        let mut draft = snapshot.settings;
+        draft.terminal.profiles[0].args = vec!["-NoLogo".into()];
+        draft.editor.font_size = 20;
+        save_all(&p, &snapshot.revision, draft).unwrap();
+        save_preferences(
+            &p,
+            UiPreferences {
+                elasticity: 5,
+                show_labels: true,
+            },
+        )
+        .unwrap();
+        save_log_level(&p, None).unwrap();
+        save(&p, None).unwrap();
+        let result = load(&p).unwrap();
+        assert_eq!(result.terminal.profiles[0].args, vec!["-NoLogo"]);
+        assert_eq!(result.editor.font_size, 20);
+        cleanup(&p);
+    }
+    #[test]
+    /// 旧配置升级必须保留用户设置并补齐终端及编辑器默认值。
+    fn v2_migrates_to_complete_settings() {
+        let p = path();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, br#"{"version":2,"gitPath":"C:/Git/git.exe","uiPreferences":{"elasticity":8,"showLabels":false},"logLevel":"warn"}"#).unwrap();
+        let value = serde_json::to_value(load(&p).unwrap()).unwrap();
+        assert_eq!(value["version"], 3);
+        assert_eq!(value["gitPath"], "C:/Git/git.exe");
+        assert_eq!(value["uiPreferences"]["elasticity"], 8);
+        assert_eq!(value["logLevel"], "warn");
+        assert_eq!(value["terminal"]["defaultProfileId"], "system");
+        assert_eq!(value["editor"]["tabSize"], 4);
+        assert_eq!(value["externalOpen"]["defaultAppId"], "fileManager");
+        // 读取不改写旧文件，只有应用后才持久化迁移。
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&p).unwrap()).unwrap()["version"],
+            2
+        );
+        cleanup(&p);
+    }
     /// 创建当前测试独有的配置路径。
     fn path() -> std::path::PathBuf {
         std::env::temp_dir()
@@ -201,13 +394,13 @@ mod tests {
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
     #[test]
-    /// 验证 v1 配置升级后使用 v2 默认偏好。
+    /// 验证 v1 配置升级后使用 v3 默认偏好。
     fn v1_migrates_and_defaults() {
         let p = path();
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"{\"version\":1,\"gitPath\":\"/git\"}").unwrap();
         let s = load(&p).unwrap();
-        assert_eq!(s.version, 2);
+        assert_eq!(s.version, 3);
         assert_eq!(s.git_path.as_deref(), Some("/git"));
         assert_eq!(s.ui_preferences, UiPreferences::default());
         cleanup(&p);
@@ -289,10 +482,10 @@ mod tests {
         assert!(save(&p, Some("/git".into())).is_err());
         assert!(save_log_level(&p, Some(crate::logging::LogLevel::Error)).is_err());
         assert_eq!(fs::read(&p).unwrap(), b"broken");
-        fs::write(&p, b"{\"version\":3,\"gitPath\":null}").unwrap();
+        fs::write(&p, b"{\"version\":99,\"gitPath\":null}").unwrap();
         assert!(load(&p).is_err());
         assert!(save_preferences(&p, UiPreferences::default()).is_err());
-        assert_eq!(fs::read(&p).unwrap(), b"{\"version\":3,\"gitPath\":null}");
+        assert_eq!(fs::read(&p).unwrap(), b"{\"version\":99,\"gitPath\":null}");
         cleanup(&p);
     }
 

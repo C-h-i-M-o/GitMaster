@@ -12,7 +12,7 @@ export interface RepositoryViewState {
   error: OperationError | null;
   diff: FileDiff | null;
   diffLoading: boolean;
-  selected: { changeId: string; side: DiffSide } | null;
+  selected: { changeId: string; side: DiffSide; contextLines?: number } | null;
 }
 export interface RepositoryApi {
   openRepository: (path: string) => Promise<RepositoryState>;
@@ -22,6 +22,7 @@ export interface RepositoryApi {
     snapshot: string,
     change: string,
     side: DiffSide,
+    contextLines?: number,
   ) => Promise<FileDiff>;
 }
 /** 构造可测试的仓库状态控制器，窗口生命周期与 React 渲染分离。 */
@@ -136,7 +137,11 @@ export function createRepositoryController(api: RepositoryApi) {
     automaticVisible = visible;
   }
   /** 文件选择使用独立代次，并绑定当前仓库读取代次。 */
-  async function selectDiff(changeId: string, side: DiffSide): Promise<void> {
+  async function selectDiff(
+    changeId: string,
+    side: DiffSide,
+    contextLines = 3,
+  ): Promise<void> {
     const repository = state.repository;
     if (!repository || pending || !active) return;
     const token = ++diffRequest;
@@ -144,7 +149,11 @@ export function createRepositoryController(api: RepositoryApi) {
     update({
       diffLoading: true,
       diff: null,
-      selected: { changeId, side },
+      selected: {
+        changeId,
+        side,
+        ...(contextLines === 3 ? {} : { contextLines }),
+      },
       error: null,
     });
     try {
@@ -153,6 +162,7 @@ export function createRepositoryController(api: RepositoryApi) {
         repository.snapshotId,
         changeId,
         side,
+        contextLines,
       );
       if (active && token === diffRequest && owner === repositoryRequest)
         update({ diff, diffLoading: false });

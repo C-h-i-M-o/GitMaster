@@ -20,6 +20,8 @@ pub fn run() {
         .setup(|app| logging::initialize(app.handle()))
         .invoke_handler(tauri::generate_handler![
             get_app_info,
+            commands::read_app_settings,
+            commands::apply_app_settings,
             logging::read_log_settings,
             logging::set_log_level,
             logging::open_log_directory,
@@ -36,6 +38,10 @@ pub fn run() {
             commands::read_branches,
             commands::read_project_files,
             commands::read_project_file,
+            commands::read_editable_file,
+            commands::prepare_file_save,
+            commands::open_project_folder,
+            commands::read_external_availability,
             commands::choose_git_path,
             commands::choose_repository_path,
             commands::read_write_context,
@@ -48,6 +54,7 @@ pub fn run() {
             commands::execute_clone,
             commands::read_operation,
             commands::read_remotes,
+            commands::read_sync_target,
             commands::assess_remote,
             commands::read_conflicts,
             commands::read_conflict_document,

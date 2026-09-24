@@ -1,5 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+  EditableFile,
   LogLevel,
   LogSettings,
   BranchList,
@@ -20,6 +21,7 @@ import type {
   OperationRecord,
   ProjectFileList,
   RemoteAssessment,
+  SyncTarget,
   RemoteState,
   RemoteWriteRequest,
   RepositoryState,
@@ -39,6 +41,46 @@ export interface RepositoryWatchState {
 
 /** 判断当前是否连接桌面 IPC；浏览器预览不发起调用。 */
 export const isDesktop = (): boolean => isTauri();
+/** 仅解析当前干净分支的上游，不查询服务器或写入配置。 */
+export const readSyncTarget = (
+  repositoryId: string,
+  snapshotId: string,
+): Promise<SyncTarget> =>
+  call("read_sync_target", { repositoryId, snapshotId });
+/** 准备带文件版本的保存任务，执行复用通用一次性计划接口。 */
+export const prepareFileSave = (
+  repositoryId: string,
+  snapshotId: string,
+  fileId: string,
+  version: string,
+  content: string,
+): Promise<WritePreview> =>
+  call("prepare_file_save", {
+    repositoryId,
+    snapshotId,
+    fileId,
+    version,
+    content,
+  });
+/** 读取完整编辑文档和原始文件版本，不复用截断预览。 */
+export const readEditableFile = (
+  repositoryId: string,
+  snapshotId: string,
+  fileId: string,
+): Promise<EditableFile> =>
+  call("read_editable_file", { repositoryId, snapshotId, fileId });
+
+/** 打开已签发仓库的根目录，不向桌面端传入任意路径。 */
+export type ExternalAppId = "fileManager" | "vsCode" | "terminal";
+export const openProjectFolder = (
+  repositoryId: string,
+  application: ExternalAppId,
+): Promise<void> => call("open_project_folder", { repositoryId, application });
+/** 查询支持的外部软件，不运行程序。 */
+export const readExternalAvailability = (): Promise<{
+  vsCode: boolean;
+  terminal: boolean;
+}> => call("read_external_availability");
 
 /** 统一处理桌面调用失败并保持错误契约。 */
 async function call<T>(
@@ -88,8 +130,15 @@ export const readFileDiff = (
   snapshotId: string,
   changeId: string,
   side: DiffSide,
+  contextLines = 3,
 ): Promise<FileDiff> =>
-  call("read_file_diff", { repositoryId, snapshotId, changeId, side });
+  call("read_file_diff", {
+    repositoryId,
+    snapshotId,
+    changeId,
+    side,
+    contextLines,
+  });
 
 /** 建立历史快照或读取该快照下一页；null 游标明确重新加载图。 */
 export const readCommitHistory = (
@@ -127,12 +176,13 @@ export const readCommitFileDiff = (
 export const readBranches = (repositoryId: string): Promise<BranchList> =>
   call("read_branches", { repositoryId });
 
-/** 为当前状态建立已跟踪及未忽略项目文件列表。 */
+/** 为当前状态建立项目文件列表，忽略文件需用户显式开启。 */
 export const readProjectFiles = (
   repositoryId: string,
   snapshotId: string,
+  includeIgnored = false,
 ): Promise<ProjectFileList> =>
-  call("read_project_files", { repositoryId, snapshotId });
+  call("read_project_files", { repositoryId, snapshotId, includeIgnored });
 
 /** 按后端文件 ID 读取项目文件内容，保持只读预览语义。 */
 export const readProjectFile = (

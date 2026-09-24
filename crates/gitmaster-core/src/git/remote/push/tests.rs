@@ -149,7 +149,7 @@ fn local_transport(
             "gc.auto=0",
         ]);
     if let Some(objects) = objects {
-        cmd.env("GIT_OBJECT_DIRECTORY", objects);
+        cmd.env("GIT_OBJECT_DIRECTORY", dunce::simplified(objects));
     }
     let output = cmd.args(args).output().unwrap();
     Ok(ProcessOutput {
@@ -159,6 +159,206 @@ fn local_transport(
         exit_code: output.status.code(),
         truncated: false,
     })
+}
+
+/// 同步推送在准备后出现本地修改时拒绝执行，不改变远端或丢弃文件。
+#[test]
+fn sync_push_stops_when_worktree_changes_after_prepare() {
+    let f = PushFixture::new();
+    f.advance();
+    f.local.command(&["config", "branch.main.remote", "origin"]);
+    f.local
+        .command(&["config", "branch.main.merge", "refs/heads/main"]);
+    let state = read_repository_state_until(&f.local.git, &f.repo, Instant::now() + NETWORK_BUDGET)
+        .unwrap();
+    let remotes = RemoteSession::new(&f.local.git, &f.repo).unwrap();
+    let coordinator = RepositoryCoordinator::new();
+    let preview = prepare_sync_with_runner(
+        &coordinator,
+        &f.local.git,
+        &f.repo,
+        &state,
+        &remotes,
+        local_transport,
+    )
+    .unwrap();
+    assert!(
+        matches!(&preview.target, Some(WriteTarget::Remote { ref_name, .. }) if ref_name == "refs/heads/main")
+    );
+    f.local.write("new-untracked", b"editing during preview");
+    let handle = coordinator
+        .execute(Some(&f.repo.id), &preview.plan_id)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        if let Some(result) = coordinator
+            .read_operation(Some(&handle.operation_id))
+            .unwrap()
+            .unwrap()
+            .result
+        {
+            assert!(
+                matches!(result, OperationResult::Failed { error, .. } if error.code == "WORKTREE_DIRTY")
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "同步推送验证超时");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(f.remote_oid("refs/heads/main"), f.base);
+    assert_eq!(
+        fs::read(f.local.root.join("new-untracked")).unwrap(),
+        b"editing during preview"
+    );
+}
+
+/// 正常同步只推送上游目标；上游目标消失后不得静默创建远端分支。
+#[test]
+fn sync_push_updates_only_upstream_and_missing_target_requires_setup() {
+    let f = PushFixture::new();
+    let expected = f.advance();
+    f.local.command(&["config", "branch.main.remote", "origin"]);
+    f.local
+        .command(&["config", "branch.main.merge", "refs/heads/main"]);
+    let state = read_repository_state_until(&f.local.git, &f.repo, Instant::now() + NETWORK_BUDGET)
+        .unwrap();
+    let remotes = RemoteSession::new(&f.local.git, &f.repo).unwrap();
+    let coordinator = RepositoryCoordinator::new();
+    let preview = prepare_sync_with_runner(
+        &coordinator,
+        &f.local.git,
+        &f.repo,
+        &state,
+        &remotes,
+        local_transport,
+    )
+    .unwrap();
+    let handle = coordinator
+        .execute(Some(&f.repo.id), &preview.plan_id)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        if let Some(result) = coordinator
+            .read_operation(Some(&handle.operation_id))
+            .unwrap()
+            .unwrap()
+            .result
+        {
+            assert!(
+                matches!(result, OperationResult::Succeeded { .. }),
+                "{result:?}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "同步推送验证超时");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(f.remote_oid("refs/heads/main"), expected);
+    let refs = query(
+        &f.local.git,
+        &f.bare,
+        &["for-each-ref", "--format=%(refname)"],
+        4096,
+    )
+    .unwrap();
+    assert_eq!(refs, b"refs/heads/main\n");
+    f.local
+        .command(&["config", "branch.main.merge", "refs/heads/no-longer-exists"]);
+    let remotes = RemoteSession::new(&f.local.git, &f.repo).unwrap();
+    assert_eq!(
+        prepare_sync_with_runner(
+            &coordinator,
+            &f.local.git,
+            &f.repo,
+            &state,
+            &remotes,
+            local_transport
+        )
+        .unwrap_err()
+        .code,
+        "SYNC_TARGET_MISSING"
+    );
+    assert_eq!(
+        query(
+            &f.local.git,
+            &f.bare,
+            &["for-each-ref", "--format=%(refname)"],
+            4096
+        )
+        .unwrap(),
+        refs
+    );
+}
+
+/// 首次发布仅允许新目标，并保留远端其他分支及本地 HEAD。
+#[test]
+fn publish_branch_requires_new_target_and_preserves_other_refs() {
+    let f = PushFixture::new();
+    let expected = f.advance();
+    let state = read_repository_state_until(&f.local.git, &f.repo, Instant::now() + NETWORK_BUDGET)
+        .unwrap();
+    let remotes = RemoteSession::new(&f.local.git, &f.repo).unwrap();
+    let remote_id = remotes.state().remotes[0].remote_id.clone();
+    let coordinator = RepositoryCoordinator::new();
+    assert_eq!(
+        prepare_with_policy(
+            &coordinator,
+            &f.local.git,
+            &f.repo,
+            &state,
+            &remotes,
+            &remote_id,
+            "main",
+            local_transport,
+            PushPolicy::PublishNew
+        )
+        .unwrap_err()
+        .code,
+        "TARGET_EXISTS"
+    );
+    let preview = prepare_with_policy(
+        &coordinator,
+        &f.local.git,
+        &f.repo,
+        &state,
+        &remotes,
+        &remote_id,
+        "new-release",
+        local_transport,
+        PushPolicy::PublishNew,
+    )
+    .unwrap();
+    let handle = coordinator
+        .execute(Some(&f.repo.id), &preview.plan_id)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        if let Some(result) = coordinator
+            .read_operation(Some(&handle.operation_id))
+            .unwrap()
+            .unwrap()
+            .result
+        {
+            assert!(
+                matches!(result, OperationResult::Succeeded { .. }),
+                "{result:?}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "首次发布验证超时");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(f.remote_oid("refs/heads/new-release"), expected);
+    assert_eq!(f.remote_oid("refs/heads/main"), f.base);
+    let refs = query(
+        &f.local.git,
+        &f.bare,
+        &["for-each-ref", "--format=%(refname)"],
+        4096,
+    )
+    .unwrap();
+    assert_eq!(refs, b"refs/heads/main\nrefs/heads/new-release\n");
+    assert_eq!(oid(&f.local, "HEAD"), expected);
 }
 
 /// 有界等待后台任务，重复 execute 不能造成第二次上传。

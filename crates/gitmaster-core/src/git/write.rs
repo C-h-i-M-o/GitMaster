@@ -919,6 +919,28 @@ mod tests {
         assert_eq!(fs::read(f.root.join("lines")).unwrap(), b"one\r\ntwo\r\n");
     }
 
+    /// 页面读取后相同路径重新暂存，即使状态字母未变也不得直接提交新内容。
+    #[test]
+    fn commit_rejects_replaced_index_before_prepare() {
+        let f = Fixture::new();
+        f.write("a", b"first");
+        f.command(&["add", "a"]);
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        f.write("a", b"second");
+        f.command(&["add", "a"]);
+        let fresh = read_repository_state(&f.git, &repo).unwrap();
+        assert_eq!(state.changes, fresh.changes);
+        let error = prepare_commit(
+            &RepositoryCoordinator::new(),
+            &f.git,
+            &repo,
+            &state,
+            "stale",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "STALE_REQUEST");
+    }
+
     /// 提交预览完整包含其他客户端的暂存文件，外部索引更新会使确认过期。
     #[test]
     fn whole_index_preview_is_readonly_and_rejects_external_index() {

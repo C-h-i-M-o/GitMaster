@@ -1,5 +1,6 @@
 use super::*;
 use super::{process::run_git, status::parse_status};
+use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -193,6 +194,13 @@ fn read_state_until(
     if current_dir != repository.git_dir {
         return Err(OperationError::new("STALE_REQUEST"));
     }
+    let index_before = query_until(
+        git,
+        &repository.root,
+        &["ls-files", "--stage", "-z"],
+        32 * 1024 * 1024,
+        deadline,
+    )?;
     let bytes = query_until(
         git,
         &repository.root,
@@ -225,7 +233,18 @@ fn read_state_until(
             operations.push(name.to_owned());
         }
     }
+    let index_after = query_until(
+        git,
+        &repository.root,
+        &["ls-files", "--stage", "-z"],
+        32 * 1024 * 1024,
+        deadline,
+    )?;
+    if index_before != index_after {
+        return Err(OperationError::new("STALE_REQUEST"));
+    }
     Ok(RepositoryState {
+        index_identity: Sha256::digest(&index_after).into(),
         repository_id: repository.id.clone(),
         snapshot_id: next_id(),
         root_path: path_text(&repository.root)?,

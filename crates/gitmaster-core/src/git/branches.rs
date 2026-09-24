@@ -512,7 +512,8 @@ mod tests {
         let handle = coordinator
             .execute(Some(&repo.id), &preview.plan_id)
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // 等待完整生产执行预算及终态交付，避免仍在合法执行时提前销毁夹具。
+        let deadline = Instant::now() + LOCAL_BUDGET + Duration::from_secs(5);
         loop {
             if let Some(result) = coordinator
                 .read_operation(Some(&handle.operation_id))
@@ -825,8 +826,10 @@ mod tests {
             query(&f.git, &f.root, &["count-objects", "-v"], 4096).unwrap(),
             objects
         );
+        let result = finish(&coordinator, &repo, &preview);
         assert!(
-            matches!(finish(&coordinator, &repo, &preview), OperationResult::Succeeded { branch_name: Some(name), .. } if name == "feature")
+            matches!(&result, OperationResult::Succeeded { branch_name: Some(name), .. } if name == "feature"),
+            "切换分支实际返回：{result:?}"
         );
         assert!(
             matches!(read_repository_state(&f.git, &repo).unwrap().head, HeadState::Branch { name, oid } if name == "feature" && oid == branch.oid)

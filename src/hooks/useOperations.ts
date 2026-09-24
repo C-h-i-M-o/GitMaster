@@ -35,8 +35,14 @@ export function useOperations(
   }, [controller, enabled]);
   return {
     ...state,
+    getSnapshot: controller.getSnapshot,
     prepareLocal: controller.prepareLocal,
+    runLocal: controller.runLocal,
+    saveFile: controller.saveFile,
+    runFileSave: controller.runFileSave,
     prepareRemote: controller.prepareRemote,
+    runRemote: controller.runRemote,
+    fetchAll: controller.fetchAll,
     prepareConflict: controller.prepareConflict,
     prepareClone: controller.prepareClone,
     confirm: controller.confirm,
