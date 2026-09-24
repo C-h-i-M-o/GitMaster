@@ -348,7 +348,11 @@ fn execute_switch(
         }
         if clean && actual.head == expected.head && output.as_ref().is_ok_and(|out| !out.success) {
             attempted = false;
-            return Err(OperationError::new("GIT_EXECUTION_FAILED"));
+            return Err(OperationError::new("GIT_EXECUTION_FAILED").with_diagnostic(
+                "gitQuery",
+                None,
+                output.as_ref().ok().and_then(|out| out.exit_code),
+            ));
         }
         Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"))
     })();

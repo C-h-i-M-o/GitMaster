@@ -687,3 +687,16 @@ computer use 已成功操作本次构建的 macOS Debug `.app`，通过原生目
 修复源码提交 `f854263cb743a81c9593baf13bb818e8f512bb94` 已通过普通 atomic push 同步到 `main`、`codex/m1-readonly`、`codex/m2-m3` 和 `codex/fix-branch-switch`，随后 `git ls-remote --heads origin` 确认四个远端分支均包含该修复。各分支原有提交均为此提交祖先，无独有工作遗漏，未使用强制推送或改写历史。
 
 原项目目录已快进到最新 main，并按锁文件离线补齐前端依赖；隔离工作树保留修复分支。PRODUCT.md 也已核对，明确 1GB 缓存和干净系统交付仍为目标。本段文档收尾随四个分支继续普通快进同步，最终 HEAD 以 Git refs 和交付回复为准；没有发布 Release、标签或安装器。
+
+## 2026-09-24 Windows 切换执行路径修复
+
+- 环境：Windows、Git 2.55.0.windows.3。普通路径的临时仓库切换成功；仅将 GIT_DIR 改为带 `\\?\` 前缀的同一路径，即返回 128 和 not a git repository。EvalSpark 只读 rev-parse 对照得到相同差异，未对该仓库执行切换。
+- 新增 `windows_canonical_paths_switch_branch` 使用中文空格临时目录及真实 Windows 进程入口：修复前返回 128，修复后 1 通过（14.08 秒），核对目标 HEAD、工作文件内容及干净状态。
+- Git 环境路径复用锁文件已有的 dunce 1.0.5；只简化库认为可安全转换的路径，内部规范化路径与安全校验不变。不能安全简化的超长、特殊或 UNC 路径未因此获得兼容承诺；本轮未验收网络共享路径。
+- 分支执行拒绝保留 gitQuery 阶段和退出码，原始 stderr 不进入前端或日志。
+- 前端 typecheck、build、format:check 通过；Rust fmt、`cargo check -p gitmaster-desktop --locked --offline` 通过。现有 Tauri dev 自动重编译并于 09:47:41 启动新版进程；未通过 UI 操作用户仓库。
+- `cargo test -p gitmaster-core --locked --offline`：34 通过、131 失败、5 ignored，339.21 秒。大量失败发生在 Fixture 初始化的 `resolve_git`（repository.rs:263，TIMEOUT），另有进程期限/写操作等待失败；新增路径回归在该并发运行中也因初始化超时失败，未进入切换。不能据此前单项通过宣称全量通过，也未通过延长生产或测试超时隐藏失败。
+- SHA-256 linked worktree 专项首次与构建并行运行，179.86 秒后失败在 `revParse` 超时，未进入切换；全量结束后单线程复测结果另列。
+- 全量后串行复测两个用例：普通路径再次通过；linked worktree 已成功执行切换，但旧测试的精确字节断言期望 LF、实际为 CRLF。仅给该 SHA-256 临时测试仓库显式设置 core.autocrlf=false，消除系统换行默认值对该用例的影响，不修改应用换行策略。
+- 修正夹具后，`cargo test -p gitmaster-core captured_checkout_supports_sha256_linked_worktree_and_preserves_metadata --locked --offline -- --nocapture --test-threads=1`：1 通过，92.58 秒。实际切换成功，目标文件字节、HEAD、reflog 与公共 refs/config 保护断言全部通过。普通路径专项已先失败后通过，并在全量结束后的串行复测再次通过；全量失败记录仍有效，未重跑全套或宣称全绿。
+- 用户随后确认本部分功能验证通过，并授权提交全部当前改动。该人工验收不覆盖上述全量自动化测试失败，也不代表 macOS、Release 安装包、签名或干净系统验收通过；本次仅本地提交，不推送或发布。

@@ -96,6 +96,8 @@ fn captured_checkout_supports_sha256_linked_worktree_and_preserves_metadata() {
     f.command(&["init", "--object-format=sha256", "-b", "main", "sha"]);
     f.command(&["-C", "sha", "config", "user.name", "测试"]);
     f.command(&["-C", "sha", "config", "user.email", "test@example.invalid"]);
+    // 本用例核对精确 LF 字节，不能依赖 Windows 系统的 autocrlf 默认值。
+    f.command(&["-C", "sha", "config", "core.autocrlf", "false"]);
     f.write("sha/file", b"main\n");
     f.command(&["-C", "sha", "add", "."]);
     f.command(&["-C", "sha", "commit", "-m", "main"]);

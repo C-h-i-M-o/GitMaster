@@ -933,6 +933,13 @@ Windows 日志目录修正：开发进程可能继承 MSIX 目录虚拟化。设
 
 ## 14. Windows 分支切换修复计划与临时版本
 
+### 2026-09-24 执行阶段路径兼容修复
+
+- 需求与证据：Windows Git 2.55.0.windows.3 在 `GIT_DIR` 接收 `\\?\` 路径时返回 128（不是 Git 仓库）；同一临时仓库使用普通路径可成功切换。此前私有初始化修复不覆盖此执行阶段问题。
+- 接口与数据：不修改 IPC、RepositoryHandle 或确认计划结构；内部继续保留规范化路径及原有身份校验。只在 Git 环境变量边界复用现有 dunce 1.0.5 的 simplified 转换可安全简化的路径，不手工截断前缀、不改变特殊路径语义。
+- 实施：先增加 Windows 原生执行回归，再统一转换 GIT_DIR、GIT_WORK_TREE、GIT_COMMON_DIR、GIT_OBJECT_DIRECTORY、GIT_INDEX_FILE 的路径；保留分支拒绝的固定阶段及真实退出码，不输出原始 stderr。更新验证记录。
+- 验收：回归先失败后通过；真实临时仓库切换后核对 HEAD、文件与干净状态；覆盖 linked worktree 和已有 checkout 保护测试。执行项目前端/Rust检查；单独记录超时及未验收平台，不扩大生产超时。禁止在 EvalSpark 等用户仓库执行写操作；不提交、推送或发布。
+
 2026-09-23 用户最新日志显示：prepare_local_write 运行 31423ms 后，在 checkout_capture 阶段返回 GIT_EXECUTION_FAILED；结合当前源码，失败点指向私有临时仓库初始化。具体 Git 拒绝原因尚未证实，实际切换未开始。该次交付未修改业务代码，已保存为临时提交 `83881fd`。随后用户授权实施专项修复、跳过当前无法运行的测试、同步文档并推进 main。
 
 合并需求、证据、接口、实施步骤及验收的专项文档见 [Windows 分支切换失败修复方案](branch-switch-fix-spec-plan.md)。开发总结及交付边界见 [临时版本开发总结](temporary-version-summary.md)。专项修复现已进入实施和验证：私有初始化取消源对象目录绑定，保留 checkoutInit 阶段与真实退出码；Windows 原始故障仍需平台复测。当前结果以专项方案及验证记录最新章节为准，不以构建成功替代功能验收。

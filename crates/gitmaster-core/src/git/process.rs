@@ -244,7 +244,7 @@ pub(crate) fn read_captured_index(
     deadline: Instant,
 ) -> Result<ProcessOutput, OperationError> {
     let mut cmd = command(git, cwd);
-    cmd.env("GIT_INDEX_FILE", index)
+    cmd.env("GIT_INDEX_FILE", dunce::simplified(index))
         .args(["ls-files", "--stage", "-z"]);
     run_command_with_deadline(
         cmd,
@@ -276,7 +276,7 @@ pub(crate) fn run_local_git(
         let mut cmd = command(git, cwd);
         cmd.env("GIT_CONFIG_NOSYSTEM", "0");
         if let Some(index) = index {
-            cmd.env("GIT_INDEX_FILE", index);
+            cmd.env("GIT_INDEX_FILE", dunce::simplified(index));
         }
         cmd.args([
             "-c",
@@ -312,7 +312,7 @@ pub(crate) fn run_isolated_git(
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_ATTR_NOSYSTEM", "1");
         if let Some(objects) = objects {
-            cmd.env("GIT_OBJECT_DIRECTORY", objects);
+            cmd.env("GIT_OBJECT_DIRECTORY", dunce::simplified(objects));
         }
         for (key, value) in settings {
             cmd.arg("-c").arg(format!("{key}={value}"));
@@ -353,10 +353,14 @@ pub(crate) fn run_worktree_git(
     #[cfg(any(unix, windows))]
     {
         let mut cmd = command(git, &repo.root);
-        cmd.env("GIT_DIR", &repo.git_dir)
-            .env("GIT_WORK_TREE", &repo.root)
-            .env("GIT_COMMON_DIR", common)
-            .env("GIT_OBJECT_DIRECTORY", repo.common_dir.join("objects"))
+        // Git for Windows 不接受环境变量中的普通卷扩展路径；只简化可安全转换的路径。
+        cmd.env("GIT_DIR", dunce::simplified(&repo.git_dir))
+            .env("GIT_WORK_TREE", dunce::simplified(&repo.root))
+            .env("GIT_COMMON_DIR", dunce::simplified(common))
+            .env(
+                "GIT_OBJECT_DIRECTORY",
+                dunce::simplified(&repo.common_dir.join("objects")),
+            )
             .env("GIT_CONFIG_GLOBAL", null_device())
             .env("GIT_CONFIG_SYSTEM", null_device())
             .env("GIT_ATTR_NOSYSTEM", "1")
@@ -449,7 +453,7 @@ fn network_command(
         )
         .env("GIT_SSH_VARIANT", "ssh");
     if let Some(objects) = objects {
-        cmd.env("GIT_OBJECT_DIRECTORY", objects);
+        cmd.env("GIT_OBJECT_DIRECTORY", dunce::simplified(objects));
     }
     // 捕获配置可能包含认证 header，不把值放进可见的进程参数或临时文件。
     cmd.env("GIT_CONFIG_COUNT", settings.len().to_string());
@@ -1027,6 +1031,72 @@ fn read_limited(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Windows 规范化路径必须能经过实际 Git 执行入口完成切换并保持工作区干净。
+    #[cfg(windows)]
+    #[test]
+    fn windows_canonical_paths_switch_branch() {
+        use crate::git::repository::tests::Fixture;
+        let fixture = Fixture::new();
+        fixture.write("file.txt", b"main\n");
+        fixture.command(&["add", "."]);
+        fixture.command(&["commit", "-m", "main"]);
+        fixture.command(&["switch", "-c", "feature"]);
+        fixture.write("file.txt", b"feature\n");
+        fixture.command(&["commit", "-am", "feature"]);
+        fixture.command(&["switch", "main"]);
+        let root = fixture.root.canonicalize().unwrap();
+        let repo = super::super::RepositoryHandle {
+            id: "windows-path-regression".into(),
+            git_dir: root.join(".git"),
+            common_dir: root.join(".git"),
+            root,
+        };
+        let output = run_worktree_git(
+            &fixture.git,
+            &repo,
+            &repo.common_dir,
+            &[],
+            &[
+                "switch",
+                "--no-guess",
+                "--no-recurse-submodules",
+                "--no-overwrite-ignore",
+                "--",
+                "feature",
+            ]
+            .map(OsString::from),
+            Instant::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(
+            output.success,
+            "切换失败：exit={:?}，stderr={}",
+            output.exit_code,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(repo.git_dir.join("HEAD")).unwrap(),
+            b"ref: refs/heads/feature\n"
+        );
+        assert_eq!(
+            std::fs::read(repo.root.join("file.txt")).unwrap(),
+            b"feature\n"
+        );
+        let status = run_worktree_git(
+            &fixture.git,
+            &repo,
+            &repo.common_dir,
+            &[],
+            &["status", "--porcelain"].map(OsString::from),
+            Instant::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(
+            status.success && status.stdout.is_empty(),
+            "切换后工作区不干净"
+        );
+    }
 
     /// 总期限已经结束时，不尝试启动另一个 Git 子查询。
     #[test]
