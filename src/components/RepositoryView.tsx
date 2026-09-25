@@ -123,6 +123,10 @@ export function RepositoryView({
         />
       </div>
       <DiffView
+        scope={{
+          repositoryId: repository.repositoryId,
+          snapshotId: repository.snapshotId,
+        }}
         diff={diff}
         loading={diffLoading}
         selected={selected}

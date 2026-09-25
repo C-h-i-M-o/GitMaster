@@ -20,6 +20,10 @@ export function describeGitError(error: OperationError): string {
     FILE_EDIT_TOO_LARGE:
       "文件超过 2 MiB 编辑上限，请使用只读查看或外部编辑器。",
     FILE_EDIT_BINARY: "二进制内容不能在文本编辑器中修改。",
+    FILE_READ_BINARY: "二进制文件无法在文本阅读器中显示。",
+    FILE_READ_ENCODING: "此阅读器仅支持 UTF-8，请使用支持原编码的外部应用。",
+    FILE_READ_TOO_LARGE: "文件超过 64 MiB 或一百万逻辑行，请使用外部应用阅读。",
+    FILE_READ_LIMIT: "已达到八份只读文档上限，请先关闭其他文档。",
     FILE_EDIT_ENCODING: "文件不是有效 UTF-8，请使用支持原编码的外部编辑器。",
     FILE_EDIT_LINE_ENDING:
       "文件包含混合换行，当前仅支持只读查看，请使用外部编辑器修改。",

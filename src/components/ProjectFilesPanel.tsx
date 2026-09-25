@@ -1,63 +1,31 @@
 import type { Workbench } from "../hooks/useWorkbench";
+import { Suspense } from "react";
+import { FileEditor } from "../ui/editorLoader";
+import { defaultSettings } from "../ui/settingsDraft";
 import { useFileTree } from "../hooks/useFileTree";
-import type { FileTreeNode } from "../ui/fileTree";
+import { VirtualFileTree } from "./VirtualFileTree";
 import { ContentPreview } from "./ContentPreview";
 import { useProjectFolder } from "../hooks/useProjectFolder";
 import { describeGitError } from "../ui/gitPresentation";
-
-/** 递归目录列表采用原生按钮，支持键盘访问及展开状态朗读。 */
-function FileNodes({
-  nodes,
-  tree,
-  w,
-}: {
-  nodes: FileTreeNode[];
-  tree: ReturnType<typeof useFileTree>;
-  w: Workbench;
-}) {
-  return (
-    <ul className="project-tree-list">
-      {nodes.map((node) => (
-        <li key={`${node.kind}:${node.path}`}>
-          {node.kind === "directory" ? (
-            <>
-              <button
-                className="project-tree-row"
-                title={node.path}
-                aria-expanded={tree.isOpen(node.path)}
-                onClick={tree.toggle(node.path)}
-              >
-                <span aria-hidden="true">
-                  {tree.isOpen(node.path) ? "▾" : "▸"}
-                </span>
-                <span>{node.name}</span>
-              </button>
-              {tree.isOpen(node.path) && (
-                <FileNodes nodes={node.children} tree={tree} w={w} />
-              )}
-            </>
-          ) : (
-            <button
-              className={`project-tree-row ${w.projectPath === node.path ? "selected" : ""}`}
-              title={node.path}
-              aria-current={w.projectPath === node.path ? "true" : undefined}
-              onClick={w.inspectProjectFile(node.fileId)}
-            >
-              <span aria-hidden="true">◇</span>
-              <span>{node.name}</span>
-              {node.status === "untracked" && <small>新文件</small>}
-              {node.status === "ignored" && <small>已忽略</small>}
-            </button>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
+import { PagedReader } from "./PagedReader";
 
 /** 项目正文置左、文件树置右，读取仍使用已有受限后端入口。 */
 export function ProjectFilesPanel({ w }: { w: Workbench }) {
-  const tree = useFileTree(w.projectFiles);
+  const tree = useFileTree(
+    w.projectTree,
+    w.loadProjectDirectory,
+    w.searchProjectFiles,
+  );
+  const selected = w.editor.tabs.find(
+    (tab) => tab.document.path === w.projectPath,
+  );
+  const readOnlyFile =
+    !selected &&
+    !w.editor.loading &&
+    (w.editor.error?.code === "FILE_EDIT_TOO_LARGE" ||
+      w.editor.error?.code === "FILE_EDIT_LINE_ENDING")
+      ? w.projectFiles?.files.find((file) => file.path === w.projectPath)
+      : undefined;
   const folder = useProjectFolder(
     w.repo.repository?.repositoryId,
     !w.preview,
@@ -99,13 +67,92 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
         )}
         {folder.error && <p role="alert">{describeGitError(folder.error)}</p>}
         <h3 className="preview-path">{w.projectPath || "选择项目文件"}</h3>
-        <ContentPreview value={w.projectDiff} loading={w.projectLoading} />
+        <div className="editor-tabs" aria-label="已打开文档">
+          {w.editor.tabs.map((tab) => (
+            <div key={tab.document.path}>
+              <button
+                aria-pressed={tab.document.path === w.editor.activePath}
+                onClick={w.selectEditor(tab.document.path)}
+              >
+                {tab.document.path}
+                {tab.draft !== tab.baseline ? " ●" : ""}
+              </button>
+              <button
+                aria-label={`关闭 ${tab.document.path}`}
+                onClick={w.closeEditor(tab.document.path)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+        {w.editor.error && !readOnlyFile && (
+          <p role="alert">{describeGitError(w.editor.error)}</p>
+        )}
+        {w.editor.notice && <p role="status">{w.editor.notice}</p>}
+        {selected && (
+          <div className="button-row">
+            <button
+              onClick={w.saveActiveEditor}
+              disabled={
+                Boolean(w.editor.savingPath) ||
+                selected.draft === selected.baseline
+              }
+            >
+              保存
+            </button>
+            <button
+              onClick={w.reloadEditor}
+              disabled={Boolean(w.editor.savingPath)}
+            >
+              重新读取
+            </button>
+            <span>
+              UTF-8{selected.document.text.bom ? " BOM" : ""} ·{" "}
+              {selected.document.text.lineEnding}
+            </span>
+          </div>
+        )}
+        <div className="editor-host" hidden={!selected}>
+          {w.editor.tabs.length > 0 && (
+            <Suspense fallback={<p role="status">正在加载编辑器…</p>}>
+              <FileEditor
+                repositoryId={w.editor.repositoryId ?? ""}
+                tabs={w.editor.tabs}
+                activePath={selected?.document.path ?? null}
+                preferences={
+                  w.appSettings.saved?.settings.editor ??
+                  defaultSettings().editor
+                }
+                edit={w.editor.controller.edit}
+                readOnly={
+                  w.choosing ||
+                  w.editorLeaving ||
+                  ((w.operations.busy || w.repo.loading) &&
+                    !w.editor.savingPath)
+                }
+                save={w.saveEditor}
+              />
+            </Suspense>
+          )}
+        </div>
+        {readOnlyFile && w.projectFiles && (
+          <PagedReader
+            key={`${w.projectFiles.snapshotId}:${readOnlyFile.fileId}`}
+            scope={w.projectFiles}
+            fileId={readOnlyFile.fileId}
+          />
+        )}
+        {!selected && !readOnlyFile && (
+          <ContentPreview value={w.projectDiff} loading={w.projectLoading} />
+        )}
       </section>
       <nav className="project-file-tree" aria-label="项目文件">
         <label>
           筛选文件
           <input
             type="search"
+            maxLength={256}
             value={tree.query}
             onChange={tree.filter}
             placeholder="按路径筛选…"
@@ -125,10 +172,17 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
             ? "包含忽略文件；隐藏 Git 元数据"
             : "已跟踪与未忽略文件"}
         </p>
-        <FileNodes nodes={tree.nodes} tree={tree} w={w} />
+        <VirtualFileTree
+          tree={tree}
+          selectedPath={w.projectPath}
+          openFile={w.inspectProjectFile}
+        />
+        {tree.error && <p role="alert">{tree.error}</p>}
         {!tree.nodes.length && (
           <p className="muted">
-            {w.projectLoading ? "正在读取文件…" : "没有匹配文件"}
+            {w.projectLoading || tree.loading("")
+              ? "正在读取文件…"
+              : "没有匹配文件"}
           </p>
         )}
       </nav>

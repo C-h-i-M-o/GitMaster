@@ -1,5 +1,6 @@
 import type { Workbench } from "../hooks/useWorkbench";
 import { UnifiedDiff } from "./UnifiedDiff";
+import { PagedDiff } from "./PagedDiff";
 import { ContentPreview } from "./ContentPreview";
 import { Icon } from "./Icon";
 
@@ -37,7 +38,7 @@ export function ChangeDetailDrawer({ workbench: w }: { workbench: Workbench }) {
       </div>
       <div className="change-detail-body">
         {w.repo.selected.side !== "untracked" &&
-          w.repo.diff?.kind === "text" && (
+          (w.repo.diff?.kind === "text" || w.repo.diff?.kind === "paged") && (
             <div className="button-row">
               <button
                 className="secondary"
@@ -56,14 +57,28 @@ export function ChangeDetailDrawer({ workbench: w }: { workbench: Workbench }) {
               </small>
             </div>
           )}
-        {!w.repo.diffLoading && w.repo.diff?.kind === "text" ? (
+        {!w.repo.diffLoading &&
+        w.repo.diff?.kind === "paged" &&
+        w.repo.repository ? (
+          <PagedDiff
+            key={w.repo.diff.documentId}
+            document={w.repo.diff}
+            scope={{
+              repositoryId: w.repo.repository.repositoryId,
+              snapshotId: w.repo.repository.snapshotId,
+            }}
+          />
+        ) : !w.repo.diffLoading && w.repo.diff?.kind === "text" ? (
           <UnifiedDiff
             content={w.repo.diff.content}
             untracked={w.repo.selected.side === "untracked"}
             truncated={w.repo.diff.truncated}
           />
         ) : (
-          <ContentPreview value={w.repo.diff} loading={w.repo.diffLoading} />
+          <ContentPreview
+            value={w.repo.diff?.kind === "paged" ? null : w.repo.diff}
+            loading={w.repo.diffLoading}
+          />
         )}
       </div>
     </aside>

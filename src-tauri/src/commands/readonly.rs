@@ -340,6 +340,15 @@ impl ProjectFilesRequest {
         shared: &DesktopState,
         include_ignored: bool,
     ) -> Result<ProjectFileList, OperationError> {
+        self.run_with(shared, include_ignored, |cache| cache.list())
+    }
+    /// 新目录入口与旧平面入口共享同一个会话发布门禁。
+    fn run_with<T>(
+        self,
+        shared: &DesktopState,
+        include_ignored: bool,
+        project: impl FnOnce(&git::files::ProjectFilesSession) -> T,
+    ) -> Result<T, OperationError> {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
         let cache = self.ctx.coordinator.read(&key, || {
             git::files::ProjectFilesSession::new_with_ignored(
@@ -349,7 +358,7 @@ impl ProjectFilesRequest {
                 include_ignored,
             )
         })?;
-        let list = cache.list();
+        let list = project(&cache);
         let mut desktop = shared.lock()?;
         self.ctx.check(&desktop)?;
         if desktop.project_files_request != self.generation {
@@ -424,6 +433,62 @@ pub async fn read_project_files(
     .await
 }
 
+/// 建立项目树会话，仅传输根目录第一页。
+#[tauri::command]
+pub async fn read_project_tree(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    include_ignored: Option<bool>,
+) -> Result<git::files::tree::ProjectTreePage, OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFilesRequest::begin(&shared, &repository_id, &snapshot_id)?;
+    blocking("read_project_tree", move || {
+        request.run_with(&shared, include_ignored.unwrap_or(false), |cache| {
+            cache.tree_root()
+        })
+    })
+    .await
+}
+
+/// 展开目录只读取当前缓存，不能替换文件映射或访问任意路径。
+#[tauri::command]
+pub async fn read_project_directory(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    tree_id: String,
+    directory_id: String,
+    offset: usize,
+) -> Result<git::files::tree::ProjectTreePage, OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    blocking("read_project_directory", move || {
+        request.run_with(&shared, |cache| {
+            cache.tree_page(&tree_id, &directory_id, offset)
+        })
+    })
+    .await
+}
+
+/// 搜索使用已签发清单及有界分页，不读取文件正文。
+#[tauri::command]
+pub async fn search_project_files(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    tree_id: String,
+    query: String,
+    offset: usize,
+) -> Result<git::files::tree::ProjectTreePage, OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    blocking("search_project_files", move || {
+        request.run_with(&shared, |cache| cache.tree_search(&tree_id, &query, offset))
+    })
+    .await
+}
+
 /// 按本次列表 fileId 读取项目文件内容，列表刷新后旧 ID 拒绝。
 #[tauri::command]
 pub async fn read_project_file(
@@ -455,3 +520,75 @@ pub async fn read_editable_file(
 
 #[cfg(test)]
 mod tests;
+
+/// 单文档字面量查找按匹配行分页，不返回未请求的正文。
+#[tauri::command]
+pub async fn search_read_document(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    document_id: String,
+    query: String,
+    start_line: usize,
+    count: usize,
+) -> Result<git::files::reader::ReadSearch, OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    blocking("search_read_document", move || {
+        request.run_with(&shared, |cache| {
+            cache.search_read_document(&document_id, &query, start_line, count)
+        })
+    })
+    .await
+}
+
+/// 建立流式只读行索引，正文仍保留在工作文件中。
+#[tauri::command]
+pub async fn open_read_document(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    file_id: String,
+) -> Result<git::files::reader::ReadDocument, OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    blocking("open_read_document", move || {
+        request.run_with(&shared, |cache| cache.open_read_document(&file_id))
+    })
+    .await
+}
+/// 页读取复用原仓库队列与 Arc 发布门禁，旧快照不能回填新项目。
+#[tauri::command]
+pub async fn read_document_page(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    document_id: String,
+    start_line: usize,
+    count: usize,
+    byte_offset: Option<u64>,
+) -> Result<git::files::reader::ReadPage, OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    blocking("read_document_page", move || {
+        request.run_with(&shared, |cache| {
+            cache.read_document_page(&document_id, start_line, count, byte_offset.unwrap_or(0))
+        })
+    })
+    .await
+}
+/// 释放只读文档，不删除或修改磁盘内容。
+#[tauri::command]
+pub async fn close_read_document(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    snapshot_id: String,
+    document_id: String,
+) -> Result<(), OperationError> {
+    let shared = state.inner().clone();
+    let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    blocking("close_read_document", move || {
+        request.run_with(&shared, |cache| cache.close_read_document(&document_id))
+    })
+    .await
+}

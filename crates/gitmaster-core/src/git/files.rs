@@ -1,5 +1,7 @@
 //! 当前工作树项目文件的只读列表与按需内容读取。
 pub mod editor_text;
+pub mod reader;
+pub mod tree;
 use super::{
     diff::preview,
     repository::{next_id, query, read_repository_state},
@@ -29,6 +31,8 @@ pub struct ProjectFilesSession {
     repository: RepositoryHandle,
     state: RepositoryState,
     files: Vec<(String, String, ProjectFileKind)>,
+    tree: std::sync::OnceLock<tree::TreeIndex>,
+    readers: std::sync::Mutex<BTreeMap<String, reader::PagedDocument>>,
 }
 
 impl ProjectFilesSession {
@@ -243,6 +247,8 @@ impl ProjectFilesSession {
             repository,
             state,
             files,
+            tree: std::sync::OnceLock::new(),
+            readers: std::sync::Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -316,6 +322,165 @@ fn file_version(
 mod tests {
     use super::*;
     use crate::git::repository::{open_repository, tests::Fixture};
+
+    /// 根目录不夹带后代文件，分页稳定且搜索复用文件身份。
+    #[test]
+    fn project_tree_pages_preserve_file_capabilities() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.root.join("中文 目录/深层")).unwrap();
+        f.write("中文 目录/深层/hello.ts", b"hello\n");
+        for n in 0..205 {
+            f.write(&format!("file-{n:03}"), b"value\n");
+        }
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new(f.git.clone(), repo.clone(), state.clone()).unwrap();
+        let root = session.tree_root();
+        assert_eq!(root.entries.len(), 200);
+        assert_eq!(root.total, 206);
+        assert_eq!(root.next_offset, Some(200));
+        let directory = &root.entries[0];
+        assert!(matches!(
+            directory,
+            tree::ProjectTreeEntry::Directory { .. }
+        ));
+        let second = session
+            .tree_page(&root.tree_id, &root.directory_id, 200)
+            .unwrap();
+        assert_eq!(second.entries.len(), 6);
+        assert_eq!(second.next_offset, None);
+        let names: std::collections::BTreeSet<_> = root
+            .entries
+            .iter()
+            .chain(&second.entries)
+            .map(|entry| entry.id())
+            .collect();
+        assert_eq!(names.len(), 206);
+        let child = session.tree_page(&root.tree_id, directory.id(), 0).unwrap();
+        assert_eq!(child.entries.len(), 1);
+        let leaf = session
+            .tree_page(&root.tree_id, child.entries[0].id(), 0)
+            .unwrap();
+        assert_eq!(leaf.entries.len(), 1);
+        let found = session.tree_search(&root.tree_id, "hello.TS", 0).unwrap();
+        assert_eq!(found.entries[0].id(), leaf.entries[0].id());
+        assert_eq!(
+            session
+                .read_editable(found.entries[0].id())
+                .unwrap()
+                .text
+                .content,
+            "hello\n"
+        );
+        assert_eq!(
+            session
+                .tree_page(&root.tree_id, "../../", 0)
+                .unwrap_err()
+                .code,
+            "FILE_UNAVAILABLE"
+        );
+        assert_eq!(
+            session
+                .tree_page(&root.tree_id, &root.directory_id, 207)
+                .unwrap_err()
+                .code,
+            "INVALID_INPUT"
+        );
+        let next = ProjectFilesSession::new(f.git.clone(), repo, state).unwrap();
+        assert_eq!(
+            next.tree_page(&root.tree_id, &root.directory_id, 0)
+                .unwrap_err()
+                .code,
+            "STALE_REQUEST"
+        );
+    }
+
+    /// 相同字节的新目录项不能复用旧文件的保存授权，删除后也不能隐式重建。
+    #[test]
+    fn editor_save_rejects_replacement_and_deleted_file() {
+        let f = Fixture::new();
+        f.write("text", b"original\n");
+        f.command(&["add", "text"]);
+        f.command(&["commit", "-m", "base"]);
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let index = std::fs::read(repo.git_dir.join("index")).unwrap();
+        let session = ProjectFilesSession::new(f.git.clone(), repo.clone(), state).unwrap();
+        let id = session.list().files[0].file_id.clone();
+        let document = session.read_editable(&id).unwrap();
+        // 旧文件保留在仓库之外，避免 inode 复用或新增工作文件影响快照断言。
+        let backup = tempfile::tempdir_in(f.root.parent().unwrap()).unwrap();
+        std::fs::rename(f.root.join("text"), backup.path().join("original")).unwrap();
+        f.write("text", b"original\n");
+        assert_eq!(
+            session
+                .save_editable(&id, &document.version, "overwrite")
+                .unwrap_err()
+                .code,
+            "FILE_CHANGED"
+        );
+        assert_eq!(std::fs::read(f.root.join("text")).unwrap(), b"original\n");
+        std::fs::remove_file(f.root.join("text")).unwrap();
+        assert!(session
+            .save_editable(&id, &document.version, "overwrite")
+            .is_err());
+        assert!(!f.root.join("text").exists());
+        assert_eq!(std::fs::read(repo.git_dir.join("index")).unwrap(), index);
+        assert_eq!(
+            std::fs::read(backup.path().join("original")).unwrap(),
+            b"original\n"
+        );
+    }
+
+    /// 保存入口拒绝二进制及超限草稿，不能先截断或损坏工作文件。
+    #[test]
+    fn editor_save_rejects_invalid_drafts_without_writes() {
+        let f = Fixture::new();
+        f.write("text", b"\xef\xbb\xbforiginal\r\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new(f.git.clone(), repo, state).unwrap();
+        let id = session.list().files[0].file_id.clone();
+        let document = session.read_editable(&id).unwrap();
+        for (content, expected) in [
+            ("a\0b".to_owned(), "FILE_EDIT_BINARY"),
+            (
+                "a".repeat(editor_text::MAX_EDIT_BYTES),
+                "FILE_EDIT_TOO_LARGE",
+            ),
+        ] {
+            assert_eq!(
+                session
+                    .save_editable(&id, &document.version, &content)
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+            assert_eq!(
+                std::fs::read(f.root.join("text")).unwrap(),
+                b"\xef\xbb\xbforiginal\r\n"
+            );
+        }
+    }
+
+    /// 文档打开后替换为仓库外符号链接，保存必须拒绝且不改变链接目标。
+    #[cfg(unix)]
+    #[test]
+    fn editor_save_rejects_late_symlink_escape() {
+        let f = Fixture::new();
+        f.write("text", b"original\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new(f.git.clone(), repo, state).unwrap();
+        let id = session.list().files[0].file_id.clone();
+        let document = session.read_editable(&id).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("target");
+        std::fs::write(&target, b"outside\n").unwrap();
+        std::fs::remove_file(f.root.join("text")).unwrap();
+        std::os::unix::fs::symlink(&target, f.root.join("text")).unwrap();
+        assert!(session
+            .save_editable(&id, &document.version, "overwrite")
+            .is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"outside\n");
+        assert_eq!(std::fs::read_link(f.root.join("text")).unwrap(), target);
+    }
 
     /// 编辑保存只替换工作文件，旧文档版本不能覆盖外部修改。
     #[test]

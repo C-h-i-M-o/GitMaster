@@ -399,13 +399,12 @@ fn decode(bytes: &[u8]) -> Result<Text, OperationError> {
     })
 }
 
-/// 沿目录能力检查每个祖先，普通文件以不跟随链接且非阻塞方式有界读取。
-pub(crate) fn read_regular(
+/// 沿用目录能力边界打开普通文件，供完整读取与流式只读索引共用。
+pub(crate) fn open_regular(
     root: &Path,
     path: &str,
-    limit: usize,
     deadline: Instant,
-) -> Result<FileBytes, OperationError> {
+) -> Result<RegularFile, OperationError> {
     guard::validate_path(path)?;
     guard::check_time(deadline)?;
     let mut dir = Dir::open_ambient_dir(root, cap_std::ambient_authority())
@@ -444,7 +443,7 @@ pub(crate) fn read_regular(
     }
     #[cfg(windows)]
     crate::git::windows_fs::nofollow(&mut options);
-    let mut file = dir
+    let file = dir
         .open_with(name, &options)
         .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
     let before = file
@@ -459,14 +458,57 @@ pub(crate) fn read_regular(
     {
         return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
     }
-    if before.len() > limit as u64 {
+    Ok(RegularFile {
+        file,
+        identity: metadata_identity(&before),
+        len: before.len(),
+        root: root.to_owned(),
+        path: path.to_owned(),
+    })
+}
+
+/// 已安全打开的句柄，后续读取需核对句柄和当前路径仍对应相同身份。
+pub(crate) struct RegularFile {
+    pub(crate) file: cap_std::fs::File,
+    pub(crate) identity: String,
+    pub(crate) len: u64,
+    root: std::path::PathBuf,
+    path: String,
+}
+impl RegularFile {
+    /// 每次重走原始祖先能力路径，防止旧父目录句柄掩盖路径替换。
+    pub(crate) fn verify(&self, deadline: Instant) -> Result<(), OperationError> {
+        guard::check_time(deadline)?;
+        let after = self
+            .file
+            .metadata()
+            .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
+        let current = open_regular(&self.root, &self.path, deadline)
+            .map_err(|_| OperationError::new("STALE_CONFLICT"))?;
+        if self.identity != metadata_identity(&after) || self.identity != current.identity {
+            return Err(OperationError::new("STALE_CONFLICT"));
+        }
+        Ok(())
+    }
+}
+
+/// 普通文件完整读取保持原上限及读取前后身份核对，不改变保存合同。
+pub(crate) fn read_regular(
+    root: &Path,
+    path: &str,
+    limit: usize,
+    deadline: Instant,
+) -> Result<FileBytes, OperationError> {
+    let mut opened = open_regular(root, path, deadline)?;
+    if opened.len > limit as u64 {
         return Err(OperationError::new("OUTPUT_LIMIT"));
     }
     let mut bytes = Vec::new();
     let mut buffer = vec![0; 64 * 1024];
     loop {
         guard::check_time(deadline)?;
-        let count = file
+        let count = opened
+            .file
             .read(&mut buffer)
             .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
         if count == 0 {
@@ -477,20 +519,11 @@ pub(crate) fn read_regular(
         }
         bytes.extend_from_slice(&buffer[..count]);
     }
-    let identity = metadata_identity(&before);
-    let after = file
-        .metadata()
-        .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
-    let current = dir
-        .symlink_metadata(name)
-        .map_err(|_| OperationError::new("STALE_CONFLICT"))?;
-    if identity != metadata_identity(&after)
-        || identity != metadata_identity(&current)
-        || !current.is_file()
-    {
-        return Err(OperationError::new("STALE_CONFLICT"));
-    }
-    Ok(FileBytes { bytes, identity })
+    opened.verify(deadline)?;
+    Ok(FileBytes {
+        bytes,
+        identity: opened.identity,
+    })
 }
 
 /// 元数据身份区分相同内容的新一轮 merge 和被替换的工作文件。

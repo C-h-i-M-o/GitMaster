@@ -13,6 +13,89 @@ use std::{
 /// 为并行测试夹具补充进程内唯一序号，避免时间戳精度不足导致目录碰撞。
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// 差异新请求使旧文档与迟到打开失效，旧关闭不得清除新槽。
+#[test]
+fn paged_diff_lifecycle_rejects_stale_requests() {
+    use super::super::diff::{close_document, DiffAccess, DiffRequest, OpenedDiff};
+    let f = Fixture::new();
+    fs::write(f.root.join("untracked.txt"), "中文\nsecond\n").unwrap();
+    let (repo, state) = {
+        let desktop = f.shared.lock().unwrap();
+        let repo = desktop.active.as_ref().unwrap().0.clone();
+        let state =
+            git::repository::read_repository_state(desktop.git.as_ref().unwrap(), &repo).unwrap();
+        (repo, state)
+    };
+    let snapshot = state.snapshot_id.clone();
+    let change = state.changes[0].change_id.clone();
+    f.shared.lock().unwrap().active = Some((repo, state));
+    let begin = || {
+        DiffRequest::begin(
+            &f.shared,
+            &f.repository_id,
+            &snapshot,
+            change.clone(),
+            DiffSide::Untracked,
+            3,
+        )
+        .unwrap()
+    };
+    let first = begin();
+    let latest = begin();
+    assert_eq!(first.run(&f.shared).unwrap_err().code, "STALE_REQUEST");
+    let opened = latest.run(&f.shared).unwrap();
+    let wire = serde_json::to_value(&opened).unwrap();
+    assert_eq!(wire["kind"], "paged");
+    assert_eq!(wire["rowCount"], 2);
+    assert!(wire["documentId"].is_string());
+    assert!(wire.get("content").is_none());
+    let OpenedDiff::Paged {
+        document_id: old,
+        summary,
+    } = opened
+    else {
+        panic!("预期分页差异");
+    };
+    assert_eq!(summary.row_count, 2);
+    let access = DiffAccess::capture(&f.shared, &f.repository_id, &snapshot, &old).unwrap();
+    let page = access.run(&f.shared, 0, 1, 0).unwrap();
+    assert_eq!(page.rows[0].text, "中文");
+    let OpenedDiff::Paged {
+        document_id: current,
+        ..
+    } = begin().run(&f.shared).unwrap()
+    else {
+        panic!("预期分页差异");
+    };
+    assert!(access.run(&f.shared, 0, 1, 0).is_err());
+    assert!(close_document(&f.shared, &f.repository_id, &snapshot, &old).is_err());
+    let access = DiffAccess::capture(&f.shared, &f.repository_id, &snapshot, &current).unwrap();
+    assert!(access.run(&f.shared, 0, 1, 0).is_ok());
+    close_document(&f.shared, &f.repository_id, &snapshot, &current).unwrap();
+    assert!(access.run(&f.shared, 0, 1, 0).is_err());
+    // 生成已完成但发布前出现新请求，正文也必须被丢弃。
+    let late = begin();
+    let result = late.run_with(&f.shared, |ctx, change, side, context| {
+        let document = git::diff::document::open_diff_document(
+            &ctx.git,
+            &ctx.repository,
+            &ctx.state,
+            change,
+            side,
+            context,
+        )?;
+        let _newer = begin();
+        Ok(document)
+    });
+    assert_eq!(result.unwrap_err().code, "STALE_REQUEST");
+    assert!(f.shared.lock().unwrap().diff.is_none());
+    assert!(DiffAccess::capture(&f.shared, "foreign", &snapshot, &current).is_err());
+    assert!(DiffAccess::capture(&f.shared, &f.repository_id, "stale", &current).is_err());
+    let pending = begin();
+    f.shared.lock().unwrap().begin_repository_request().unwrap();
+    assert!(pending.run(&f.shared).is_err());
+}
+
 /// 真实隔离仓库与其桌面会话；不操作应用设置或用户仓库。
 struct Fixture {
     root: PathBuf,
@@ -315,4 +398,145 @@ fn repository_refresh_and_switch_reject_old_contexts() {
         .unwrap()
         .run(&f.shared)
         .is_ok());
+}
+
+/// 目录读取与文件读取共享能力，刷新后旧捕获和旧 treeId 都拒绝发布。
+#[test]
+fn project_tree_reuses_mapping_and_rejects_replaced_session() {
+    let f = Fixture::new();
+    let root = ProjectFilesRequest::begin(&f.shared, &f.repository_id, &f.snapshot_id)
+        .unwrap()
+        .run_with(&f.shared, false, |cache| cache.tree_root())
+        .unwrap();
+    let access = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id).unwrap();
+    let page = access
+        .run_with(&f.shared, |cache| {
+            cache.tree_page(&root.tree_id, &root.directory_id, 0)
+        })
+        .unwrap();
+    assert_eq!(page.entries[0].id(), root.entries[0].id());
+    let encoded = serde_json::to_value(&page).unwrap();
+    assert_eq!(encoded["entries"][0]["kind"], "file");
+    assert_eq!(encoded["entries"][0]["status"], "tracked");
+    assert_eq!(encoded["treeId"], root.tree_id);
+    let stale = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id).unwrap();
+    let next = ProjectFilesRequest::begin(&f.shared, &f.repository_id, &f.snapshot_id)
+        .unwrap()
+        .run_with(&f.shared, false, |cache| cache.tree_root())
+        .unwrap();
+    assert_ne!(root.tree_id, next.tree_id);
+    assert_eq!(
+        stale
+            .run_with(&f.shared, |cache| cache.tree_page(
+                &root.tree_id,
+                &root.directory_id,
+                0
+            ))
+            .unwrap_err()
+            .code,
+        "FILE_UNAVAILABLE"
+    );
+    let current = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id).unwrap();
+    assert_eq!(
+        current
+            .run_with(&f.shared, |cache| cache.tree_page(
+                &root.tree_id,
+                &root.directory_id,
+                0
+            ))
+            .unwrap_err()
+            .code,
+        "STALE_REQUEST"
+    );
+    assert!(
+        ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+            .unwrap()
+            .run(&f.shared, next.entries[0].id())
+            .is_ok()
+    );
+}
+
+/// 只读文档受会话配额约束，关闭释放能力，刷新后旧文档与捕获全部失效。
+#[test]
+fn paged_documents_are_bounded_closed_and_snapshot_scoped() {
+    let f = Fixture::new();
+    let files = f.files();
+    let file_id = &files.files[0].file_id;
+    let mut documents = Vec::new();
+    for _ in 0..8 {
+        let doc = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+            .unwrap()
+            .run_with(&f.shared, |cache| cache.open_read_document(file_id))
+            .unwrap();
+        documents.push(doc.document_id);
+    }
+    assert_eq!(
+        ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+            .unwrap()
+            .run_with(&f.shared, |cache| cache.open_read_document(file_id))
+            .unwrap_err()
+            .code,
+        "FILE_READ_LIMIT"
+    );
+    let page = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+        .unwrap()
+        .run_with(&f.shared, |cache| {
+            cache.read_document_page(&documents[0], 0, 20, 0)
+        })
+        .unwrap();
+    assert_eq!(page.lines[0].text, "base");
+    assert_eq!(
+        serde_json::to_value(&page).unwrap()["lines"][0]["lineNumber"],
+        1
+    );
+    ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+        .unwrap()
+        .run_with(&f.shared, |cache| cache.close_read_document(&documents[0]))
+        .unwrap();
+    assert_eq!(
+        ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+            .unwrap()
+            .run_with(&f.shared, |cache| cache.read_document_page(
+                &documents[0],
+                0,
+                20,
+                0
+            ))
+            .unwrap_err()
+            .code,
+        "FILE_UNAVAILABLE"
+    );
+    assert!(
+        ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+            .unwrap()
+            .run_with(&f.shared, |cache| cache.open_read_document(file_id))
+            .is_ok()
+    );
+    let stale = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id).unwrap();
+    f.files();
+    assert_eq!(
+        stale
+            .run_with(&f.shared, |cache| cache.read_document_page(
+                &documents[1],
+                0,
+                20,
+                0
+            ))
+            .unwrap_err()
+            .code,
+        "FILE_UNAVAILABLE"
+    );
+    assert_eq!(
+        ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id)
+            .unwrap()
+            .run_with(&f.shared, |cache| cache.read_document_page(
+                &documents[1],
+                0,
+                20,
+                0
+            ))
+            .unwrap_err()
+            .code,
+        "FILE_UNAVAILABLE"
+    );
 }

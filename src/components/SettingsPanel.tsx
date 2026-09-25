@@ -3,6 +3,7 @@ import { useSettingsForm } from "../hooks/useSettingsForm";
 import { describeGitError } from "../ui/gitPresentation";
 import type { SettingsCategory } from "../types/settings";
 import { settingsFieldLocation } from "../ui/settingsField";
+import { terminalResetBlocked } from "../ui/settingsDraft";
 
 const categories: { id: SettingsCategory; label: string }[] = [
   { id: "general", label: "Git 环境" },
@@ -34,6 +35,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
       <div className="settings-content">
         {w.preview && <p role="status">请在桌面应用中配置设置。</p>}
         {s.activity === "loading" && <p role="status">正在读取设置…</p>}
+        {w.editor.dirty && <p role="status">请先保存文件草稿，再应用设置。</p>}
         <fieldset
           className="settings-fields"
           disabled={
@@ -145,6 +147,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
           {w.settingsCategory === "terminal" && (
             <section data-settings-field="terminal.profiles" tabIndex={-1}>
               <h3>终端</h3>
+              {f.pickerError && <p role="alert">{f.pickerError}</p>}
               <label>
                 默认配置
                 <select
@@ -185,6 +188,12 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                       spellCheck={false}
                     />
                   </label>
+                  <button
+                    className="secondary"
+                    onClick={f.chooseProfilePath(p.profileId, "shell")}
+                  >
+                    选择 Shell 程序
+                  </button>
                   <label>
                     启动目录
                     <select
@@ -197,14 +206,22 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                     </select>
                   </label>
                   {p.cwd.kind === "fixed" && (
-                    <label>
-                      指定目录
-                      <input
-                        data-settings-field={`terminal.profiles.${profileIndex}.cwd`}
-                        value={p.cwd.path}
-                        onChange={f.profileField(p.profileId, "path")}
-                      />
-                    </label>
+                    <div>
+                      <label>
+                        指定目录
+                        <input
+                          data-settings-field={`terminal.profiles.${profileIndex}.cwd`}
+                          value={p.cwd.path}
+                          onChange={f.profileField(p.profileId, "path")}
+                        />
+                      </label>
+                      <button
+                        className="secondary"
+                        onClick={f.chooseProfilePath(p.profileId, "directory")}
+                      >
+                        选择起始目录
+                      </button>
+                    </div>
                   )}
                   {p.args.map((arg, index) => (
                     <div className="input-action" key={index}>
@@ -407,6 +424,12 @@ export function SettingsPanel({ w }: { w: Workbench }) {
           </div>
         )}
         <div className="settings-actions">
+          {w.settingsCategory === "terminal" && terminalResetBlocked(d) && (
+            <p role="status">
+              配置已达 32
+              个且没有默认自动检测项。请先删除一个不需要的配置，再恢复默认值。
+            </p>
+          )}
           <span role="status">
             {s.activity === "saving"
               ? "正在保存…"
@@ -419,7 +442,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
           <div className="button-row">
             <button
               className="secondary"
-              disabled={!s.editable}
+              disabled={
+                !s.editable ||
+                (w.settingsCategory === "terminal" && terminalResetBlocked(d))
+              }
               onClick={w.restoreSettings}
             >
               恢复当前分类默认
@@ -443,6 +469,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
               disabled={
                 !s.editable ||
                 !s.dirty ||
+                w.editor.dirty ||
                 w.operations.busy ||
                 w.git.status === "loading"
               }

@@ -4,18 +4,22 @@ use gitmaster_core::git::{
     environment::{describe_git, resolve_git},
     *,
 };
+mod diff;
 mod external;
 mod monitoring;
 mod operations;
 mod preferences;
 mod readonly;
 mod resources;
+mod terminal;
 
+pub use diff::*;
 pub use monitoring::*;
 pub use operations::*;
 pub use preferences::*;
 pub use readonly::*;
 pub use resources::*;
+pub use terminal::*;
 
 use std::{
     collections::VecDeque,
@@ -41,6 +45,8 @@ pub struct Session {
     history_request: u64,
     branches_request: u64,
     project_files_request: u64,
+    diff_request: u64,
+    diff: Option<Arc<diff::DiffCache>>,
     prepare_gate: Arc<Mutex<()>>,
     write_request: u64,
     preview: Option<operations::PreviewBinding>,
@@ -100,6 +106,8 @@ impl Session {
     }
     /// 环境或仓库刷新使全部模块缓存与在途初始化失效。
     fn clear_readonly(&mut self) {
+        self.diff_request += 1;
+        self.diff = None;
         self.history_request += 1;
         self.branches_request += 1;
         self.project_files_request += 1;

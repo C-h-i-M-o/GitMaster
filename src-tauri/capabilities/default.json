@@ -3,5 +3,9 @@
   "identifier": "main-window",
   "description": "主窗口基础能力，不开放通用 shell 或文件系统插件权限。",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy"
+  ]
 }

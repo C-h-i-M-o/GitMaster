@@ -20,6 +20,7 @@ import type {
   OperationHandle,
   OperationRecord,
   ProjectFileList,
+  ProjectTreePage,
   RemoteAssessment,
   SyncTarget,
   RemoteState,
@@ -183,6 +184,44 @@ export const readProjectFiles = (
   includeIgnored = false,
 ): Promise<ProjectFileList> =>
   call("read_project_files", { repositoryId, snapshotId, includeIgnored });
+
+/** 首次只获取根目录，子目录在展开时读取。 */
+export const readProjectTree = (
+  repositoryId: string,
+  snapshotId: string,
+  includeIgnored: boolean,
+): Promise<ProjectTreePage> =>
+  call("read_project_tree", { repositoryId, snapshotId, includeIgnored });
+/** 目录 ID 和树 ID 双重绑定当前会话，不传文件系统路径。 */
+export const readProjectDirectory = (
+  repositoryId: string,
+  snapshotId: string,
+  treeId: string,
+  directoryId: string,
+  offset: number,
+): Promise<ProjectTreePage> =>
+  call("read_project_directory", {
+    repositoryId,
+    snapshotId,
+    treeId,
+    directoryId,
+    offset,
+  });
+/** 搜索分页复用树中的文件身份，不建立另一组保存能力。 */
+export const searchProjectFiles = (
+  repositoryId: string,
+  snapshotId: string,
+  treeId: string,
+  query: string,
+  offset: number,
+): Promise<ProjectTreePage> =>
+  call("search_project_files", {
+    repositoryId,
+    snapshotId,
+    treeId,
+    query,
+    offset,
+  });
 
 /** 按后端文件 ID 读取项目文件内容，保持只读预览语义。 */
 export const readProjectFile = (

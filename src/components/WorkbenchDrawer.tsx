@@ -1,89 +1,55 @@
+import { EditorDialogs } from "./EditorDialogs";
 import { ProjectFilesPanel } from "./ProjectFilesPanel";
 import { useConflictScroll } from "../hooks/useConflictScroll";
 import type { Workbench } from "../hooks/useWorkbench";
-import type { DiffSide } from "../types/git";
+import { VirtualChanges } from "./VirtualChanges";
 import { Icon } from "./Icon";
 import { ContentPreview } from "./ContentPreview";
-import { describeGitError, describeStatus } from "../ui/gitPresentation";
-const GROUPS: ReadonlyArray<{
-  side: DiffSide;
-  title: string;
-  action: "stage" | "unstage";
-}> = [
-  { side: "unstaged", title: "未暂存", action: "stage" },
-  { side: "untracked", title: "未跟踪", action: "stage" },
-  { side: "staged", title: "已暂存", action: "unstage" },
-];
+import { describeGitError } from "../ui/gitPresentation";
 /** 文件勾选与差异查看分开，提交范围始终是整个已暂存索引。 */
 function Changes({ w }: { w: Workbench }) {
   return (
     <>
-      <div className="drawer-scroll">
-        <div className="section-heading">
-          <h3>选择这次要保存的修改</h3>
-          <span>{w.repo.repository?.changes.length ?? 0} 个文件</span>
-        </div>
-        {GROUPS.map((group) => (
-          <section key={group.side} className="change-group">
-            <h4>
-              {group.title}
-              <span>{w.groups[group.side].length}</span>
-            </h4>
-            {w.groups[group.side].length === 0 ? (
-              <p className="muted small">没有{group.title}文件</p>
-            ) : (
-              w.groups[group.side].map((change) => (
-                <div key={change.changeId} className="file-row">
-                  <input
-                    type="checkbox"
-                    aria-label={`${group.action === "stage" ? "暂存" : "取消暂存"} ${change.path}`}
-                    checked={w.selected[group.action].includes(change.changeId)}
-                    disabled={w.blocked || change.kind === "submodule"}
-                    onChange={w.toggleChange(group.action, change.changeId)}
-                  />
-                  <button
-                    className="file-name"
-                    onClick={w.inspectChange(change.changeId, group.side)}
-                    title={change.path}
-                  >
-                    {change.originalPath && (
-                      <span className="muted">{change.originalPath} → </span>
-                    )}
-                    {change.path}
-                  </button>
-                  <span className="file-status">
-                    {describeStatus(
-                      group.side === "staged"
-                        ? change.indexStatus
-                        : change.worktreeStatus,
-                    )}
-                  </span>
-                </div>
-              ))
-            )}
-          </section>
-        ))}
-        {w.groups.conflicted.length > 0 && (
-          <button className="warning-card" onClick={w.openDrawer("conflicts")}>
-            {w.groups.conflicted.length} 个文件存在冲突，打开冲突处理
-          </button>
-        )}
-        {w.repo.error && <p role="alert">{describeGitError(w.repo.error)}</p>}
-      </div>
-      <div className="drawer-bottom">
-        {w.writeReason("commit") && (
-          <p className="muted small">{w.writeReason("commit")}</p>
-        )}
-        <label>
-          提交说明
-          <textarea
-            value={w.fields.message}
-            onChange={w.field("message")}
-            placeholder="这次修改解决了什么问题？"
-            rows={3}
-            disabled={w.operations.busy}
+      <div className="changes-content">
+        <div className="drawer-scroll changes-list-region">
+          <div className="section-heading">
+            <h3>选择这次要保存的修改</h3>
+            <span>{w.repo.repository?.changes.length ?? 0} 个文件</span>
+          </div>
+          <VirtualChanges
+            groups={w.groups}
+            selected={w.selected}
+            blocked={w.blocked}
+            toggle={w.toggleChange}
+            inspect={w.inspectChange}
           />
-        </label>
+          {w.groups.conflicted.length > 0 && (
+            <button
+              className="warning-card"
+              onClick={w.openDrawer("conflicts")}
+            >
+              {w.groups.conflicted.length} 个文件存在冲突，打开冲突处理
+            </button>
+          )}
+          {w.repo.error && <p role="alert">{describeGitError(w.repo.error)}</p>}
+        </div>
+        <div className="drawer-bottom">
+          {w.writeReason("commit") && (
+            <p className="muted small">{w.writeReason("commit")}</p>
+          )}
+          <label>
+            提交说明
+            <textarea
+              value={w.fields.message}
+              onChange={w.field("message")}
+              placeholder="这次修改解决了什么问题？"
+              rows={3}
+              disabled={w.operations.busy}
+            />
+          </label>
+        </div>
+      </div>
+      <div className="changes-footer">
         <p className="muted small">
           提交会包含全部 {w.groups.staged.length} 个已暂存文件。
         </p>
@@ -357,47 +323,51 @@ function Conflicts({ w }: { w: Workbench }) {
 }
 /** 根据工作台导航显示右侧业务抽屉。 */
 export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
-  if (!w.drawer) return null;
   return (
-    <aside
-      className={`workbench-drawer ${w.drawer === "conflicts" ? "merge-drawer" : w.drawer === "files" ? "files-drawer" : ""}`}
-      aria-label={
-        {
-          changes: "本地修改",
-          files: "项目文件",
-          detail: "提交详情",
-          conflicts: "冲突处理",
-        }[w.drawer]
-      }
-    >
-      <header className="drawer-header">
-        <h2>
+    <>
+      <aside
+        hidden={!w.drawer}
+        className={`workbench-drawer ${w.drawer === "conflicts" ? "merge-drawer" : w.drawer === "files" ? "files-drawer" : ""}`}
+        aria-label={
           {
+            changes: "本地修改",
+            files: "项目文件",
+            detail: "提交详情",
+            conflicts: "冲突处理",
+          }[w.drawer ?? "files"]
+        }
+      >
+        <header className="drawer-header">
+          <h2>
             {
-              changes: "本地修改",
-              files: "项目文件",
-              detail: "提交详情",
-              conflicts: "冲突处理",
-            }[w.drawer]
-          }
-        </h2>
-        <button
-          className="icon-button"
-          aria-label="关闭侧栏"
-          onClick={w.closeDrawer}
-        >
-          <Icon name="close" />
-        </button>
-      </header>
-      {w.drawer === "changes" ? (
-        <Changes w={w} />
-      ) : w.drawer === "detail" ? (
-        <CommitDetails w={w} />
-      ) : w.drawer === "files" ? (
-        <ProjectFilesPanel key={w.repo.repository?.repositoryId} w={w} />
-      ) : (
-        <Conflicts w={w} />
-      )}
-    </aside>
+              {
+                changes: "本地修改",
+                files: "项目文件",
+                detail: "提交详情",
+                conflicts: "冲突处理",
+              }[w.drawer ?? "files"]
+            }
+          </h2>
+          <button
+            className="icon-button"
+            aria-label="关闭侧栏"
+            onClick={w.closeDrawer}
+          >
+            <Icon name="close" />
+          </button>
+        </header>
+        {w.drawer === "changes" ? (
+          <Changes w={w} />
+        ) : w.drawer === "detail" ? (
+          <CommitDetails w={w} />
+        ) : w.drawer === "conflicts" ? (
+          <Conflicts w={w} />
+        ) : null}
+        <div className="project-files-host" hidden={w.drawer !== "files"}>
+          <ProjectFilesPanel key={w.repo.repository?.repositoryId} w={w} />
+        </div>
+      </aside>
+      <EditorDialogs w={w} />
+    </>
   );
 }

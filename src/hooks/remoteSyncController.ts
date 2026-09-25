@@ -84,6 +84,7 @@ export function createRemoteSyncController(api: RemoteSyncApi) {
     const source = api.repository();
     if (!source) return;
     const token = ++generation;
+    let pushed = false;
     update({
       busy: true,
       phase: "checking",
@@ -190,12 +191,46 @@ export function createRemoteSyncController(api: RemoteSyncApi) {
       if (assessment.relation === "unknown")
         throw { code: "UNSUPPORTED_WRITE_CONFIGURATION" };
       update({ phase: "syncing" });
-      succeeded(
-        await api.execute(latest, {
-          kind:
-            assessment.relation === "behind" ? "syncFastForward" : "syncPush",
-        }),
-      );
+      const synchronization = await api.execute(latest, {
+        kind: assessment.relation === "behind" ? "syncFastForward" : "syncPush",
+      });
+      pushed =
+        assessment.relation === "ahead" &&
+        synchronization.outcome === "succeeded";
+      succeeded(synchronization);
+      if (pushed) {
+        // 私有推送不改本地跟踪引用；重新获取真实状态，不预测远端标签位置。
+        current(source, token);
+        update({ phase: "fetching", notice: "已推送，正在更新远端状态。" });
+        const afterPush = await api.readRemotes(source.repositoryId);
+        const selected = afterPush.remotes.find(
+          (remote) => remote.name === remoteName,
+        );
+        if (!selected || afterPush.repositoryId !== source.repositoryId)
+          throw { code: "REMOTE_CHANGED" };
+        const pushedState = current(source, token);
+        const pushedTarget = await api.readSyncTarget(
+          pushedState.repositoryId,
+          pushedState.snapshotId,
+        );
+        const fetchState = current(source, token);
+        if (
+          fetchState.snapshotId !== pushedState.snapshotId ||
+          pushedTarget.repositoryId !== pushedState.repositoryId ||
+          pushedTarget.snapshotId !== pushedState.snapshotId ||
+          pushedTarget.upstream.status !== "configured" ||
+          pushedTarget.upstream.remoteId !== selected.remoteId ||
+          pushedTarget.upstream.targetBranchName !== targetBranch
+        )
+          throw { code: "REMOTE_CHANGED" };
+        succeeded(
+          await api.execute(fetchState, {
+            kind: "fetchAll",
+            remoteId: selected.remoteId,
+          }),
+        );
+        current(source, token);
+      }
       // 快进会改变 HEAD，结束只核对会话；后端终态已经核验实际目标与本地状态。
       if (
         !active ||
@@ -213,7 +248,12 @@ export function createRemoteSyncController(api: RemoteSyncApi) {
       update({ notice: "当前分支同步完成。" });
     } catch (error: unknown) {
       if (active && token === generation)
-        update({ error: normalizeOperationError(error) });
+        update({
+          error: normalizeOperationError(error),
+          ...(pushed
+            ? { notice: "已推送，但后续状态核验未完成，请刷新后查看。" }
+            : {}),
+        });
     } finally {
       if (active && token === generation)
         update({ busy: false, phase: "idle" });

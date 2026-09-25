@@ -11,6 +11,20 @@ use std::{
 const MAX_BYTES: usize = 1024 * 1024;
 const MAX_LINES: usize = 5000;
 
+#[path = "diff_document.rs"]
+pub mod document;
+
+/// 各只读消费路径独立约束正文预算，旧预览不随分块阅读扩大。
+#[derive(Clone, Copy)]
+struct DiffLimits {
+    bytes: usize,
+    lines: usize,
+}
+const PREVIEW_LIMITS: DiffLimits = DiffLimits {
+    bytes: MAX_BYTES,
+    lines: MAX_LINES,
+};
+
 /// 根据当前快照读取单文件差异，不接收前端路径。
 pub fn read_file_diff(
     git: &GitExecutable,
@@ -30,6 +44,27 @@ pub fn read_file_diff_with_context(
     change_id: &str,
     side: DiffSide,
     context_lines: u16,
+) -> Result<FileDiff, OperationError> {
+    read_with_limits(
+        git,
+        repository,
+        snapshot,
+        change_id,
+        side,
+        context_lines,
+        PREVIEW_LIMITS,
+    )
+}
+
+/// 复用统一的比较侧、快照与安全 Git 参数校验，仅消费预算由内部调用方确定。
+fn read_with_limits(
+    git: &GitExecutable,
+    repository: &RepositoryHandle,
+    snapshot: &RepositoryState,
+    change_id: &str,
+    side: DiffSide,
+    context_lines: u16,
+    limits: DiffLimits,
 ) -> Result<FileDiff, OperationError> {
     if context_lines > 2000 {
         return Err(OperationError::new("INVALID_INPUT"));
@@ -68,7 +103,7 @@ pub fn read_file_diff_with_context(
         return Err(OperationError::new("FILE_UNAVAILABLE"));
     }
     if side == DiffSide::Untracked {
-        return preview(repository, &change.path);
+        return preview_with_limits(repository, &change.path, limits);
     }
     let stats = diff_args(change, side, true, context_lines);
     let out = run_git(git, &repository.root, &stats, 65536, false)?;
@@ -86,13 +121,13 @@ pub fn read_file_diff_with_context(
         git,
         &repository.root,
         &diff_args(change, side, false, context_lines),
-        MAX_BYTES,
+        limits.bytes,
         true,
     )?;
     if !out.success && !out.truncated {
         return Err(command_error(&out.stderr));
     }
-    text_diff(out.stdout, out.truncated)
+    text_with_limits(out.stdout, out.truncated, limits.lines)
 }
 
 /// 固定参数和 literal pathspec，不让文件名成为选项或路径模式。
@@ -138,6 +173,15 @@ pub(crate) fn preview(
     repository: &RepositoryHandle,
     path: &str,
 ) -> Result<FileDiff, OperationError> {
+    preview_with_limits(repository, path, PREVIEW_LIMITS)
+}
+
+/// 未跟踪原文仍受同一目录能力与普通文件检查约束。
+fn preview_with_limits(
+    repository: &RepositoryHandle,
+    path: &str,
+    limits: DiffLimits,
+) -> Result<FileDiff, OperationError> {
     if Path::new(path)
         .components()
         .any(|c| !matches!(c, Component::Normal(_)))
@@ -175,18 +219,24 @@ pub(crate) fn preview(
         return Err(OperationError::new("FILE_UNAVAILABLE"));
     }
     let mut bytes = Vec::new();
-    file.take((MAX_BYTES + 1) as u64)
+    file.take((limits.bytes + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
-    let truncated = bytes.len() > MAX_BYTES;
-    bytes.truncate(MAX_BYTES);
-    text_diff(bytes, truncated)
+    let truncated = bytes.len() > limits.bytes;
+    bytes.truncate(limits.bytes);
+    text_with_limits(bytes, truncated, limits.lines)
 }
 
 /// 检测二进制并无损解码，字节截断只允许舍弃末尾不完整字符。
-pub(super) fn text_diff(
+pub(super) fn text_diff(bytes: Vec<u8>, truncated: bool) -> Result<FileDiff, OperationError> {
+    text_with_limits(bytes, truncated, MAX_LINES)
+}
+
+/// 在字节预算内统一进行行截断和 UTF-8 检测，不引入有损解码。
+fn text_with_limits(
     mut bytes: Vec<u8>,
     mut truncated: bool,
+    max_lines: usize,
 ) -> Result<FileDiff, OperationError> {
     if bytes.contains(&0) {
         return Ok(FileDiff::Binary);
@@ -196,7 +246,7 @@ pub(super) fn text_diff(
         if *b == b'\n' {
             line_count += 1;
         }
-        line_count == MAX_LINES
+        line_count == max_lines
     });
     if let Some(cutoff) = cutoff {
         if cutoff + 1 < bytes.len() {

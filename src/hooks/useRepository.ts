@@ -2,19 +2,20 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   openRepository,
-  readFileDiff,
   readRepositoryState,
   readRepositoryWatch,
   isDesktop,
 } from "../services/git";
 import { createRepositoryController } from "./repositoryController";
+import { openDiffDocument, closeDiffDocument } from "../services/diff";
 export type { RepositoryViewState } from "./repositoryController";
 /** 将可测试的仓库控制器接入 React 和原生窗口激活事件。 */
 export function useRepository() {
   const [controller] = useState(() =>
     createRepositoryController({
       openRepository,
-      readFileDiff,
+      readFileDiff: openDiffDocument,
+      closeFileDiff: closeDiffDocument,
       readRepositoryState,
     }),
   );
@@ -153,6 +154,7 @@ export function useRepository() {
     getSnapshot: controller.getSnapshot,
     setAutoRefreshBlocked: controller.setAutoRefreshBlocked,
     selectDiff: controller.selectDiff,
+    closeDiff: controller.closeDiff,
     clear: controller.clear,
     markDirty: controller.markDirty,
   };

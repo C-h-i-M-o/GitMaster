@@ -1,0 +1,9 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {createRepositoryController} from '../../src/hooks/repositoryController.ts';
+import type {RepositoryState} from '../../src/types/git.ts';
+import type {LocalDiff,PagedDiff} from '../../src/types/diff.ts';
+const repository:RepositoryState={repositoryId:'r',snapshotId:'s',rootPath:'/fixture',head:{kind:'unborn',name:'main'},operations:[],changes:[]};
+const doc=(id:string):PagedDiff=>({kind:'paged',folds:[],documentId:id,rowCount:10000,hunkCount:1,additions:9999,deletions:0,truncated:false});
+test('迟到打开主动释放，关闭详情后不回填',async()=>{const pending:Array<(d:LocalDiff)=>void>=[];const closed:string[]=[];const c=createRepositoryController({openRepository:async()=>repository,readRepositoryState:async()=>repository,readFileDiff:()=>new Promise(r=>pending.push(r)),closeFileDiff:async(_r,_s,id)=>{closed.push(id)}});await c.open('/fixture');const first=c.selectDiff('a','staged');const second=c.selectDiff('b','unstaged');pending[1]!(doc('second'));await second;pending[0]!(doc('first'));await first;assert.equal(c.getSnapshot().diff?.kind,'paged');assert.deepEqual(closed,['first']);c.closeDiff();assert.deepEqual(closed,['first','second']);const third=c.selectDiff('c','untracked');c.closeDiff();pending[2]!(doc('third'));await third;assert.equal(c.getSnapshot().diff,null);assert.deepEqual(closed,['first','second','third']);});
+test('刷新和清空释放当前文档',async()=>{const closed:string[]=[];let id=0;const c=createRepositoryController({openRepository:async()=>repository,readRepositoryState:async()=>repository,readFileDiff:async()=>doc(String(++id)),closeFileDiff:async(_r,_s,id)=>{closed.push(id)}});await c.open('/fixture');await c.selectDiff('a','staged');await c.refresh();await c.selectDiff('b','unstaged');c.clear();assert.deepEqual(closed,['1','2']);});

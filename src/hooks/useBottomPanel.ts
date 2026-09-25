@@ -11,14 +11,83 @@ import {
   moveBottomTab,
   type BottomTabsState,
 } from "../ui/bottomTabs";
+import {
+  createTerminal,
+  closeTerminal,
+  terminalError,
+} from "../services/terminal";
+import type { TerminalPreferences } from "../types/settings";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isTauri } from "@tauri-apps/api/core";
 
 /** 管理底部标签和面板尺寸；折叠或切标签不卸载记录视图。 */
-export function useBottomPanel(expanded: boolean, toggleExpanded: () => void) {
+export function useBottomPanel(
+  expanded: boolean,
+  toggleExpanded: () => void,
+  repositoryId: string | null,
+  preferences: TerminalPreferences | null,
+  guardExit: (action: () => Promise<void>) => void,
+  exitProtected: boolean,
+) {
+  const draftExit = useRef({ guardExit, exitProtected });
+  draftExit.current = { guardExit, exitProtected };
   const [state, setState] = useState<BottomTabsState>({
     tabs: [{ id: "operations-1", kind: "operations", title: "操作记录" }],
     activeId: "operations-1",
   });
   const sequence = useRef(1);
+  const current = useRef(state);
+  current.current = state;
+  const alive = useRef(true);
+  const busy = useRef(false);
+  const [terminalBusy, setTerminalBusy] = useState(false);
+  const [terminalMessage, setTerminalMessage] = useState<string | null>(null);
+  const [pendingClose, setPendingClose] = useState<string | null>(null);
+  const [quitPending, setQuitPending] = useState(false);
+  const exitAllowed = useRef(false);
+  useEffect(() => {
+    alive.current = true;
+    let unlisten: (() => void) | undefined;
+    if (isTauri())
+      void getCurrentWindow()
+        .onCloseRequested((event) => {
+          if (
+            !exitAllowed.current &&
+            (draftExit.current.exitProtected ||
+              busy.current ||
+              current.current.tabs.some((tab) => tab.kind === "terminal"))
+          ) {
+            event.preventDefault();
+            draftExit.current.guardExit(async () => {
+              if (
+                busy.current ||
+                current.current.tabs.some((tab) => tab.kind === "terminal")
+              )
+                setQuitPending(true);
+              else {
+                exitAllowed.current = true;
+                try {
+                  await getCurrentWindow().close();
+                } catch (cause: unknown) {
+                  exitAllowed.current = false;
+                  setTerminalMessage(terminalError(cause));
+                }
+              }
+            });
+          }
+        })
+        .then((stop) => {
+          if (alive.current) unlisten = stop;
+          else stop();
+        });
+    return () => {
+      alive.current = false;
+      unlisten?.();
+      for (const tab of current.current.tabs)
+        if (tab.kind === "terminal")
+          void closeTerminal(tab.session.sessionId).catch(() => {});
+    };
+  }, []);
   const panel = useRef<HTMLElement>(null);
   const [menu, setMenu] = useState(false);
   const [height, setHeight] = useState(300);
@@ -28,7 +97,7 @@ export function useBottomPanel(expanded: boolean, toggleExpanded: () => void) {
     if (!parent) return;
     /** 可用空间变小时收回面板，并同步辅助功能的数值范围。 */
     function measure(): void {
-      const maximum = Math.max(120, (parent?.clientHeight ?? 650) - 240);
+      const maximum = Math.max(120, (parent?.clientHeight ?? 650) - 360);
       setMaximumHeight(maximum);
       setHeight((current) => Math.min(maximum, Math.max(120, current)));
     }
@@ -53,6 +122,46 @@ export function useBottomPanel(expanded: boolean, toggleExpanded: () => void) {
     setMenu(false);
     if (!expanded) toggleExpanded();
   }
+  /** 仅用户点击已保存配置时创建 shell，并保留创建时项目归属。 */
+  function addTerminal(profileId: string): () => void {
+    return () => {
+      void startTerminal(profileId);
+    };
+  }
+  /** 创建期间禁止重复点击；视图已关闭时回收迟到会话。 */
+  async function startTerminal(profileId: string): Promise<void> {
+    if (busy.current || !preferences || !isTauri()) return;
+    busy.current = true;
+    setTerminalBusy(true);
+    setTerminalMessage(null);
+    try {
+      const session = await createTerminal(repositoryId, profileId);
+      if (!alive.current) {
+        await closeTerminal(session.sessionId);
+        return;
+      }
+      const number = ++sequence.current;
+      const project =
+        session.displayCwd.split(/[\\/]/).filter(Boolean).at(-1) ??
+        session.displayCwd;
+      const shell = session.shellLabel.split(/[\\/]/).at(-1) ?? "Shell";
+      setState((old) =>
+        addBottomTab(old, {
+          id: `terminal-${number}`,
+          kind: "terminal",
+          title: `${shell} · ${project}`,
+          session,
+        }),
+      );
+      setMenu(false);
+      if (!expanded) toggleExpanded();
+    } catch (cause: unknown) {
+      if (alive.current) setTerminalMessage(terminalError(cause));
+    } finally {
+      busy.current = false;
+      if (alive.current) setTerminalBusy(false);
+    }
+  }
   /** 标签激活只改变可见项，不清除其筛选或滚动。 */
   function select(id: string): () => void {
     return () => {
@@ -62,7 +171,54 @@ export function useBottomPanel(expanded: boolean, toggleExpanded: () => void) {
   }
   /** 关闭标签后仍保留操作控制器中的任务。 */
   function close(id: string): () => void {
-    return () => setState((old) => closeBottomTab(old, id));
+    return () => {
+      if (
+        current.current.tabs.find((tab) => tab.id === id)?.kind === "terminal"
+      )
+        setPendingClose(id);
+      else setState((old) => closeBottomTab(old, id));
+    };
+  }
+  /** 用户取消关闭时保持所有会话、输出与输入状态。 */
+  function cancelClose(): void {
+    if (!busy.current) {
+      setPendingClose(null);
+      setQuitPending(false);
+    }
+  }
+  /** 明确确认后先回收会话，再移除标签或退出窗口，失败保留重试入口。 */
+  async function confirmClose(): Promise<void> {
+    if (busy.current) return;
+    busy.current = true;
+    setTerminalBusy(true);
+    setTerminalMessage(null);
+    try {
+      const targets = current.current.tabs.filter(
+        (tab) =>
+          tab.kind === "terminal" && (quitPending || tab.id === pendingClose),
+      );
+      for (const tab of targets) {
+        if (tab.kind !== "terminal") continue;
+        await closeTerminal(tab.session.sessionId);
+        setState((old) => closeBottomTab(old, tab.id));
+      }
+      setPendingClose(null);
+      if (quitPending) {
+        exitAllowed.current = true;
+        try {
+          await getCurrentWindow().close();
+        } catch (cause: unknown) {
+          exitAllowed.current = false;
+          throw cause;
+        }
+      }
+      setQuitPending(false);
+    } catch (cause: unknown) {
+      setTerminalMessage(terminalError(cause));
+    } finally {
+      busy.current = false;
+      if (alive.current) setTerminalBusy(false);
+    }
   }
   /** 显式打开新建菜单，不触发其他标签动作。 */
   function toggleMenu(): void {
@@ -71,7 +227,7 @@ export function useBottomPanel(expanded: boolean, toggleExpanded: () => void) {
   /** 根据可用工作台高度限制面板尺寸，保持图和操作栏可达。 */
   function bounded(value: number): number {
     return Math.min(
-      Math.max(120, (panel.current?.parentElement?.clientHeight ?? 650) - 240),
+      Math.max(120, (panel.current?.parentElement?.clientHeight ?? 650) - 360),
       Math.max(120, value),
     );
   }
@@ -121,6 +277,13 @@ export function useBottomPanel(expanded: boolean, toggleExpanded: () => void) {
     height,
     maximumHeight,
     addOperations,
+    addTerminal,
+    terminalBusy,
+    terminalMessage,
+    pendingClose,
+    quitPending,
+    cancelClose,
+    confirmClose,
     select,
     close,
     toggleMenu,

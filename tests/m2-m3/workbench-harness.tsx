@@ -1,0 +1,32 @@
+import {createRoot} from 'react-dom/client';
+import {mockIPC,mockWindows} from '@tauri-apps/api/mocks';
+import App from '../../src/App';
+import '../../src/styles.css';
+import {defaultSettings} from '../../src/ui/settingsDraft';
+let fail=false;
+const commits=Array.from({length:1000},(_,i)=>({oid:(i+1).toString(16).padStart(40,'0'),parentOids:i<999?[(i+2).toString(16).padStart(40,'0')]:[],subject:`提交 ${i+1}：中文与长名称工作台测试`,authorName:'测试作者',authoredAt:'2026-09-24T00:00:00Z'}));
+const tips=Array.from({length:12},(_,i)=>({refId:`ref-${i}`,name:i===0?'main':`feature/中文长名称分支-${i}-abcdefghijklmnopqrstuvwxyz`,kind:i<6?'local':'remote',oid:commits[0].oid}));
+const repository={repositoryId:'r',snapshotId:'s',rootPath:'/test',head:{kind:'branch',name:'main',oid:commits[0].oid},operations:[],changes:Array.from({length:10000},(_,i)=>({changeId:`c${i}`,path:`file-${i}.txt`,originalPath:null,indexStatus:'.',worktreeStatus:'M',kind:'tracked',binary:'unknown'}))};
+Object.assign(window,{isTauri:true});
+mockIPC((cmd,payload)=>{
+ if(cmd==='choose_repository_path')return '/test';
+ if(cmd==='read_commit_history')return {repositoryId:'r',graphSnapshotId:'g',tips,commits,nextCursor:null};
+ if(cmd==='read_branches')return {repositoryId:'r',branches:tips.map((t,i)=>({...t,branchId:t.refId,current:i===0,occupiedByOtherWorktree:false,upstreamRefId:null}))};
+ if(cmd==='read_log_settings')return {level:null,effectiveLevel:'info',directory:'/test/logs',available:true};
+ if(cmd==='read_external_availability')return {vsCode:false,terminal:true};
+ if(cmd==='read_operation')return null;
+ if(cmd==='read_app_settings')return {revision:'1',settings:defaultSettings()};
+ if(cmd==='apply_app_settings'){if(fail)throw {code:'SETTINGS_IO',fieldErrors:[]};return {revision:'2',settings:(payload as {draft:unknown}).draft};}
+ if(cmd==='detect_git')return {status:'ready',executablePath:'/test/git',version:'git version 2.49.0',source:'path'};
+ if(cmd==='open_repository'||cmd==='read_repository_state')return repository;
+ if(cmd==='read_repository_watch')return {repositoryId:'r',revision:0,reliable:true};
+ if(cmd==='read_project_tree')return {repositoryId:'r',snapshotId:'s',treeId:'t',directoryId:null,entries:[{id:'f',kind:'file',path:'a.ts',name:'a.ts',status:'tracked'}],nextOffset:null,truncated:false};
+ if(cmd==='read_editable_file')return {fileId:'f',path:'a.ts',version:'v',text:{content:'原始',bom:false,lineEnding:'none',contentVersion:'原始'}};
+ if(cmd==='read_conflicts')return {repositoryId:'r',mergeSessionId:'m',headOid:'a'.repeat(40),mergeHeadOids:['b'.repeat(40)],files:[{conflictId:'c',path:'conflict.ts',stageOids:{base:null,local:null,incoming:null},editorSupport:{status:'supported'}}]};
+ if(cmd==='read_conflict_document')return {mergeSessionId:'m',conflictId:'c',base:'base',local:'local',incoming:'incoming',result:'原始',encoding:'utf8',lineEnding:'lf',fingerprint:'v'};
+ if(cmd==='plugin:event|listen')return 1;
+ if(cmd==='plugin:event|unlisten')return null;
+ throw {code:'TEST_UNSUPPORTED',message:cmd,retryable:false};
+});
+mockWindows('main');
+createRoot(document.getElementById('root')!).render(<App/>);

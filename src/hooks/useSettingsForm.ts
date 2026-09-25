@@ -8,6 +8,11 @@ import type {
 import { settingsFieldLocation } from "../ui/settingsField";
 import { removeTerminalProfile } from "../ui/settingsDraft";
 import { chooseGitPath } from "../services/git";
+import { chooseTerminalPath } from "../services/settings";
+import {
+  applyPickedSettingsPath,
+  type SettingsPathTarget,
+} from "../ui/settingsPathSelection";
 
 type SettingsState = ReturnType<typeof useAppSettings>;
 type Input = ChangeEvent<HTMLInputElement | HTMLSelectElement>;
@@ -162,25 +167,45 @@ export function useSettingsForm(
       );
   }
   /** Git 选择器只更新候选路径，点击应用后才验证和生效。 */
-  async function chooseGit(): Promise<void> {
+  async function choosePath(target: SettingsPathTarget): Promise<void> {
     if (picking.current || !settings.editable) return;
+    const expected = settings.draft;
     picking.current = true;
     setPickerError("");
     try {
-      const path = await chooseGitPath();
+      const path =
+        target.kind === "git"
+          ? await chooseGitPath()
+          : await chooseTerminalPath(target.kind);
       if (mounted.current && path !== null)
-        settings.edit((draft) => ({ ...draft, gitPath: path }));
+        settings.edit((draft) =>
+          applyPickedSettingsPath(draft, expected, target, path),
+        );
     } catch {
-      if (mounted.current) setPickerError("无法打开 Git 选择器，请重试。");
+      if (mounted.current) setPickerError("无法打开路径选择器，请重试。");
     } finally {
       picking.current = false;
     }
+  }
+  /** Git 选择结果保持草稿语义，不立即检测或保存。 */
+  function chooseGit(): void {
+    void choosePath({ kind: "git" });
+  }
+  /** 配置按钮绑定稳定标识，不能把迟到结果写入其他配置。 */
+  function chooseProfilePath(
+    profileId: string,
+    kind: "shell" | "directory",
+  ): () => void {
+    return () => {
+      void choosePath({ kind, profileId });
+    };
   }
   return {
     form,
     locateError,
     pickerError,
     chooseGit,
+    chooseProfilePath,
     displayField,
     profileField,
     addProfile,

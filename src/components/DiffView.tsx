@@ -1,13 +1,16 @@
-import type { FileDiff, DiffSide, FileChange } from "../types/git";
+import type { DiffSide, FileChange } from "../types/git";
+import type { LocalDiff, DiffScope } from "../types/diff";
+import { PagedDiff } from "./PagedDiff";
 import { describeUnsupported } from "../ui/gitPresentation";
 interface Props {
-  diff: FileDiff | null;
+  diff: LocalDiff | null;
+  scope: DiffScope;
   loading: boolean;
   selected: { changeId: string; side: DiffSide } | null;
   change: FileChange | undefined;
 }
 /** 展示当前文件、比较侧和受限差异内容。 */
-export function DiffView({ diff, loading, selected, change }: Props) {
+export function DiffView({ diff, loading, selected, change, scope }: Props) {
   return (
     <div className="diff-panel">
       <h3>文件内容</h3>
@@ -24,6 +27,8 @@ export function DiffView({ diff, loading, selected, change }: Props) {
       )}
       {loading ? (
         <p>正在读取…</p>
+      ) : diff?.kind === "paged" ? (
+        <PagedDiff key={diff.documentId} document={diff} scope={scope} />
       ) : diff?.kind === "text" ? (
         <>
           {diff.truncated && (

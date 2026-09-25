@@ -1,8 +1,7 @@
-export interface BottomTab {
-  id: string;
-  kind: "operations";
-  title: string;
-}
+import type { TerminalSession } from "../services/terminal";
+export type BottomTab =
+  | { id: string; kind: "operations"; title: string }
+  | { id: string; kind: "terminal"; title: string; session: TerminalSession };
 export interface BottomTabsState {
   tabs: BottomTab[];
   activeId: string | null;

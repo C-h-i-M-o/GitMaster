@@ -307,6 +307,53 @@ export interface ProjectFileList {
   snapshotId: string;
   files: Array<{ fileId: string; path: string; kind: ProjectFileKind }>;
 }
+/** 目录能力与文件能力均由当前后端会话签发。 */
+export type ProjectTreeEntry =
+  | { kind: "directory"; id: string; path: string; name: string }
+  | {
+      kind: "file";
+      id: string;
+      path: string;
+      name: string;
+      status: ProjectFileKind;
+    };
+export interface ProjectTreePage {
+  repositoryId: string;
+  snapshotId: string;
+  treeId: string;
+  directoryId: string;
+  entries: ProjectTreeEntry[];
+  nextOffset: number | null;
+  total: number;
+}
+/** 分块阅读身份独立于编辑文档，正文按页读取。 */
+export interface ReadDocument {
+  documentId: string;
+  fileId: string;
+  path: string;
+  byteLength: number;
+  encoding: "utf8";
+  lineCount: number;
+  bom: boolean;
+  lineEnding: "none" | "lf" | "cr" | "crlf" | "mixed";
+}
+export interface ReadLine {
+  lineNumber: number;
+  text: string;
+  byteOffset: number;
+  nextByteOffset: number | null;
+}
+export interface ReadPage {
+  documentId: string;
+  startLine: number;
+  lines: ReadLine[];
+  nextLine: number | null;
+}
+export interface ReadSearch {
+  documentId: string;
+  lines: number[];
+  nextLine: number | null;
+}
 export interface RemoteState {
   repositoryId: string;
   remotes: Array<{

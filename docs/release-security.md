@@ -19,6 +19,8 @@
 
 ## 发布路线
 
+本次恢复开发已接入用户明确批准的独立 PTY 终端，允许用户输入任意命令。Git 按钮仍使用受限参数接口，终端启动仅接受已保存 profile 标识；会话按调用窗口核验，仓库文本不能自动创建或输入。终端输入输出不进入日志或操作历史，OSC 52 写剪贴板被拒绝，没有输出自动打开应用入口。普通前后台任务回收与两平台原生交互尚待补齐，不能据当前单元测试宣布发布可用。
+
 - M0 优先 `pnpm tauri build --no-bundle` 验证本机原生构建。
 - Windows 计划使用 NSIS 安装包；macOS 计划使用 app/DMG，分别在对应操作系统构建和测试。
 - 当前使用官方模板开发图标和开发用应用标识，尚非正式品牌资源；不对外发布此骨架安装包。
@@ -32,3 +34,5 @@
 未来 macOS 原生客户端需要自己的构建、签名、公证、权限与 UI 测试流程。复用 Rust 核心不能替代这些验收；Windows 构建不能证明 macOS 支持。
 
 参考：[Tauri 发布](https://v2.tauri.app/distribute/)、[Tauri 安全](https://v2.tauri.app/security/)、[Git 官网](https://git-scm.com/install/)。
+
+文件树虚拟化依赖 @tanstack/react-virtual 3.14.13 与其 virtual-core（MIT）；许可证原文在 public/virtual-tree-licenses.txt，生产构建随包复制。该库只处理列表视口，不授予文件或命令访问权限。

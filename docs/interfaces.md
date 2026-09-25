@@ -147,6 +147,14 @@ read_write_context 返回输入快照身份与十项入口能力，复核仓库�
 
 CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elasticity, showLabels}`。设置保存为 version 2 的 `{gitPath, uiPreferences, logLevel?}`，兼容 version 1，默认 6/true；elasticity 必须为 1..10 整数。三类设置互相保留字段，同目录临时文件替换失败不覆盖旧配置。浏览器包装保持禁用真实 IPC。
 
+### 恢复开发：终端与设置路径接口（2026-09-24）
+
+- `choose_terminal_path(kind: shell | directory)` 只返回原生选择器路径或 null，不执行或持久化程序。
+- `create_terminal(repositoryId: string | null, profileId, cols, rows)` 从已保存 profile 解析程序、参数与目录，返回 `sessionId/repositoryId/displayCwd/shellLabel`，会话绑定调用窗口。
+- `read_terminal(sessionId, acknowledgedSequence)` 返回 `sequence/bytes/finished/exitCode`；未确认块重取，确认后消费下一块。后端 16×4 KiB 输出队列，单次最多 16 KiB，前端 xterm.write 完成后确认。
+- `write_terminal(sessionId, bytes)` 单次最多 4 KiB，16 块有界队列；队满明确拒绝，前端不自动重放输入。`resize_terminal` 只接受列 2–500、行 1–300；`close_terminal` 关闭不存在会话可幂等重试。
+- 程序输出保持字节直到 xterm 解码，终端不使用 Git 写队列，也不伪装为操作记录任务。能力仅主窗口可用，不开放通用 shell 插件。
+
 ### 诊断日志设置
 
 配置 version 2 增加可选 `logLevel`：`null | "error" | "warn" | "info" | "debug" | "trace"`，缺失视为 null；保存 Git 路径、外观与日志设置时互相保留。null 使用 Rust 编译模式默认：Debug=Trace、Release=Error。
@@ -156,3 +164,33 @@ CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elastic
 - `open_log_directory()` 仅打开应用固定日志目录，不接受前端路径。
 - 设置在工作线程原子持久化，成功后立即更新过滤；损坏配置返回 SETTINGS_IO 并保留原文件。
 - 官方插件负责 5MiB 轮转，启动及每 30 秒的维护将归档收敛到最新 3 个（同秒 .bak 也纳入）；不是瞬时磁盘硬配额。仅接收内部 `gitmaster::diagnostic` target，不授予 WebView 任意日志写入权限。
+
+### 多文档视图与退出生命周期（2026-09-24 恢复阶段）
+
+- Monaco 模型使用 LF，控制器草稿按后端原始 LF/CRLF/CR 还原，BOM 留给已有保存接口处理；混合换行仍由后端拒绝进入可保存模型。模型 URI 仅作本地编辑器标识，不作为文件系统访问权限。
+- 当前项目文件列表按仓库/快照/忽略选项合并并发请求，保存终态刷新后重新取得 fileId；原有 SaveFile 版本校验与一次性操作合同不变。
+- 窗口关闭先处理文件草稿，再确认结束终端。Tauri 菜单退出在仍有窗口时阻止直接退出并触发窗口 close，最后窗口销毁后允许退出；具体平台行为仍待原生验收。
+
+### 项目目录分页（2026-09-24）
+
+- `read_project_tree(repositoryId, snapshotId, includeIgnored)`：建立文件会话并返回根目录第一页；每页 200 项，不传输后代清单。
+- `read_project_directory(repositoryId, snapshotId, treeId, directoryId, offset)`：展开和翻页不重建会话；仅接受当前目录能力 ID。`search_project_files(repositoryId, snapshotId, treeId, query, offset)`：对已有路径清单搜索，查询最多 256 字符，沿用原 fileId。
+- 响应 `ProjectTreePage` 包含 `repositoryId/snapshotId/treeId/directoryId/entries/nextOffset/total`。条目 `kind=directory` 时为 `id/path/name`，`kind=file` 时额外含 `status=tracked|untracked|ignored`。
+- 前端已改用树接口；平面接口保留兼容已有测试。当前 Rust 仍先取得 10,000 文件、单次 Git 输出 8 MiB 的有界清单，分页只改变 IPC/界面加载，不能称为磁盘分块枚举。
+
+### 分块只读文档
+
+- `open_read_document(repositoryId, snapshotId, fileId)` 返回 documentId/fileId/path/byteLength/encoding/lineCount/bom/lineEnding。只接受当前树文件能力，UTF-8 普通文件上限 64 MiB/一百万逻辑行，每会话最多八份。行索引与块摘要仅保存在 Rust 内存。
+- `read_document_page(repositoryId, snapshotId, documentId, startLine, count, byteOffset)`：零基 startLine，count 1..200；byteOffset 默认 0，续读必须 count=1。每行返回一基 lineNumber、text、byteOffset、nextByteOffset；单段最多 16 KiB、页面文本最多 256 KiB，nextLine 表示下一逻辑行。响应允许少于 count，不能视为完整请求范围。
+- `search_read_document(repositoryId, snapshotId, documentId, query, startLine, count)`：大小写敏感单行字面量，查询最多 1024 UTF-8 字节，count 1..100；返回不同的一基行号 lines 和零基 nextLine。全文扫描在 Rust 逐块进行，不向前端发送完整正文。
+- `close_read_document(repositoryId, snapshotId, documentId)` 释放句柄和索引。所有读取仍受 Context/协调器/Arc 会话校验约束；安全目录项、元数据或块摘要变化拒绝旧版本。
+- 项目文件超过编辑大小上限或混合换行时自动使用只读虚拟视口。前端最多八页缓存，长行续读替换当前段，可回到首段；不提供保存或完整文件复制按钮。小文件 Monaco 草稿和保存合同不变。
+
+### 分块差异文档
+
+- `open_diff_document(repositoryId,snapshotId,changeId,side,contextLines)` 返回 `kind=paged`、documentId、rowCount/hunkCount/additions/deletions/truncated/folds，或 binary/unsupported。上下文默认 3，最高 2,000；文件路径始终由当前 changeId 解析。
+- 后台正文最多 16 MiB/100,000 原始行。摘要不含 content；单个活动槽保留不可变正文与行索引，超过预算标记部分统计，末尾半行不参与编号。旧 read_file_diff 预览仍兼容原上限。
+- `read_diff_page(repositoryId,snapshotId,documentId,startRow,count,byteOffset)`：零基 startRow、count 1..200、byteOffset 默认 0；续段只允许 count=1。响应 startRow/rows/nextRow，每行含 kind、oldLine/newLine、text、byteOffset/nextByteOffset。单段 16 KiB、页正文 256 KiB，不切断 UTF-8。
+- `close_diff_document(repositoryId,snapshotId,documentId)` 仅关闭匹配文档。新打开、刷新/切仓库和退出释放旧槽；旧页/旧关闭不能访问或删除新槽。所有读请求在后台仓库队列执行，发布前检查 Context 与文档 Arc 身份。
+
+本地修改详情已改用该摘要与分页接口。仓库控制器在切换/关闭/刷新时释放文档，迟到打开也主动关闭；视口缓存最多 128 行段/2 MiB 正文，固定行高虚拟渲染，长行续段替换当前段。folds[{startRow,count}] 描述超过八行的连续上下文，默认保留两端各三行，按按钮展开/收起且不读取折叠正文。原生 Release 验收尚未完成。

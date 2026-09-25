@@ -1,4 +1,8 @@
-import type { AppSettings, SettingsCategory } from "../types/settings";
+import type {
+  AppSettings,
+  SettingsCategory,
+  TerminalProfile,
+} from "../types/settings";
 
 /** 每次创建独立默认草稿，禁止共享终端参数数组。 */
 export function defaultSettings(): AppSettings {
@@ -48,12 +52,54 @@ export function resetSettingsCategory(
     case "logging":
       return { ...draft, logLevel: defaults.logLevel };
     case "terminal":
-      return { ...draft, terminal: defaults.terminal };
+      return restoreTerminalDefaults(draft, defaults);
     case "editor":
       return { ...draft, editor: defaults.editor };
     case "externalOpen":
       return { ...draft, externalOpen: defaults.externalOpen };
   }
+}
+
+/** 自动检测项必须使用默认参数和项目目录，不能覆盖用户改过的配置。 */
+function systemProfile(draft: AppSettings): TerminalProfile | undefined {
+  return draft.terminal.profiles.find(
+    (profile) =>
+      profile.executablePath === null &&
+      profile.args.length === 0 &&
+      profile.cwd.kind === "project",
+  );
+}
+
+/** 满额且没有自动检测项时要求用户先腾出配置位置，不静默删除。 */
+export function terminalResetBlocked(draft: AppSettings): boolean {
+  return draft.terminal.profiles.length >= 32 && !systemProfile(draft);
+}
+
+/** 恢复显示默认与自动检测选择，完整保留已有配置及其稳定标识。 */
+function restoreTerminalDefaults(
+  draft: AppSettings,
+  defaults: AppSettings,
+): AppSettings {
+  if (terminalResetBlocked(draft)) return draft;
+  const existing = systemProfile(draft);
+  const profiles = [...draft.terminal.profiles];
+  let profileId = existing?.profileId ?? "system";
+  if (!existing) {
+    let suffix = 0;
+    while (profiles.some((profile) => profile.profileId === profileId))
+      profileId = `system-${++suffix}`;
+    profiles.push({
+      profileId,
+      name: "系统默认",
+      executablePath: null,
+      args: [],
+      cwd: { kind: "project" },
+    });
+  }
+  return {
+    ...draft,
+    terminal: { ...defaults.terminal, profiles, defaultProfileId: profileId },
+  };
 }
 
 /** 删除配置不影响运行会话，默认项必须由用户先明确选择替代配置。 */

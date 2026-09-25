@@ -51,6 +51,13 @@ export function readAppSettings(): Promise<SettingsSnapshot> {
   return settingsCall("read_app_settings");
 }
 
+/** 只打开原生选择器，取消返回空值；持久化仍由统一应用入口负责。 */
+export function chooseTerminalPath(
+  kind: "shell" | "directory",
+): Promise<string | null> {
+  return settingsCall("choose_terminal_path", { kind });
+}
+
 /** 全量提交草稿；后端拒绝过期 revision，绝不自动重试覆盖新值。 */
 export function applyAppSettings(
   expectedRevision: string,

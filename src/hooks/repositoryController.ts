@@ -1,16 +1,16 @@
 import type {
   DiffSide,
-  FileDiff,
   OperationError,
   RepositoryState,
 } from "../types/git.ts";
+import type { LocalDiff } from "../types/diff.ts";
 import { normalizeOperationError } from "../services/gitErrors.ts";
 export interface RepositoryViewState {
   repository: RepositoryState | null;
   loading: boolean;
   stale: boolean;
   error: OperationError | null;
-  diff: FileDiff | null;
+  diff: LocalDiff | null;
   diffLoading: boolean;
   selected: { changeId: string; side: DiffSide; contextLines?: number } | null;
 }
@@ -23,7 +23,12 @@ export interface RepositoryApi {
     change: string,
     side: DiffSide,
     contextLines?: number,
-  ) => Promise<FileDiff>;
+  ) => Promise<LocalDiff>;
+  closeFileDiff: (
+    id: string,
+    snapshot: string,
+    documentId: string,
+  ) => Promise<void>;
 }
 /** 构造可测试的仓库状态控制器，窗口生命周期与 React 渲染分离。 */
 export function createRepositoryController(api: RepositoryApi) {
@@ -51,8 +56,26 @@ export function createRepositoryController(api: RepositoryApi) {
     state = { ...state, ...next };
     for (const listener of listeners) listener();
   }
+  /** 仅分页结果持有后端能力，关闭迟到结果不会清除较新的文档槽。 */
+  function release(diff = state.diff, repository = state.repository): void {
+    if (diff?.kind === "paged" && repository)
+      void api
+        .closeFileDiff(
+          repository.repositoryId,
+          repository.snapshotId,
+          diff.documentId,
+        )
+        .catch(() => {});
+  }
+  /** 关闭详情同时取消在途选择，防止隐藏面板继续保留正文。 */
+  function closeDiff(): void {
+    diffRequest++;
+    release();
+    update({ diff: null, diffLoading: false, selected: null });
+  }
   /** 开始读取仓库并丢弃旧差异，不让差异请求使仓库请求失效。 */
   async function load(task: () => Promise<RepositoryState>): Promise<void> {
+    release();
     const token = ++repositoryRequest;
     diffRequest += 1;
     pending = true;
@@ -146,6 +169,7 @@ export function createRepositoryController(api: RepositoryApi) {
     if (!repository || pending || !active) return;
     const token = ++diffRequest;
     const owner = repositoryRequest;
+    release();
     update({
       diffLoading: true,
       diff: null,
@@ -166,6 +190,7 @@ export function createRepositoryController(api: RepositoryApi) {
       );
       if (active && token === diffRequest && owner === repositoryRequest)
         update({ diff, diffLoading: false });
+      else release(diff, repository);
     } catch (error: unknown) {
       if (active && token === diffRequest && owner === repositoryRequest) {
         const normalized = normalizeOperationError(error);
@@ -179,6 +204,7 @@ export function createRepositoryController(api: RepositoryApi) {
   }
   /** 清除当前项目，环境变更后所有在途结果失效。 */
   function clear(): void {
+    release();
     repositoryRequest += 1;
     diffRequest += 1;
     pending = false;
@@ -196,6 +222,7 @@ export function createRepositoryController(api: RepositoryApi) {
   }
   /** 卸载时废弃响应，严格模式再次挂载可重新激活。 */
   function deactivate(): void {
+    closeDiff();
     active = false;
     repositoryRequest += 1;
     diffRequest += 1;
@@ -226,6 +253,7 @@ export function createRepositoryController(api: RepositoryApi) {
     setAutoRefreshBlocked,
     markDirty,
     selectDiff,
+    closeDiff,
     clear,
     activate,
     deactivate,

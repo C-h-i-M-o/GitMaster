@@ -4,6 +4,47 @@ use crate::settings::{self, Settings, SettingsError, SettingsSnapshot};
 use gitmaster_core::git::{environment::resolve_git, OperationError};
 use std::path::Path;
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
+
+/// 原生选择器只允许选择程序或目录，不接收命令或任意窗口参数。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TerminalPathKind {
+    Shell,
+    Directory,
+}
+
+/// 选择已有终端程序或起始目录，不执行程序，也不修改已保存设置。
+#[tauri::command]
+pub async fn choose_terminal_path(
+    app: tauri::AppHandle,
+    kind: TerminalPathKind,
+) -> Result<Option<String>, OperationError> {
+    super::blocking("choose_terminal_path", move || {
+        let selected = match kind {
+            TerminalPathKind::Shell => app
+                .dialog()
+                .file()
+                .set_title("选择 Shell 程序")
+                .blocking_pick_file(),
+            TerminalPathKind::Directory => app
+                .dialog()
+                .file()
+                .set_title("选择终端起始目录")
+                .blocking_pick_folder(),
+        };
+        selected
+            .map(|file| {
+                file.into_path()
+                    .map_err(|_| OperationError::new("SETTINGS_IO"))?
+                    .to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| OperationError::new("UNSUPPORTED_PATH_ENCODING"))
+            })
+            .transpose()
+    })
+    .await
+}
 
 /// 返回完整配置及并发修改标识，不执行任何终端程序。
 #[tauri::command]

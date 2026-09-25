@@ -98,3 +98,23 @@ git diff --check
 - Windows 平台测试、真实认证、物理跨卷、最低系统/Git 按用户授权跳过。macOS 原生交互最初受锁屏阻挡，后续已补测本次分支流程；其余未测交互单列。保留原因与风险，不以 M1 历史验收或浏览器结果替代。C01–C18 最终证据见 [验证记录](verification.md#m2m3-最终验收2026-09-23)。
 
 本次专项性能基准：`cargo test -p gitmaster-core benchmark_prepare_switch_branch -- --ignored --nocapture --test-threads=1`。使用真实临时仓库各 20 次，成功次数不为 20 会失败；具体构建模式、仓库规模、分布及未证实提速的边界见 [验证记录](verification.md)。
+
+## M2/M3 恢复阶段补充验证（2026-09-24）
+
+本地忽略的测试不会随 Git 自动迁移。运行前确认实际文件存在，并检查执行器报告非零用例；旧机器的通过数量不能替代当前执行。
+
+```sh
+node --experimental-strip-types --test tests/m2-m3/supplement-*.test.ts
+cargo test -p gitmaster-core
+cargo test -p gitmaster-desktop
+pnpm typecheck
+pnpm build
+pnpm format:check
+cargo fmt --all -- --check
+cargo check -p gitmaster-desktop
+pnpm tauri build --bundles app
+```
+
+当前补充前端用例涵盖分页竞态/缓存、差异折叠、编辑版本、目录能力、同步编排和操作记录容量。浏览器 Harness 使用正式组件/Hook 及官方 IPC mock 验证渲染和流程；mock 成功不证明原生命令、认证、持久化或窗口事件成功。
+
+原生验收使用专用临时仓库与本地 bare 远端，不对用户工作仓库制造提交、冲突或网络写入。Release 验收应分别记录 macOS/Windows 环境、终端输入与清理、文件保存、退出保护、真实认证和性能数据。构建或功能测试不能替代安装/签名、干净系统或性能指标。逐次结果及未验证原因集中维护在 `verification.md`。
