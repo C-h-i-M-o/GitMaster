@@ -6,7 +6,7 @@
 
 ## 阅读顺序
 
-本轮 M2/M3 补充开发已按用户要求暂停，已有部分实现，尚未完成整体验收。先阅读[暂停交接文档](m2-m3-supplement-handoff.md)，再参考[专项需求与实施计划](m2-m3-supplement-spec-plan.md)、[开发过程记录](m2-m3-supplement-progress.md)和[验证记录](verification.md)。终端、编辑 UI 及其他未完成项以交接清单为准。
+2026-10-02 已按用户要求恢复 M2/M3 补充开发，尚未完成整体验收。先阅读[暂停交接文档](m2-m3-supplement-handoff.md)，再参考[专项需求与实施计划](m2-m3-supplement-spec-plan.md)、[开发过程记录](m2-m3-supplement-progress.md)和[验证记录](verification.md)。终端、编辑与分页阅读已实现，待验收项以交接清单及最新验证记录为准；本轮 Windows 专项跳过。
 
 1. [需求与实施计划第 12 节](spec-plan.md#12-tauri-正式版与流畅性优先合并需求及实施方案)：当前合并 spec/plan；Tauri 正式路线、缓存、性能、阅读器、P0–P4 发布及 P5 可选演进。[M2 + M3 计划](m2-m3-spec-plan.md)作为当前功能实现对照。
 2. [架构设计](architecture.md)：Tauri 正式主线与共享核心，以及可选原生演进。

@@ -326,6 +326,8 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
   return (
     <>
       <aside
+        ref={w.changeDetailFocus.list}
+        inert={w.changeDetailFocus.covered}
         hidden={!w.drawer}
         className={`workbench-drawer ${w.drawer === "conflicts" ? "merge-drawer" : w.drawer === "files" ? "files-drawer" : ""}`}
         aria-label={

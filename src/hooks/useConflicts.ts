@@ -23,6 +23,7 @@ export function useConflicts(
   }, [controller, repository, enabled]);
   return {
     ...state,
+    getSnapshot: controller.getSnapshot,
     refresh: controller.refresh,
     selectFile: controller.selectFile,
     edit: controller.edit,

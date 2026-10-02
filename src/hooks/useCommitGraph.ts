@@ -399,7 +399,9 @@ export function useCommitGraph(
         y: size.current.height * 0.4 - point.y * liveView.current.zoom,
       });
       svg.current
-        ?.querySelector<SVGGElement>(`[data-oid="${target.oid}"]`)
+        ?.querySelector<SVGGElement>(
+          `[data-oid="${target.oid}"] > [role="button"]`,
+        )
         ?.focus();
       void onSelect(target.oid);
     },

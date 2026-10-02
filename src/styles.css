@@ -504,6 +504,9 @@ p[role="alert"] {
   cursor: grab;
   outline: none !important;
 }
+.graph-node-action {
+  outline: none;
+}
 .graph-node:active {
   cursor: grabbing;
 }
@@ -513,7 +516,7 @@ p[role="alert"] {
   stroke-width: 1;
 }
 .graph-node.selected .node-halo,
-.graph-node:focus-visible .node-halo {
+.graph-node-action:focus-visible .node-halo {
   stroke: var(--green);
   stroke-width: 2;
   fill: #dcece4;
@@ -572,6 +575,13 @@ p[role="alert"] {
 .branch-head.current {
   background: #edf8f0ed;
   border-color: #bcd7c9;
+}
+.branch-heads.expanded .branch-head {
+  max-width: 100%;
+}
+.branch-heads.expanded .branch-head-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .branch-head.remote {
   color: #6e8095;

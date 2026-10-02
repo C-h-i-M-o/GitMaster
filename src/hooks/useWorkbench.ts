@@ -1,3 +1,4 @@
+import { useChangeDetailFocus } from "./useChangeDetailFocus";
 import { useLogSettings } from "./useLogSettings";
 import { useManualRefresh } from "./useManualRefresh";
 import { useRemoteSync } from "./useRemoteSync";
@@ -112,6 +113,7 @@ export function useWorkbench() {
   }
   /** 取消待执行的关闭或重读，保留编辑。 */
   function keepSettings(): void {
+    if (settingsPending === "exit") setModal("settings");
     settingsExit.current = null;
     setSettingsPending(null);
   }
@@ -153,6 +155,10 @@ export function useWorkbench() {
   }
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [changeDetailOpen, setChangeDetailOpen] = useState(false);
+  const changeDetailFocus = useChangeDetailFocus(
+    drawer === "changes" && changeDetailOpen && repo.selected !== null,
+    closeChangeDetail,
+  );
   useEffect(() => {
     if (drawer !== "changes") {
       repo.closeDiff();
@@ -226,18 +232,24 @@ export function useWorkbench() {
     if (editor.controller.dirty()) setEditorAction(() => action);
     else void action();
   }
-  /** 退出统一经过所有草稿确认，最后才交给终端结束流程。 */
+  /** 冲突处理后仍须确认设置草稿，避免保存设置绕过冲突门禁。 */
+  async function continueExit(action: () => Promise<void>): Promise<void> {
+    if (appSettings.dirty) {
+      settingsExit.current = action;
+      setSettingsPending("exit");
+    } else await action();
+  }
+  /** 退出依次经过文件、冲突、设置确认，最后才交给终端结束流程。 */
   function guardExit(action: () => Promise<void>): void {
     if (operations.busy || appSettings.activity !== "idle") return;
     guardEditor(async () => {
-      if (appSettings.dirty) {
-        settingsExit.current = action;
-        setSettingsPending("exit");
-      } else if (conflicts.dirty) {
+      if (conflicts.dirty) {
         setDiscardAction(() => () => {
-          void conflicts.refresh(true).then(action);
+          void conflicts.refresh(true).then(() => {
+            if (!conflicts.getSnapshot().dirty) void continueExit(action);
+          });
         });
-      } else await action();
+      } else await continueExit(action);
     });
   }
   /** 用户取消离开，不改变草稿。 */
@@ -600,7 +612,6 @@ export function useWorkbench() {
         !conflicts.dirty &&
         (next === "settings" || !editor.dirty)
       ) {
-        if (next === "settings") appSettings.cancel();
         setProjectMenu(false);
         setModal(next);
       }
@@ -1081,6 +1092,7 @@ export function useWorkbench() {
     selection,
     prepareSelected,
     changeDetailOpen,
+    changeDetailFocus,
     closeChangeDetail,
     expandChangeContext,
     fields,

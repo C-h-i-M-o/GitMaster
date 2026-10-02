@@ -12,7 +12,12 @@ export function ChangeDetailDrawer({ workbench: w }: { workbench: Workbench }) {
     (item) => item.changeId === w.repo.selected?.changeId,
   );
   return (
-    <aside className="change-detail-drawer" aria-label="文件详细变化">
+    <aside
+      ref={w.changeDetailFocus.detail}
+      onKeyDown={w.changeDetailFocus.keyDown}
+      className="change-detail-drawer"
+      aria-label="文件详细变化"
+    >
       <header className="drawer-header">
         <div>
           <h2>文件变化</h2>

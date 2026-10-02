@@ -118,3 +118,9 @@ pnpm tauri build --bundles app
 当前补充前端用例涵盖分页竞态/缓存、差异折叠、编辑版本、目录能力、同步编排和操作记录容量。浏览器 Harness 使用正式组件/Hook 及官方 IPC mock 验证渲染和流程；mock 成功不证明原生命令、认证、持久化或窗口事件成功。
 
 原生验收使用专用临时仓库与本地 bare 远端，不对用户工作仓库制造提交、冲突或网络写入。Release 验收应分别记录 macOS/Windows 环境、终端输入与清理、文件保存、退出保护、真实认证和性能数据。构建或功能测试不能替代安装/签名、干净系统或性能指标。逐次结果及未验证原因集中维护在 `verification.md`。
+
+## 2026-10-02 更新
+
+本轮 Node 控制器/纯函数52项通过；新增 change-detail-focus-check.js（28项）、branch-head-layout-check.js（6项）、settings-exit-draft-check.js（2项）、settings-conflict-exit-check.js（6项）及 conflict-stale-exit-check.js（1项）复用Vite/实际hook替身。exit-combined-check.js 的8项复测通过。浏览器结果不替代原生；原生与未完成矩阵详见verification。
+
+新增branch-head-accessibility-check.js 3项覆盖引用控件没有按钮祖先、相邻提交键盘聚焦及引用Enter事件隔离；引用尺寸6项复测通过。最终Node52项复测通过。

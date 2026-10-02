@@ -1,0 +1,33 @@
+async (page) => {
+ await page.goto('http://127.0.0.1:1420/tests/m2-m3/exit-harness.html');
+ await page.waitForFunction(()=>window.exitHarness?.w.appSettings.editable);
+ await page.evaluate(async()=>{await window.exitHarness.w.repo.open('/test');});
+ await page.waitForFunction(()=>window.exitHarness.w.repo.repository!==null);
+ await page.evaluate(async()=>{await window.exitHarness.w.conflicts.selectFile('c');window.exitHarness.w.conflicts.edit('冲突草稿');window.exitHarness.w.appSettings.edit(s=>({...s,uiPreferences:{...s.uiPreferences,showLabels:false}}));});
+ await page.waitForFunction(()=>window.exitHarness.w.conflicts.dirty&&window.exitHarness.w.appSettings.dirty);
+ await page.evaluate(()=>window.exitHarness.quit());
+ const first=await page.evaluate(()=>({dirty:window.exitHarness.w.conflicts.dirty,pending:window.exitHarness.w.discardPending,settings:window.exitHarness.w.settingsPending,exits:window.exitHarness.exits}));
+ if(!first.dirty||!first.pending||first.settings!==null||first.exits!==0)throw Error(JSON.stringify(first));
+ await page.evaluate(()=>window.exitHarness.w.keepDraft());
+ await page.waitForFunction(()=>!window.exitHarness.w.discardPending);
+ const kept=await page.evaluate(()=>({conflict:window.exitHarness.w.conflicts.dirty,settings:window.exitHarness.w.appSettings.dirty,exits:window.exitHarness.exits}));
+ if(!kept.conflict||!kept.settings||kept.exits!==0)throw Error(JSON.stringify(kept));
+ await page.evaluate(()=>window.exitHarness.quit());
+ await page.waitForFunction(()=>window.exitHarness.w.discardPending);
+ await page.evaluate(()=>window.exitHarness.w.discardDraft());
+ await page.waitForFunction(()=>window.exitHarness.w.settingsPending==='exit');
+ if(await page.evaluate(()=>window.exitHarness.exits!==0||window.exitHarness.w.conflicts.dirty))throw Error('冲突处理后设置仍须确认');
+ await page.evaluate(()=>window.exitHarness.w.keepSettings());
+ await page.waitForFunction(()=>window.exitHarness.w.settingsPending===null);
+ if(await page.evaluate(()=>!window.exitHarness.w.appSettings.dirty||window.exitHarness.exits!==0))throw Error('取消设置必须保留草稿并中止退出');
+ await page.evaluate(()=>window.exitHarness.quit());
+ await page.waitForFunction(()=>window.exitHarness.w.settingsPending==='exit');
+ await page.evaluate(()=>window.exitHarness.setFail(true));
+ await page.evaluate(()=>window.exitHarness.w.saveSettingsAndContinue());
+ const failed=await page.evaluate(()=>({dirty:window.exitHarness.w.appSettings.dirty,pending:window.exitHarness.w.settingsPending,exits:window.exitHarness.exits}));
+ if(!failed.dirty||failed.pending!=='exit'||failed.exits!==0)throw Error(JSON.stringify(failed));
+ await page.evaluate(()=>window.exitHarness.setFail(false));
+ await page.evaluate(()=>window.exitHarness.w.saveSettingsAndContinue());
+ await page.waitForFunction(()=>window.exitHarness.exits===1&&!window.exitHarness.w.appSettings.dirty);
+ return {passed:6,first,kept,failed};
+}

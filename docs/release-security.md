@@ -36,3 +36,7 @@
 参考：[Tauri 发布](https://v2.tauri.app/distribute/)、[Tauri 安全](https://v2.tauri.app/security/)、[Git 官网](https://git-scm.com/install/)。
 
 文件树虚拟化依赖 @tanstack/react-virtual 3.14.13 与其 virtual-core（MIT）；许可证原文在 public/virtual-tree-licenses.txt，生产构建随包复制。该库只处理列表视口，不授予文件或命令访问权限。
+
+## 2026-10-02 更新
+
+本轮无发布、签名、安装或远端权限扩展；Git按钮与独立交互终端的边界保持。新增退出修复逐项保留设置和冲突草稿确认。Windows专项本轮按用户要求跳过，不能转作发布或双平台通过。

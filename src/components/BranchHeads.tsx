@@ -15,13 +15,14 @@ export function BranchHeads({
   if (!state.heads.length) return null;
   return (
     <foreignObject
-      x={-100}
-      y={-70}
-      width={310}
-      height={state.expanded ? 230 : 42}
+      x={-state.size.width / 2}
+      y={-state.size.height - 28}
+      width={state.size.width}
+      height={state.size.height}
       className="branch-head-object"
     >
       <div
+        ref={state.container}
         className={`branch-heads ${state.expanded ? "expanded" : ""}`}
         onPointerDown={state.stop}
         onKeyDown={state.stop}
@@ -31,6 +32,7 @@ export function BranchHeads({
             className={`branch-head ${item.kind} ${item.current ? "current" : ""}`}
             key={item.id}
             title={`${item.kind === "remote" ? "远端" : item.kind === "local" ? "本地" : ""} ${item.name}${item.current ? " · HEAD" : ""}`}
+            aria-label={`${item.kind === "remote" ? "远端分支" : item.kind === "local" ? "本地分支" : "分离头指针"} ${item.name}${item.current ? "，当前 HEAD" : ""}`}
             tabIndex={0}
           >
             <span className="branch-head-kind">

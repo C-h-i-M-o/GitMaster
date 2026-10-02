@@ -86,34 +86,39 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
               key={node.oid}
               data-oid={node.oid}
               transform={`translate(${node.x} ${node.y})`}
-              tabIndex={0}
-              role="button"
-              aria-label={`${node.commit.subject}，${node.oid}`}
-              aria-pressed={w.history.selectedOid === node.oid}
+              role="group"
               onKeyDown={graph.nodeKeyDown}
               className={`graph-node ${node.matches ? "" : "dimmed"} ${w.history.selectedOid === node.oid ? "selected" : ""}`}
             >
-              <title>
-                {node.commit.subject}
-                {"\n"}
-                {node.oid}
-                {"\n"}
-                {node.refs.map((ref) => ref.name).join(" · ")}
-              </title>
-              <circle r="23" className="node-halo" />
-              <circle r="16" fill={laneColor(node.lane)} fillOpacity="0.32" />
-              <circle r="19" fill="url(#bubble-glass)" />
-              <circle cx="-6" cy="-7" r="4" fill="white" fillOpacity="0.85" />
-              {(w.preferences.saved?.showLabels ?? true) && (
-                <text x="27" y="-7" className="node-subject">
-                  {node.commit.subject.length > 29
-                    ? `${node.commit.subject.slice(0, 29)}…`
-                    : node.commit.subject}
+              <g
+                tabIndex={0}
+                role="button"
+                aria-label={`${node.commit.subject}，${node.oid}`}
+                aria-pressed={w.history.selectedOid === node.oid}
+                className="graph-node-action"
+              >
+                <title>
+                  {node.commit.subject}
+                  {"\n"}
+                  {node.oid}
+                  {"\n"}
+                  {node.refs.map((ref) => ref.name).join(" · ")}
+                </title>
+                <circle r="23" className="node-halo" />
+                <circle r="16" fill={laneColor(node.lane)} fillOpacity="0.32" />
+                <circle r="19" fill="url(#bubble-glass)" />
+                <circle cx="-6" cy="-7" r="4" fill="white" fillOpacity="0.85" />
+                {(w.preferences.saved?.showLabels ?? true) && (
+                  <text x="27" y="-7" className="node-subject">
+                    {node.commit.subject.length > 29
+                      ? `${node.commit.subject.slice(0, 29)}…`
+                      : node.commit.subject}
+                  </text>
+                )}
+                <text x="27" y="13" className="node-meta">
+                  {node.oid.slice(0, 7)} · {node.commit.authorName}
                 </text>
-              )}
-              <text x="27" y="13" className="node-meta">
-                {node.oid.slice(0, 7)} · {node.commit.authorName}
-              </text>
+              </g>
               <BranchHeads
                 refs={node.refs}
                 head={w.repo.repository?.head}
