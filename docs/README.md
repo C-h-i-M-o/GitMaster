@@ -6,7 +6,7 @@
 
 ## 阅读顺序
 
-2026-10-03 用户确认基本功能正常，并授权全部提交、推送 GitHub。当前先阅读[总计划第 16 节](spec-plan.md#16-m2m3-开发收尾核对2026-10-03)的开发收尾核对，再参考[原始 M2/M3 计划](m2-m3-spec-plan.md)、[补充计划](m2-m3-supplement-spec-plan.md)和[验证记录](verification.md)。历史交接及早期未勾选项不作为当前缺失功能清单；本轮 Windows 测试明确跳过，专项未测不等于通过。
+2026-10-03 用户确认基本功能正常，M2/M3 开发阶段已收尾，并授权合入 `main` 后推送 GitHub；M4 明确不启动。当前先阅读[总计划第 16 节](spec-plan.md#16-m2m3-开发收尾核对2026-10-03)的开发收尾核对，再参考[原始 M2/M3 计划](m2-m3-spec-plan.md)、[补充计划](m2-m3-supplement-spec-plan.md)和[验证记录](verification.md)。历史交接及早期未勾选项不作为当前缺失功能清单；本轮 Windows 测试明确跳过，专项未测不等于通过。
 
 1. [需求与实施计划第 12 节](spec-plan.md#12-tauri-正式版与流畅性优先合并需求及实施方案)：当前合并 spec/plan；Tauri 正式路线、缓存、性能、阅读器、P0–P4 发布及 P5 可选演进。[M2 + M3 计划](m2-m3-spec-plan.md)作为当前功能实现对照。
 2. [架构设计](architecture.md)：Tauri 正式主线与共享核心，以及可选原生演进。
