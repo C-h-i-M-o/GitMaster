@@ -29,7 +29,7 @@ impl ProjectTreeEntry {
         }
     }
     /// 排序只处理可信结构中的展示名称，不把名称当文件系统输入。
-    fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &str {
         match self {
             Self::Directory { name, .. } | Self::File { name, .. } => name,
         }
@@ -47,6 +47,7 @@ pub struct ProjectTreePage {
     pub entries: Vec<ProjectTreeEntry>,
     pub next_offset: Option<usize>,
     pub total: usize,
+    pub search_incomplete: bool,
 }
 
 /// 元数据索引首次使用树接口时建立，之后只在当前文件会话内复用。
@@ -117,6 +118,20 @@ impl ProjectFilesSession {
 
     /// 建立树后只返回根目录第一页，不携带后代文件列表。
     pub fn tree_root(&self) -> ProjectTreePage {
+        if let Some(filesystem) = &self.filesystem {
+            let tree = filesystem
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (entries, total) = tree.root();
+            return self.filesystem_page(
+                &tree.id,
+                &tree.id,
+                entries.to_vec(),
+                (total > 200).then_some(200),
+                total,
+                false,
+            );
+        }
         let tree = self.tree_index();
         self.make_tree_page(&tree.id, &tree.children[&tree.id], 0)
     }
@@ -128,6 +143,24 @@ impl ProjectFilesSession {
         directory_id: &str,
         offset: usize,
     ) -> Result<ProjectTreePage, OperationError> {
+        if let Some(filesystem) = &self.filesystem {
+            let mut tree = filesystem
+                .lock()
+                .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
+            if tree_id != tree.id {
+                return Err(OperationError::new("STALE_REQUEST"));
+            }
+            let (entries, total) = tree.page(&self.repository.root, directory_id, offset)?;
+            let end = offset + entries.len();
+            return Ok(self.filesystem_page(
+                &tree.id,
+                directory_id,
+                entries,
+                (end < total).then_some(end),
+                total,
+                false,
+            ));
+        }
         let tree = self.tree_index();
         if tree_id != tree.id {
             return Err(OperationError::new("STALE_REQUEST"));
@@ -149,6 +182,17 @@ impl ProjectFilesSession {
         query: &str,
         offset: usize,
     ) -> Result<ProjectTreePage, OperationError> {
+        if let Some(filesystem) = &self.filesystem {
+            let mut tree = filesystem
+                .lock()
+                .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
+            if tree_id != tree.id {
+                return Err(OperationError::new("STALE_REQUEST"));
+            }
+            let (entries, next, total, incomplete) =
+                tree.search(&self.repository.root, query, offset)?;
+            return Ok(self.filesystem_page(&tree.id, &tree.id, entries, next, total, incomplete));
+        }
         let tree = self.tree_index();
         if tree_id != tree.id {
             return Err(OperationError::new("STALE_REQUEST"));
@@ -174,6 +218,28 @@ impl ProjectFilesSession {
         Ok(self.make_tree_page(&tree.id, &entries, offset))
     }
 
+    /// 真实目录以独立树 ID 标识会话，搜索总数仅代表当前已扫描范围。
+    fn filesystem_page(
+        &self,
+        tree_id: &str,
+        directory_id: &str,
+        entries: Vec<ProjectTreeEntry>,
+        next_offset: Option<usize>,
+        total: usize,
+        search_incomplete: bool,
+    ) -> ProjectTreePage {
+        ProjectTreePage {
+            repository_id: self.repository.id.clone(),
+            snapshot_id: self.state.snapshot_id.clone(),
+            tree_id: tree_id.to_owned(),
+            directory_id: directory_id.to_owned(),
+            entries,
+            next_offset,
+            total,
+            search_incomplete,
+        }
+    }
+
     /// 统一分页元数据，nextOffset 只在仍有条目时给出。
     fn make_tree_page(
         &self,
@@ -190,6 +256,7 @@ impl ProjectFilesSession {
             entries: entries[offset..end].to_vec(),
             next_offset: (end < entries.len()).then_some(end),
             total: entries.len(),
+            search_incomplete: false,
         }
     }
 }

@@ -32,7 +32,40 @@ export function useTerminal(
       cursorStyle: prefs.cursorStyle,
       cursorBlink: prefs.cursorBlink,
       scrollback: prefs.scrollbackLines,
-      theme: { background: "#151820", foreground: "#e5e7eb" },
+      theme: {
+        background:
+          getComputedStyle(container.current)
+            .getPropertyValue("--terminal-background")
+            .trim() || "#f7f9f5",
+        foreground:
+          getComputedStyle(container.current)
+            .getPropertyValue("--terminal-foreground")
+            .trim() || "#233b3c",
+        cursor:
+          getComputedStyle(container.current)
+            .getPropertyValue("--terminal-cursor")
+            .trim() || "#233b3c",
+        selectionBackground:
+          getComputedStyle(container.current)
+            .getPropertyValue("--terminal-selection")
+            .trim() || "#b8d9cf",
+        black: "#233b3c",
+        red: "#ac392e",
+        green: "#286743",
+        yellow: "#806015",
+        blue: "#315db0",
+        magenta: "#885291",
+        cyan: "#167078",
+        white: "#697571",
+        brightBlack: "#62706d",
+        brightRed: "#c44232",
+        brightGreen: "#327949",
+        brightYellow: "#906915",
+        brightBlue: "#3c66bc",
+        brightMagenta: "#96559e",
+        brightCyan: "#168088",
+        brightWhite: "#7b8580",
+      },
       allowProposedApi: false,
     });
     const fit = new FitAddon();
@@ -41,6 +74,29 @@ export function useTerminal(
     terminal.current = view;
     // 仓库程序输出不能写系统剪贴板；不安装自动打开链接的插件。
     const clipboard = view.parser.registerOscHandler(52, () => true);
+    /** xterm 自己处理键盘前显式消费 Cmd/Ctrl+J，交给工作台全局动作。 */
+    view.attachCustomKeyEventHandler((event) => {
+      const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+      const modifier = isMac
+        ? event.metaKey && !event.ctrlKey
+        : event.ctrlKey && !event.metaKey;
+      if (
+        modifier &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        event.key.toLowerCase() === "j"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type === "keydown" && !event.repeat)
+          window.dispatchEvent(
+            new CustomEvent("gitmaster:toggle-panel", { detail: event }),
+          );
+        return false;
+      }
+      return true;
+    });
     let active = true;
     let reading = false;
     let ack = 0;

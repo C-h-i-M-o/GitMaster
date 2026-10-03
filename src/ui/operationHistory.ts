@@ -31,6 +31,42 @@ export interface OperationHistoryEntry {
   events: HistoryEvent[];
 }
 
+let preparationSequence = 0;
+
+/** 将前置校验失败记录为前端摘要，不伪造后端任务结果。 */
+export function appendPreparationFailure(
+  history: readonly OperationHistoryEntry[],
+  kind: OperationKind,
+  repositoryId: string | null,
+  target: string,
+  error: OperationError,
+  now: number,
+): OperationHistoryEntry[] {
+  if (kind === "saveFile" || kind === "saveConflict") return [...history];
+  const id = `prepare-${now}-${++preparationSequence}`;
+  return [
+    {
+      id,
+      repositoryId,
+      target,
+      kind,
+      sequence: 0,
+      phase: "failed" as const,
+      startedAt: now,
+      finishedAt: now,
+      outcome: "failed" as const,
+      error,
+      refreshError: null,
+      commitOid: null,
+      unresolvedCount: null,
+      recoveryPath: null,
+      needsMergeCommit: false,
+      events: [],
+    },
+    ...history,
+  ].slice(0, 200);
+}
+
 /** 按任务聚合有界摘要，拒绝倒序/跨仓库响应，不保留完整仓库快照。 */
 export function updateOperationHistory(
   history: readonly OperationHistoryEntry[],
@@ -40,6 +76,7 @@ export function updateOperationHistory(
 ): OperationHistoryEntry[] {
   const p = record.progress,
     result = record.result;
+  if (p.kind === "saveFile" || p.kind === "saveConflict") return [...history];
   const previous = history.find((item) => item.id === p.handle.operationId);
   if (
     previous &&

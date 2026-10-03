@@ -44,12 +44,17 @@ pub fn read_write_context(
         .changes
         .iter()
         .any(|c| c.kind == "tracked" && c.index_status != ".");
-    let identity =
-        if platform.is_ok() && ((idle.is_ok() && staged) || state.operations == ["merge"]) {
-            guard::identity(git, repo, deadline).map(|_| ())
-        } else {
-            platform.clone().and(idle.clone())
-        };
+    let selectable = state
+        .changes
+        .iter()
+        .any(|c| c.kind == "untracked" || (c.kind == "tracked" && c.worktree_status != "."));
+    let identity = if platform.is_ok()
+        && ((idle.is_ok() && (staged || selectable)) || state.operations == ["merge"])
+    {
+        guard::identity(git, repo, deadline).map(|_| ())
+    } else {
+        platform.clone().and(idle.clone())
+    };
     let merge = platform
         .clone()
         .and(require(
@@ -68,7 +73,13 @@ pub fn read_write_context(
             unstage: capability(local.clone().and(require(staged, "EMPTY_SELECTION"))),
             commit: capability(
                 local
+                    .clone()
                     .and(require(staged, "NOTHING_TO_COMMIT"))
+                    .and(identity.clone()),
+            ),
+            commit_selected: capability(
+                local
+                    .and(require(staged || selectable, "NOTHING_TO_COMMIT"))
                     .and(identity.clone()),
             ),
             create_branch: capability(branch.clone().and(headed.clone())),

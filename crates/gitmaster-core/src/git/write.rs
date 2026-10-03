@@ -117,14 +117,48 @@ pub fn prepare_commit(
     state: &RepositoryState,
     message: &str,
 ) -> Result<WritePreview, OperationError> {
+    prepare_commit_selected(coordinator, git, repo, state, message, &[])
+}
+
+/// 同一个确认任务暂存明确选择并提交，保留已有暂存内容与完整写前校验。
+pub fn prepare_commit_selected(
+    coordinator: &RepositoryCoordinator,
+    git: &GitExecutable,
+    repo: &RepositoryHandle,
+    state: &RepositoryState,
+    message: &str,
+    stage_change_ids: &[String],
+) -> Result<WritePreview, OperationError> {
     let generation = coordinator.begin_prepare()?;
     validate_message(message)?;
     let deadline = Instant::now() + LOCAL_BUDGET;
     let key = CoordinationKey::repository(repo)?;
+    let mut selected = BTreeSet::new();
+    for id in stage_change_ids {
+        let change = state
+            .changes
+            .iter()
+            .find(|change| &change.change_id == id)
+            .ok_or_else(|| OperationError::new("STALE_REQUEST"))?;
+        if change.kind == "conflicted" || change.kind == "submodule" {
+            return Err(OperationError::new("UNSUPPORTED_WRITE_CONFIGURATION"));
+        }
+        if change.kind != "untracked" && change.worktree_status == "." {
+            return Err(OperationError::new("INVALID_INPUT"));
+        }
+        selected.insert(change.path.clone());
+        if let Some(original) = &change.original_path {
+            selected.insert(original.clone());
+        }
+    }
+    let selected = selected.into_iter().collect::<Vec<_>>();
     let (fingerprint, paths, identity) = coordinator.read_until(&key, deadline, || {
         guard::validate_snapshot(git, repo, state, deadline)?;
-        let fingerprint = guard::fingerprint(git, repo, &[], false, deadline)?;
-        let paths = guard::commit_paths(git, repo, &fingerprint, deadline)?;
+        let fingerprint = guard::fingerprint(git, repo, &selected, false, deadline)?;
+        let mut paths = guard::commit_paths(git, repo, &fingerprint, deadline)?;
+        paths.extend(selected.iter().cloned());
+        paths.sort();
+        paths.dedup();
         if paths.is_empty() {
             return Err(OperationError::new("NOTHING_TO_COMMIT"));
         }
@@ -148,6 +182,7 @@ pub fn prepare_commit(
                 &fingerprint,
                 &description,
                 &identity,
+                &selected,
             )
         },
     )?;
@@ -234,32 +269,7 @@ fn execute_index(
             input.push(0);
         }
         if stage {
-            let entries = super::staging::prepare_entries(git, repo, expected, paths, deadline)?;
-            guard::local_query(
-                git,
-                repo,
-                &["update-index", "--force-remove", "-z", "--stdin"],
-                &input,
-                Some(&transaction.path),
-                deadline,
-            )?;
-            let mut index_input = Vec::new();
-            for entry in entries {
-                index_input.extend_from_slice(
-                    format!("{} {}\t{}", entry.mode, entry.oid, entry.path).as_bytes(),
-                );
-                index_input.push(0);
-            }
-            if !index_input.is_empty() {
-                guard::local_query(
-                    git,
-                    repo,
-                    &["update-index", "-z", "--index-info"],
-                    &index_input,
-                    Some(&transaction.path),
-                    deadline,
-                )?;
-            }
+            stage_into_index(git, repo, expected, paths, &transaction, deadline)?;
         } else if matches!(expected.head, HeadState::Unborn { .. }) {
             guard::local_query(
                 git,
@@ -306,6 +316,47 @@ fn execute_index(
     operation_result(reporter, git, repo, result, published, None, None, deadline)
 }
 
+/// 在私有索引中仅替换明确选择的整文件，复用转换策略与安全内容读取。
+fn stage_into_index(
+    git: &GitExecutable,
+    repo: &RepositoryHandle,
+    expected: &WriteFingerprint,
+    paths: &[String],
+    transaction: &IndexTransaction,
+    deadline: Instant,
+) -> Result<(), OperationError> {
+    let entries = super::staging::prepare_entries(git, repo, expected, paths, deadline)?;
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
+    }
+    guard::local_query(
+        git,
+        repo,
+        &["update-index", "--force-remove", "-z", "--stdin"],
+        &input,
+        Some(&transaction.path),
+        deadline,
+    )?;
+    let mut input = Vec::new();
+    for entry in entries {
+        input.extend_from_slice(format!("{} {}\t{}", entry.mode, entry.oid, entry.path).as_bytes());
+        input.push(0);
+    }
+    if !input.is_empty() {
+        guard::local_query(
+            git,
+            repo,
+            &["update-index", "-z", "--index-info"],
+            &input,
+            Some(&transaction.path),
+            deadline,
+        )?;
+    }
+    Ok(())
+}
+
 /// 索引树在独立副本创建；提交目标通过完整引用和旧 OID 比较交换。
 fn execute_commit(
     reporter: &OperationReporter,
@@ -314,15 +365,36 @@ fn execute_commit(
     expected: &WriteFingerprint,
     message: &str,
     identity: &guard::CommitIdentity,
+    stage_paths: &[String],
 ) -> OperationResult {
     let deadline = Instant::now() + LOCAL_BUDGET;
     let mut commit_oid = None;
     let mut ref_attempted = false;
+    let mut staged = false;
     let result = (|| -> Result<(), OperationError> {
-        revalidate(git, repo, expected, &[], false, deadline)?;
-        let transaction = IndexTransaction::new(repo, expected.index_bytes.as_deref())?;
-        revalidate(git, repo, expected, &[], true, deadline)?;
+        let mut expected = expected.clone();
+        revalidate(git, repo, &expected, stage_paths, false, deadline)?;
+        let mut transaction = IndexTransaction::new(repo, expected.index_bytes.as_deref())?;
+        revalidate(git, repo, &expected, stage_paths, true, deadline)?;
         transaction.initialize(git, repo, deadline)?;
+        if !stage_paths.is_empty() {
+            reporter.report(OperationPhase::Writing, None)?;
+            stage_into_index(git, repo, &expected, stage_paths, &transaction, deadline)?;
+            let index = guard::read_index(git, repo, Some(&transaction.path), deadline)?;
+            if unselected(&expected.index, stage_paths) != unselected(&index, stage_paths) {
+                return Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"));
+            }
+            revalidate(git, repo, &expected, stage_paths, true, deadline)?;
+            let bytes = guard::read_index_file(&transaction.dir, &transaction.name)?;
+            transaction.publish()?;
+            staged = true;
+            drop(transaction);
+            expected.index = index;
+            expected.index_bytes = bytes;
+            revalidate(git, repo, &expected, stage_paths, false, deadline)?;
+            transaction = IndexTransaction::new(repo, expected.index_bytes.as_deref())?;
+            revalidate(git, repo, &expected, stage_paths, true, deadline)?;
+        }
         let tree = parse_oid(guard::local_query(
             git,
             repo,
@@ -332,10 +404,23 @@ fn execute_commit(
             deadline,
         )?)?;
         let parent_oids = parents(&expected.head);
+        if let Some(parent) = parent_oids.first() {
+            let previous_tree = parse_oid(guard::local_query(
+                git,
+                repo,
+                &["rev-parse", &format!("{parent}^{{tree}}")],
+                &[],
+                None,
+                deadline,
+            )?)?;
+            if previous_tree == tree {
+                return Err(OperationError::new("NOTHING_TO_COMMIT"));
+            }
+        }
         reporter.report(OperationPhase::Writing, None)?;
         let oid =
             create_commit_object(git, repo, &tree, &parent_oids, message, identity, deadline)?;
-        revalidate(git, repo, expected, &[], true, deadline)?;
+        revalidate(git, repo, &expected, stage_paths, true, deadline)?;
         let branch = branch_name(&expected.head)?;
         let reference = format!("refs/heads/{branch}");
         let zero = "0".repeat(oid.len());
@@ -388,6 +473,13 @@ fn execute_commit(
         Ok(())
     })();
     let branch = branch_name(&expected.head).ok().map(str::to_owned);
+    let result = result.map_err(|error| {
+        if staged && !ref_attempted && commit_oid.is_none() {
+            OperationError::new("COMMIT_FAILED_AFTER_STAGE")
+        } else {
+            error
+        }
+    });
     operation_result(
         reporter,
         git,
@@ -711,6 +803,134 @@ mod tests {
             b"other staged\n"
         );
         assert_eq!(fs::read(f.root.join("b")).unwrap(), b"other working\n");
+    }
+
+    /// 直接提交只暂存勾选项，同时包含原暂存内容并保留其他工作区修改。
+    #[test]
+    fn commits_selected_worktree_and_existing_index() {
+        let f = Fixture::new();
+        f.write("a", b"base\n");
+        f.write("b", b"base\n");
+        f.command(&["add", "."]);
+        f.command(&["commit", "-m", "base"]);
+        f.write("a", b"partial\n");
+        f.write("b", b"staged\n");
+        f.command(&["add", "."]);
+        f.write("a", b"selected\n");
+        f.write("b", b"leave working\n");
+        f.write("new", b"new selected\n");
+        f.write("leave", b"unselected\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let ids = state
+            .changes
+            .iter()
+            .filter(|c| c.path == "a" || c.path == "new")
+            .map(|c| c.change_id.clone())
+            .collect::<Vec<_>>();
+        let coordinator = RepositoryCoordinator::new();
+        let preview =
+            prepare_commit_selected(&coordinator, &f.git, &repo, &state, "chosen", &ids).unwrap();
+        assert!(matches!(
+            finish(&coordinator, &repo, &preview),
+            OperationResult::Succeeded {
+                commit_oid: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            query(&f.git, &repo.root, &["show", "HEAD:a"], 4096).unwrap(),
+            b"selected\n"
+        );
+        assert_eq!(
+            query(&f.git, &repo.root, &["show", "HEAD:b"], 4096).unwrap(),
+            b"staged\n"
+        );
+        assert_eq!(
+            query(&f.git, &repo.root, &["show", "HEAD:new"], 4096).unwrap(),
+            b"new selected\n"
+        );
+        let after = read_repository_state(&f.git, &repo).unwrap();
+        assert_eq!(after.changes.len(), 2);
+        assert!(after
+            .changes
+            .iter()
+            .any(|c| c.path == "leave" && c.kind == "untracked"));
+        assert!(after
+            .changes
+            .iter()
+            .any(|c| c.path == "b" && c.index_status == "."));
+    }
+
+    /// 所选版本抵消原暂存修改时不制造空提交；准确报告暂存已完成。
+    #[test]
+    fn commits_selected_reports_failure_after_stage_without_empty_commit() {
+        let f = Fixture::new();
+        f.write("a", b"base\n");
+        f.command(&["add", "."]);
+        f.command(&["commit", "-m", "base"]);
+        let before = query(&f.git, &f.root, &["rev-parse", "HEAD"], 4096).unwrap();
+        f.write("a", b"staged\n");
+        f.command(&["add", "a"]);
+        f.write("a", b"base\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let coordinator = RepositoryCoordinator::new();
+        let preview = prepare_commit_selected(
+            &coordinator,
+            &f.git,
+            &repo,
+            &state,
+            "no empty commit",
+            &[state.changes[0].change_id.clone()],
+        )
+        .unwrap();
+        assert!(
+            matches!(finish(&coordinator, &repo, &preview), OperationResult::Failed { error, .. } if error.code == "COMMIT_FAILED_AFTER_STAGE")
+        );
+        assert_eq!(
+            query(&f.git, &f.root, &["rev-parse", "HEAD"], 4096).unwrap(),
+            before
+        );
+        assert_eq!(
+            query(&f.git, &f.root, &["show", ":a"], 4096).unwrap(),
+            b"base\n"
+        );
+    }
+
+    /// 没有暂存索引的仓库也可直接提交选中的新文件。
+    #[test]
+    fn commits_selected_untracked_first_version_and_rejects_late_edit() {
+        let f = Fixture::new();
+        f.write("first", b"first\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let coordinator = RepositoryCoordinator::new();
+        let ids = vec![state.changes[0].change_id.clone()];
+        let preview =
+            prepare_commit_selected(&coordinator, &f.git, &repo, &state, "first", &ids).unwrap();
+        f.write("first", b"late\n");
+        assert!(
+            matches!(finish(&coordinator, &repo, &preview), OperationResult::Failed { error, .. } if error.code == "STALE_WRITE_PLAN")
+        );
+        let state = read_repository_state(&f.git, &repo).unwrap();
+        let preview = prepare_commit_selected(
+            &coordinator,
+            &f.git,
+            &repo,
+            &state,
+            "first",
+            &[state.changes[0].change_id.clone()],
+        )
+        .unwrap();
+        assert!(matches!(
+            finish(&coordinator, &repo, &preview),
+            OperationResult::Succeeded {
+                commit_oid: Some(_),
+                ..
+            }
+        ));
+        assert!(read_repository_state(&f.git, &repo)
+            .unwrap()
+            .changes
+            .is_empty());
     }
 
     /// unborn 取消暂存保留文件；重新暂存后的首次提交使用完整确认索引。

@@ -71,12 +71,6 @@ export function VirtualFileTree({
               <span>
                 {node?.name ?? (row.kind === "more" ? "加载更多" : "正在读取…")}
               </span>
-              {node?.kind === "file" && node.status === "untracked" && (
-                <small>新文件</small>
-              )}
-              {node?.kind === "file" && node.status === "ignored" && (
-                <small>已忽略</small>
-              )}
             </div>
           );
         })}

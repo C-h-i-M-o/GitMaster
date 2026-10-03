@@ -261,11 +261,17 @@ pub async fn open_repository(
     };
     blocking("open_repository", move || {
         let handle = git::repository::identify_repository(&git, Path::new(&path))?;
-        let monitor = monitoring::RepositoryMonitor::new(&handle, app);
+        let monitor = monitoring::RepositoryMonitor::new(&handle, app.clone());
         let snapshot = git::repository::read_repository_state(&git, &handle)?;
         let mut s = shared.lock()?;
         s.publish_repository(epoch, token, handle, snapshot.clone())?;
         s.monitor = Some(monitor);
+        drop(s);
+        if let Err(error) =
+            crate::recent_projects::record_opened_project(&app, Path::new(&snapshot.root_path))
+        {
+            crate::recent_projects::remember_error(Path::new(&snapshot.root_path), error);
+        }
         Ok(snapshot)
     })
     .await

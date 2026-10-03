@@ -124,3 +124,29 @@ pnpm tauri build --bundles app
 本轮 Node 控制器/纯函数52项通过；新增 change-detail-focus-check.js（28项）、branch-head-layout-check.js（6项）、settings-exit-draft-check.js（2项）、settings-conflict-exit-check.js（6项）及 conflict-stale-exit-check.js（1项）复用Vite/实际hook替身。exit-combined-check.js 的8项复测通过。浏览器结果不替代原生；原生与未完成矩阵详见verification。
 
 新增branch-head-accessibility-check.js 3项覆盖引用控件没有按钮祖先、相邻提交键盘聚焦及引用Enter事件隔离；引用尺寸6项复测通过。最终Node52项复测通过。
+
+## 2026-10-03 工作台体验回归
+
+十项需求及完整验收矩阵见总计划第 15 节。2026-10-03 用户确认基本功能正常，并明确本轮跳过 Windows 测试；未测专项保持原状态，发布验收不继承本轮跳过。以下命令是验证入口，实际结果以 verification 对应日期记录为准。
+
+```sh
+node --experimental-strip-types --test tests/m2-m3/*.test.ts tests/*.test.ts tests/*.test.mjs
+cargo test -p gitmaster-core --locked --offline
+cargo test -p gitmaster-desktop --locked --offline --lib
+pnpm typecheck
+pnpm build
+pnpm format:check
+cargo fmt --all -- --check
+cargo check -p gitmaster-desktop --locked --offline
+pnpm tauri build --no-bundle
+git diff --check
+```
+
+- 设置控制器回归覆盖连续输入、在途新输入、400ms 防抖、中文组合输入、独立字段失败、revision 冲突及重试；Rust 设置测试直接反序列化前端 JSON，覆盖 v3→v4、非法 patch 原文件不变及空 patch 拒绝。
+- 保存队列回归覆盖后台标签、在途修改、串行写入、失败停止自动重试、组合输入、切模式、离开 flush 等待及卸载迟到响应。已有文本测试继续验证换行、BOM 和磁盘版本冲突。
+- 临时 Git 仓库验证所选文件自动暂存提交、已有暂存和 MM 范围、首次提交、计划过期、暂存后空提交失败。真实目录测试覆盖忽略/隐藏/空目录、分页、搜索游标、链接子目录及根路径替换。
+- 历史/状态测试覆盖搜索循环、引用及作者匹配、重复终态通知去重、准备失败、保存不入历史，以及成功后核实失败独立呈现。
+- `workbench-harness.html` 使用实际组件和官方 IPC mock，适合验证一万项全选、Monaco 星号/保存、搜索定位、菜单关闭和键盘交互；它不证明真实磁盘写入、配置持久化或 PTY。
+- macOS 原生验收使用单独应用标识 `dev.gitmaster.ux-acceptance` 和临时仓库，避免改动用户日常配置与真实仓库。分别核对界面结果、配置文件内容及 Git 状态；Windows 按用户本次明确指示跳过，未来验收仍需独立环境。
+- 用户于 2026-10-03 授权全部提交、推送，本轮 7 份必要回归源码显式纳入版本管理，包含根 tests 下 5 份 Node 测试及 m2-m3 下的 group-selection.test.ts、exit-autosave-regression.ts；原有 harness 引用因此可在干净 clone 解析。截图、日志、临时仓库和机器路径元数据仍不入库；Rust 模块测试随源码保留。
+- 退出组合使用 `exit-harness.html` 的“运行退出组合回归”按钮，具体场景在 `exit-autosave-regression.ts`。夹具已适配当前 `apply_settings_patch`；11 项检查覆盖即时编辑退出、失败保存与重试、文件→冲突→设置的取消/继续和仓库上下文失效。上一节旧脚本的正常设置应用确认断言不再适用于即时保存模式；该浏览器组合不代表原生 PTY 或系统退出已验收。

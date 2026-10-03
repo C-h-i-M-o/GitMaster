@@ -25,9 +25,10 @@ export interface EditorPreferences {
   fontSize: number;
   tabSize: 2 | 4 | 8;
   wordWrap: "off" | "on";
+  saveMode: "manual" | "auto";
 }
 export interface AppSettings {
-  version: 3;
+  version: 4;
   gitPath: string | null;
   logLevel: LogLevel | null;
   uiPreferences: UiPreferences;
@@ -35,6 +36,27 @@ export interface AppSettings {
   editor: EditorPreferences;
   externalOpen: { defaultAppId: "fileManager" | "vsCode" | "terminal" };
 }
+export type SettingsPatch =
+  | { kind: "git"; gitPath: string | null }
+  | { kind: "logging"; logLevel: LogLevel | null }
+  | ({ kind: "appearance" } & Partial<UiPreferences>)
+  | {
+      kind: "terminalProfiles";
+      profiles: TerminalProfile[];
+      defaultProfileId: string;
+    }
+  | ({ kind: "terminalDisplay" } & Partial<
+      Pick<
+        TerminalPreferences,
+        | "fontFamily"
+        | "fontSize"
+        | "cursorStyle"
+        | "cursorBlink"
+        | "scrollbackLines"
+      >
+    >)
+  | ({ kind: "editor" } & Partial<EditorPreferences>)
+  | { kind: "externalOpen"; externalOpen: AppSettings["externalOpen"] };
 export interface SettingsSnapshot {
   settings: AppSettings;
   revision: string;

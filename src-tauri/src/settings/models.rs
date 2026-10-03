@@ -79,6 +79,62 @@ pub struct EditorPreferences {
     pub font_size: u8,
     pub tab_size: u8,
     pub word_wrap: WordWrap,
+    #[serde(default)]
+    pub save_mode: SaveMode,
+}
+/// 文档保存策略；旧设置迁移为手动保存。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SaveMode {
+    Manual,
+    Auto,
+}
+impl Default for SaveMode {
+    fn default() -> Self {
+        Self::Manual
+    }
+}
+
+/// 可独立保存的设置逻辑单元。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SettingsPatch {
+    Git {
+        git_path: Option<String>,
+    },
+    Logging {
+        log_level: Option<crate::logging::LogLevel>,
+    },
+    Appearance {
+        elasticity: Option<u8>,
+        show_labels: Option<bool>,
+    },
+    TerminalProfiles {
+        profiles: Vec<TerminalProfile>,
+        default_profile_id: String,
+    },
+    TerminalDisplay {
+        font_family: Option<String>,
+        font_size: Option<u8>,
+        cursor_style: Option<CursorStyle>,
+        cursor_blink: Option<bool>,
+        scrollback_lines: Option<u32>,
+    },
+    Editor {
+        font_family: Option<String>,
+        font_size: Option<u8>,
+        tab_size: Option<u8>,
+        word_wrap: Option<WordWrap>,
+        save_mode: Option<SaveMode>,
+    },
+    ExternalOpen {
+        external_open: ExternalOpenPreferences,
+    },
 }
 impl Default for EditorPreferences {
     /// 用系统等宽字体显示原有内容，默认不折行。
@@ -88,6 +144,7 @@ impl Default for EditorPreferences {
             font_size: 14,
             tab_size: 4,
             word_wrap: WordWrap::Off,
+            save_mode: SaveMode::Manual,
         }
     }
 }

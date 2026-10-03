@@ -28,6 +28,7 @@ export function useBottomPanel(
   preferences: TerminalPreferences | null,
   guardExit: (action: () => Promise<void>) => void,
   exitProtected: boolean,
+  failureId: string | null = null,
 ) {
   const draftExit = useRef({ guardExit, exitProtected });
   draftExit.current = { guardExit, exitProtected };
@@ -89,7 +90,51 @@ export function useBottomPanel(
     };
   }, []);
   const panel = useRef<HTMLElement>(null);
+  const addMenu = useRef<HTMLDivElement>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState(false);
+  /** 新的失败通知激活记录标签；成功和正常切换不抢占终端。 */
+  useEffect(() => {
+    if (!failureId) return;
+    setState((old) => {
+      const existing = old.tabs.find((tab) => tab.kind === "operations");
+      return existing
+        ? { ...old, activeId: existing.id }
+        : addBottomTab(old, {
+            id: `operations-${++sequence.current}`,
+            kind: "operations",
+            title: "操作记录",
+          });
+    });
+  }, [failureId]);
+  useEffect(() => {
+    if (!expanded) setMenu(false);
+  }, [expanded]);
+  useEffect(() => {
+    if (!menu) return;
+    const closeOutside = (event: globalThis.PointerEvent): void => {
+      if (
+        event.target instanceof Node &&
+        !addMenu.current?.contains(event.target) &&
+        !addButton.current?.contains(event.target)
+      )
+        setMenu(false);
+    };
+    const closeEscape = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu(false);
+        addButton.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeEscape);
+    };
+  }, [menu]);
   const [height, setHeight] = useState(300);
   const [maximumHeight, setMaximumHeight] = useState(410);
   useEffect(() => {
@@ -273,6 +318,8 @@ export function useBottomPanel(
   return {
     ...state,
     panel,
+    addMenu,
+    addButton,
     menu,
     height,
     maximumHeight,

@@ -174,9 +174,11 @@ CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elastic
 ### 项目目录分页（2026-09-24）
 
 - `read_project_tree(repositoryId, snapshotId, includeIgnored)`：建立文件会话并返回根目录第一页；每页 200 项，不传输后代清单。
-- `read_project_directory(repositoryId, snapshotId, treeId, directoryId, offset)`：展开和翻页不重建会话；仅接受当前目录能力 ID。`search_project_files(repositoryId, snapshotId, treeId, query, offset)`：对已有路径清单搜索，查询最多 256 字符，沿用原 fileId。
+- `read_project_directory(repositoryId, snapshotId, treeId, directoryId, offset)`：展开和翻页不重建会话；仅接受当前目录能力 ID。`search_project_files(repositoryId, snapshotId, treeId, query, offset)`：分批发现真实文件路径，查询最多 256 字符，沿用当前会话 fileId。
 - 响应 `ProjectTreePage` 包含 `repositoryId/snapshotId/treeId/directoryId/entries/nextOffset/total`。条目 `kind=directory` 时为 `id/path/name`，`kind=file` 时额外含 `status=tracked|untracked|ignored`。
-- 前端已改用树接口；平面接口保留兼容已有测试。当前 Rust 仍先取得 10,000 文件、单次 Git 输出 8 MiB 的有界清单，分页只改变 IPC/界面加载，不能称为磁盘分块枚举。
+- 2026-10-03 起树接口改为文件系统单层按需枚举，包含隐藏、忽略文件和空目录，隐藏 `.git`，符号链接仅展示且不递归。`includeIgnored` 为兼容保留，不再过滤树。平面 Git 文件接口保留兼容用途。
+- 根目录在创建会话时持有句柄，子目录逐级以不跟随链接的方式打开；树文件 ID 在会话内稳定。树条目的旧 `status` 字段保留兼容格式，不能作为实际 Git 跟踪状态；界面不展示它。
+- `ProjectTreePage.searchIncomplete` 表示搜索尚未结束；目录 `total` 是单层总数，搜索 `total` 是迄今发现的匹配数。每次返回最多 200 条；搜索批次处理最多 2,000 个条目，以 75ms 为调度目标，单个目录的首次枚举和排序可能超过该目标。`nextOffset` 是当前查询的扫描游标，不是已返回匹配数。前端必须保留继续搜索入口，不能宣称未结束查询已得到完整结果。
 
 ### 分块只读文档
 
@@ -200,3 +202,17 @@ CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elastic
 本轮未新增 IPC 或 Rust 数据结构。前端退出先确认冲突草稿，再进入设置确认；冲突刷新未实际清除dirty时停止退出；二级差异焦点与分支测量不改变仓库/快照身份或 Git 写入合同。
 
 本轮提交图可访问性修复不新增IPC：节点/引用采用同级交互分组，数据仍来自原历史tip和HEAD。
+
+## 2026-10-03 工作台体验接口
+
+本节覆盖前文设置版本及会话项目的历史描述。
+
+- `read_recent_projects()` 返回 `RecentProject[]`，字段为 `rootPath/name/lastOpenedAt`（Unix 毫秒）。后端成功打开仓库后按规范根路径去重置顶，最多 20 个，原子保存于应用配置目录 `recent-projects.json`（`version: 1`）。写失败单独提示，读取损坏文件不覆盖；菜单重试可重新尝试先前失败的记录写入。
+- `Settings.version` 升为 4，`editor.saveMode` 为 `manual | auto`，v1/v2/v3 迁移默认 `manual`。读取旧文件不直接改写，成功保存后持久化 v4；快照 revision 为规范化配置内容的标识。
+- `apply_settings_patch(expectedRevision, patch)` 接收 camelCase 的可辨别联合：`git {gitPath}`、`logging {logLevel}`、`appearance {elasticity?, showLabels?}`、`terminalProfiles {profiles, defaultProfileId}`、`terminalDisplay {fontFamily?, fontSize?, cursorStyle?, cursorBlink?, scrollbackLines?}`、`editor {fontFamily?, fontSize?, tabSize?, wordWrap?, saveMode?}`、`externalOpen {externalOpen}`。
+- patch 在设置锁内校验 revision、合并、验证并原子替换；可选项全部省略的空 patch 返回 `INVALID_INPUT`。错误维持 `{code, fieldErrors:[{field,message}]}`，过期返回 `STALE_SETTINGS`。前端串行提交不同字段；过期时重读，外部修改无关字段可合并重试，同字段变化保留本地输入并要求显式重试。
+- Git 路径 patch 先验证可执行文件和活动操作，成功后安装新环境；普通外观/编辑器 patch 不因 Git 正忙而锁住。日志 patch 成功后同步运行时过滤级别。保存终端配置不执行程序。
+- `LocalWriteRequest` 的 `commit` 增加可选 `stageChangeIds: string[]`，旧请求缺失时默认空。`WriteCapabilities.commitSelected` 表示所选工作区文件提交入口；`commit` 仍表示原暂存区提交能力。
+- 非空 `stageChangeIds` 绑定当前快照下所选文件身份和内容，执行中先暂存这些路径，再提交整个暂存区。包含既有暂存、重命名两端及所选 MM 文件的当前版本，不追加未勾选修改。暂存后提交失败返回 `COMMIT_FAILED_AFTER_STAGE`，保留真实暂存区，不自动回滚或重放。
+- 普通文件保存沿用 `prepare_file_save`/`execute_write` 的版本、编码和路径校验。800ms 自动保存与手动保存共用串行队列；返回仅确认提交时的正文版本，迟到结果不能清除后续修改。
+- 操作记录是前端内存摘要，只记录关键 Git 操作；准备阶段失败使用独立摘要 ID，不伪造后端操作句柄。文件/冲突正文保存不进入历史；执行失败、结果不明或状态核实失败生成界面通知。

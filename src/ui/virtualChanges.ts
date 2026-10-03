@@ -1,6 +1,39 @@
 import type { DiffSide, FileChange } from "../types/git";
 
 export type ChangeGroups = Record<DiffSide, FileChange[]>;
+
+/** 只计算当前分组可操作项，使用集合避免万文件列表反复线性查找。 */
+export function groupSelection(
+  files: readonly FileChange[],
+  selected: readonly string[],
+) {
+  const selectable = files.filter(
+    (file) => file.kind !== "submodule" && file.kind !== "conflicted",
+  );
+  const ids = new Set(selected);
+  const count = selectable.filter((file) => ids.has(file.changeId)).length;
+  return {
+    checked: selectable.length > 0 && count === selectable.length,
+    mixed: count > 0 && count < selectable.length,
+    selected: count,
+    total: selectable.length,
+  };
+}
+
+/** 全选或取消本组全部可操作项，保留另一分组的选择。 */
+export function toggleGroupSelection(
+  files: readonly FileChange[],
+  selected: readonly string[],
+): string[] {
+  const ids = new Set(selected);
+  const remove = groupSelection(files, selected).checked;
+  for (const file of files) {
+    if (file.kind === "submodule" || file.kind === "conflicted") continue;
+    if (remove) ids.delete(file.changeId);
+    else ids.add(file.changeId);
+  }
+  return [...ids];
+}
 export type ChangeRow = {
   key: string;
   side: DiffSide;

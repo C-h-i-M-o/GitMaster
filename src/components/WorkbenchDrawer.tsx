@@ -21,6 +21,7 @@ function Changes({ w }: { w: Workbench }) {
             selected={w.selected}
             blocked={w.blocked}
             toggle={w.toggleChange}
+            toggleGroup={w.toggleChangeGroup}
             inspect={w.inspectChange}
           />
           {w.groups.conflicted.length > 0 && (
@@ -51,7 +52,8 @@ function Changes({ w }: { w: Workbench }) {
       </div>
       <div className="changes-footer">
         <p className="muted small">
-          提交会包含全部 {w.groups.staged.length} 个已暂存文件。
+          提交已有 {w.groups.staged.length} 个暂存文件，并暂存提交所选{" "}
+          {w.selected.stage.length} 个文件。
         </p>
         <p className="muted small" id="selection-reason">
           {w.selection.reason}
@@ -339,7 +341,7 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
           }[w.drawer ?? "files"]
         }
       >
-        <header className="drawer-header">
+        <header className="drawer-header" hidden={w.drawer === "files"}>
           <h2>
             {
               {

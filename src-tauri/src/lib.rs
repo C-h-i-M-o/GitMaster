@@ -2,6 +2,7 @@ mod commands;
 mod logging;
 #[cfg(test)]
 mod m2_contract_tests;
+mod recent_projects;
 mod settings;
 mod terminal;
 use gitmaster_core::AppInfo;
@@ -78,6 +79,8 @@ pub fn run() {
             get_app_info,
             commands::read_app_settings,
             commands::apply_app_settings,
+            commands::apply_settings_patch,
+            recent_projects::read_recent_projects,
             commands::choose_terminal_path,
             commands::create_terminal,
             commands::read_terminal,

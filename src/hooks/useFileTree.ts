@@ -13,6 +13,8 @@ export function useFileTree(
   const current = useRef({ root, load, search });
   current.current = { root, load, search };
   const [query, setQuery] = useState("");
+  const [revealPath, setRevealPath] = useState<string | null>(null);
+  const [revealVersion, setRevealVersion] = useState(0);
   const queryRef = useRef(query);
   queryRef.current = query;
   const [pages, setPages] = useState<Record<string, ProjectTreePage>>({});
@@ -29,6 +31,7 @@ export function useFileTree(
   useEffect(() => {
     setPages(root ? { [root.directoryId]: root } : {});
     setOpened(new Set());
+    setRevealPath(null);
     setSearchPage(null);
     setSearching(false);
     setError(null);
@@ -205,12 +208,65 @@ export function useFileTree(
   function isOpen(path: string): boolean {
     return opened.has(path);
   }
+  /** 面包屑仅逐级打开目标目录的祖先，不递归扫描整个项目。 */
+  async function reveal(path: string): Promise<void> {
+    const root = current.current.root;
+    if (!root) return;
+    setQuery("");
+    setRevealPath(null);
+    if (!path) {
+      setOpened(new Set());
+      setRevealPath("");
+      setRevealVersion((value) => value + 1);
+      return;
+    }
+    const additions: Record<string, ProjectTreePage> = {};
+    const ancestors: string[] = [];
+    let parent = root;
+    try {
+      const parts = path.split("/");
+      for (const name of parts) {
+        let page = pages[parent.directoryId] ?? parent;
+        let entry = page.entries.find(
+          (item) => item.kind === "directory" && item.name === name,
+        );
+        while (!entry && page.nextOffset !== null) {
+          const next = await current.current.load(
+            page.directoryId,
+            page.nextOffset,
+          );
+          page = { ...next, entries: [...page.entries, ...next.entries] };
+          entry = page.entries.find(
+            (item) => item.kind === "directory" && item.name === name,
+          );
+        }
+        if (current.current.root?.treeId !== root.treeId) return;
+        additions[page.directoryId] = page;
+        if (!entry || entry.kind !== "directory")
+          throw { code: "FILE_UNAVAILABLE" };
+        ancestors.push(entry.path);
+        parent = pages[entry.id] ?? (await current.current.load(entry.id, 0));
+        additions[entry.id] = parent;
+      }
+      if (current.current.root?.treeId !== root.treeId) return;
+      setPages((old) => ({ ...old, ...additions }));
+      setOpened((old) => new Set([...old, ...ancestors]));
+      setRevealPath(path);
+      setRevealVersion((value) => value + 1);
+    } catch (cause: unknown) {
+      if (current.current.root?.treeId === root.treeId)
+        setError(describeGitError(normalizeOperationError(cause)));
+    }
+  }
   /** 查询长度与后端限制一致，不修改目录折叠状态。 */
   function filter(event: ChangeEvent<HTMLInputElement>): void {
     setQuery(event.target.value);
   }
   return {
     nodes,
+    reveal,
+    revealPath,
+    revealVersion,
     query,
     filter,
     isOpen,
@@ -219,5 +275,7 @@ export function useFileTree(
     hasMore,
     loading,
     error,
+    searchIncomplete: visibleSearch?.searchIncomplete ?? false,
+    searching,
   };
 }

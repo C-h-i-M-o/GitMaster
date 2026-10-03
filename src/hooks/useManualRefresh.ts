@@ -188,6 +188,8 @@ export function useManualRefresh(
     busy,
     error,
     notice,
+    networkStatus,
+    localStatus,
     resultLabel:
       networkStatus !== "idle" || localStatus !== "idle"
         ? `远端获取：${refreshStatusLabel(networkStatus)} · 本地读取：${refreshStatusLabel(localStatus)}`

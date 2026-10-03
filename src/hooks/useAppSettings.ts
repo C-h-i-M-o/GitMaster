@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  applyAppSettings,
+  applySettingsPatch,
   normalizeSettingsError,
   readAppSettings,
 } from "../services/settings";
+import { SettingsAutosaveController } from "../services/settingsAutosaveController";
 import {
   defaultSettings,
   resetSettingsCategory,
@@ -16,10 +17,11 @@ import type {
   SettingsSnapshot,
 } from "../types/settings";
 
-/** 管理六类设置的统一草稿；保存失败保留草稿，异步旧响应不覆盖新会话。 */
+/** 自动持久化设置，保留失败输入，并隔离不同加载代次的异步响应。 */
 export function useAppSettings(
   enabled: boolean,
   onApplied: (gitChanged: boolean) => void,
+  canChangeGit: () => boolean = () => true,
 ) {
   const [saved, setSaved] = useState<SettingsSnapshot | null>(null);
   const [draft, setDraft] = useState<AppSettings>(defaultSettings);
@@ -27,100 +29,99 @@ export function useAppSettings(
     "idle",
   );
   const [error, setError] = useState<SettingsError | null>(null);
+  const controller = useRef<SettingsAutosaveController | null>(null);
   const generation = useRef(0);
-  const busy = useRef(false);
-  const available = useRef(enabled);
-  const applied = useRef(onApplied);
-  available.current = enabled;
-  applied.current = onApplied;
-
-  /** 重新读取丢弃旧草稿，界面须先处理未保存确认。 */
+  const current = useRef({ enabled, onApplied, canChangeGit });
+  current.current = { enabled, onApplied, canChangeGit };
+  /** 加载新快照时先取消旧队列，禁止迟到结果覆盖当前表单。 */
   const reload = useCallback(async (): Promise<void> => {
-    if (!available.current || busy.current) return;
+    if (!current.current.enabled) return;
     const token = ++generation.current;
-    busy.current = true;
+    controller.current?.dispose();
+    controller.current = null;
     setActivity("loading");
     setError(null);
     try {
       const snapshot = await readAppSettings();
-      if (generation.current !== token) return;
+      if (token !== generation.current) return;
       setSaved(snapshot);
       setDraft(structuredClone(snapshot.settings));
+      let appliedRevision = snapshot.revision;
+      controller.current = new SettingsAutosaveController(
+        snapshot,
+        async (revision, patch) => {
+          if (patch.kind === "git" && !current.current.canChangeGit())
+            throw {
+              code: "INVALID_INPUT",
+              fieldErrors: [
+                {
+                  field: "gitPath",
+                  message: "请先完成当前操作，并保存或放弃文件与冲突草稿。",
+                },
+              ],
+            };
+          return applySettingsPatch(revision, patch);
+        },
+        (state, gitChanged) => {
+          if (token !== generation.current) return;
+          setSaved(state.saved);
+          setDraft(state.draft);
+          setError(state.error);
+          setActivity(state.saving ? "saving" : "idle");
+          if (state.saved.revision !== appliedRevision) {
+            appliedRevision = state.saved.revision;
+            current.current.onApplied(gitChanged);
+          }
+        },
+        readAppSettings,
+      );
     } catch (cause: unknown) {
-      if (generation.current === token) setError(normalizeSettingsError(cause));
+      if (token === generation.current) setError(normalizeSettingsError(cause));
     } finally {
-      if (generation.current === token) {
-        busy.current = false;
-        setActivity("idle");
-      }
+      if (token === generation.current) setActivity("idle");
     }
   }, []);
-
-  /** 桌面能力切换和卸载使正在返回的旧请求失效。 */
   useEffect(() => {
-    available.current = enabled;
-    busy.current = false;
-    setActivity("idle");
     setSaved(null);
     setDraft(defaultSettings());
-    setError(null);
     if (enabled) void reload();
     return () => {
       ++generation.current;
-      available.current = false;
-      busy.current = false;
+      controller.current?.dispose();
+      controller.current = null;
     };
   }, [enabled, reload]);
-
-  /** 所有编辑只更新草稿；保存期间禁止编辑避免误清空新输入。 */
-  function edit(update: (current: AppSettings) => AppSettings): void {
-    if (!available.current || busy.current || saved === null) return;
-    setDraft(update);
-    setError(null);
+  /** 控件可选择立即保存；文本默认按停止输入防抖。 */
+  function edit(
+    update: (settings: AppSettings) => AppSettings,
+    immediate = false,
+  ): void {
+    controller.current?.edit(update, immediate);
   }
-
-  /** 丢弃草稿时恢复最近成功读取或保存的快照。 */
-  function cancel(): void {
-    if (busy.current) return;
-    setDraft(saved ? structuredClone(saved.settings) : defaultSettings());
-    setError(null);
-  }
-
-  /** 默认值只作用于当前分类，保留其余未保存编辑。 */
-  function restore(category: SettingsCategory): void {
-    edit((current) => resetSettingsCategory(current, category));
-  }
-
-  /** 整份设置一次提交，过期错误留给用户核对，绝不自动覆盖。 */
+  /** 离开或手动重试等待当前及后续请求全部完成。 */
   async function save(): Promise<boolean> {
-    if (!available.current || busy.current || saved === null) return false;
-    if (!settingsDirty(saved.settings, draft)) return true;
-    const token = ++generation.current;
-    const gitChanged = saved.settings.gitPath !== draft.gitPath;
-    busy.current = true;
-    setActivity("saving");
-    setError(null);
-    try {
-      const snapshot = await applyAppSettings(
-        saved.revision,
-        structuredClone(draft),
-      );
-      if (generation.current !== token) return false;
-      setSaved(snapshot);
-      setDraft(structuredClone(snapshot.settings));
-      applied.current(gitChanged);
-      return true;
-    } catch (cause: unknown) {
-      if (generation.current === token) setError(normalizeSettingsError(cause));
-      return false;
-    } finally {
-      if (generation.current === token) {
-        busy.current = false;
-        setActivity("idle");
-      }
-    }
+    return controller.current ? controller.current.flush() : false;
   }
-
+  /** 明确放弃无效或失败输入时恢复实际已保存快照。 */
+  function cancel(): void {
+    controller.current?.reset();
+  }
+  /** 保留内部兼容接口，界面不再展示整类恢复按钮。 */
+  function restore(category: SettingsCategory): void {
+    edit((value) => resetSettingsCategory(value, category), true);
+  }
+  /** 整个表单共享输入法组合门禁。 */
+  function compositionStart(): void {
+    controller.current?.setComposing(true);
+  }
+  /** 组合完成后重新启动防抖。 */
+  function compositionEnd(): void {
+    controller.current?.setComposing(false);
+  }
+  /** 失焦时刷新队列，失败由字段提示承载。 */
+  function flushOnBlur(): void {
+    void controller.current?.flush(false);
+  }
   return {
     saved,
     draft,
@@ -131,7 +132,10 @@ export function useAppSettings(
     cancel,
     restore,
     save,
+    compositionStart,
+    compositionEnd,
+    flushOnBlur,
     dirty: saved !== null && settingsDirty(saved.settings, draft),
-    editable: enabled && activity === "idle" && saved !== null,
+    editable: enabled && activity !== "loading" && saved !== null,
   };
 }

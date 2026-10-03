@@ -1,3 +1,4 @@
+import { Icon } from "./Icon";
 import type { Workbench } from "../hooks/useWorkbench";
 import { Suspense } from "react";
 import { FileEditor } from "../ui/editorLoader";
@@ -8,6 +9,8 @@ import { ContentPreview } from "./ContentPreview";
 import { useProjectFolder } from "../hooks/useProjectFolder";
 import { describeGitError } from "../ui/gitPresentation";
 import { PagedReader } from "./PagedReader";
+import { useProjectFilesView } from "../hooks/useProjectFilesView";
+import { shortcutLabel } from "../ui/shortcuts";
 
 /** 项目正文置左、文件树置右，读取仍使用已有受限后端入口。 */
 export function ProjectFilesPanel({ w }: { w: Workbench }) {
@@ -31,10 +34,72 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
     !w.preview,
     w.appSettings.saved?.settings.externalOpen.defaultAppId ?? "fileManager",
   );
+  const view = useProjectFilesView(w.projectPath, w.editor.tabs, tree.reveal);
   return (
-    <div className="project-files-panel">
-      <section className="project-file-content" aria-label="文件内容">
-        <div className="button-row">
+    <div
+      className={`project-files-panel ${view.treeVisible ? "" : "tree-hidden"}`}
+    >
+      <header className="project-files-tabs" aria-label="已打开文档">
+        {w.editor.tabs.map((tab) => (
+          <div
+            className={`project-files-tab ${tab.document.path === w.editor.activePath ? "active" : ""}`}
+            key={tab.document.path}
+            title={`${tab.document.path} · 保存 ${shortcutLabel("S")}`}
+          >
+            <button
+              aria-pressed={tab.document.path === w.editor.activePath}
+              onClick={w.selectEditor(tab.document.path)}
+            >
+              <Icon name="files" />
+              {view.tabLabel(tab.document.path)}
+              {tab.draft !== tab.baseline ? "*" : ""}
+            </button>
+            <button
+              aria-label={`关闭 ${tab.document.path}`}
+              onClick={w.closeEditor(tab.document.path)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          className="project-files-close"
+          aria-label="关闭项目文件面板"
+          onClick={w.closeDrawer}
+        >
+          ×
+        </button>
+      </header>
+      <div className="project-files-subbar">
+        <nav aria-label="当前文件路径" className="project-files-breadcrumb">
+          <button onClick={view.locate("")} title={w.repo.repository?.rootPath}>
+            {w.repo.repository?.rootPath
+              .split(/[\\/]/)
+              .filter(Boolean)
+              .at(-1) ?? "项目"}
+          </button>
+          {view.breadcrumbs.map((part) => (
+            <span key={part.path}>
+              {part.directory ? (
+                <button onClick={view.locate(part.path)} title={part.path}>
+                  {part.name}
+                </button>
+              ) : (
+                <span title={part.path}>{part.name}</span>
+              )}
+            </span>
+          ))}
+        </nav>
+        <button
+          className="project-tree-toggle"
+          onClick={view.toggleTree}
+          title={view.treeVisible ? "隐藏右侧目录" : "显示右侧目录"}
+          aria-label={view.treeVisible ? "隐藏右侧目录" : "显示右侧目录"}
+          aria-expanded={view.treeVisible}
+        >
+          <Icon name="folder" />
+        </button>
+        <div className="project-files-open">
           <select
             aria-label="外部打开方式"
             value={folder.selected}
@@ -43,10 +108,10 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
           >
             <option value="fileManager">文件管理器</option>
             <option value="vsCode" disabled={!folder.availability?.vsCode}>
-              VS Code{folder.availability?.vsCode ? "" : "（未找到）"}
+              VS Code
             </option>
             <option value="terminal" disabled={!folder.availability?.terminal}>
-              系统终端{folder.availability?.terminal ? "" : "（未找到）"}
+              系统终端
             </option>
           </select>
           <button
@@ -59,59 +124,28 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
             }
             onClick={folder.open}
           >
-            打开项目文件夹
+            打开 ▾
           </button>
         </div>
+      </div>
+      <section className="project-file-content" aria-label="文件内容">
+        {w.resourceError && (
+          <p role="alert">{describeGitError(w.resourceError)}</p>
+        )}
         {!folder.available && (
           <p role="status">所选应用尚不可用，请选择其他打开方式。</p>
         )}
         {folder.error && <p role="alert">{describeGitError(folder.error)}</p>}
-        <h3 className="preview-path">{w.projectPath || "选择项目文件"}</h3>
-        <div className="editor-tabs" aria-label="已打开文档">
-          {w.editor.tabs.map((tab) => (
-            <div key={tab.document.path}>
-              <button
-                aria-pressed={tab.document.path === w.editor.activePath}
-                onClick={w.selectEditor(tab.document.path)}
-              >
-                {tab.document.path}
-                {tab.draft !== tab.baseline ? " ●" : ""}
-              </button>
-              <button
-                aria-label={`关闭 ${tab.document.path}`}
-                onClick={w.closeEditor(tab.document.path)}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
         {w.editor.error && !readOnlyFile && (
-          <p role="alert">{describeGitError(w.editor.error)}</p>
-        )}
-        {w.editor.notice && <p role="status">{w.editor.notice}</p>}
-        {selected && (
-          <div className="button-row">
-            <button
-              onClick={w.saveActiveEditor}
-              disabled={
-                Boolean(w.editor.savingPath) ||
-                selected.draft === selected.baseline
-              }
-            >
-              保存
-            </button>
-            <button
-              onClick={w.reloadEditor}
-              disabled={Boolean(w.editor.savingPath)}
-            >
+          <p role="alert">
+            {describeGitError(w.editor.error)}{" "}
+            <button type="button" onClick={w.saveActiveEditor}>
+              重试保存
+            </button>{" "}
+            <button type="button" onClick={w.reloadEditor}>
               重新读取
             </button>
-            <span>
-              UTF-8{selected.document.text.bom ? " BOM" : ""} ·{" "}
-              {selected.document.text.lineEnding}
-            </span>
-          </div>
+          </p>
         )}
         <div className="editor-host" hidden={!selected}>
           {w.editor.tabs.length > 0 && (
@@ -124,7 +158,9 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
                   w.appSettings.saved?.settings.editor ??
                   defaultSettings().editor
                 }
-                edit={w.editor.controller.edit}
+                edit={w.editDocument}
+                compositionStart={w.editorCompositionStart}
+                compositionEnd={w.editorCompositionEnd}
                 readOnly={
                   w.choosing ||
                   w.editorLeaving ||
@@ -147,9 +183,13 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
           <ContentPreview value={w.projectDiff} loading={w.projectLoading} />
         )}
       </section>
-      <nav className="project-file-tree" aria-label="项目文件">
+      <nav
+        className="project-file-tree"
+        aria-label="项目文件"
+        hidden={!view.treeVisible}
+      >
         <label>
-          筛选文件
+          <span className="sr-only">筛选文件</span>
           <input
             type="search"
             maxLength={256}
@@ -158,25 +198,25 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
             placeholder="按路径筛选…"
           />
         </label>
-        <label className="sync-create-option">
-          <input
-            type="checkbox"
-            checked={w.includeIgnored}
-            onChange={w.changeIncludeIgnored}
-            disabled={w.preview}
-          />
-          显示忽略文件
-        </label>
-        <p className="muted small">
-          {w.includeIgnored
-            ? "包含忽略文件；隐藏 Git 元数据"
-            : "已跟踪与未忽略文件"}
-        </p>
         <VirtualFileTree
           tree={tree}
           selectedPath={w.projectPath}
           openFile={w.inspectProjectFile}
         />
+        {tree.query.trim() && (
+          <p className="muted small" role="status">
+            {tree.searching
+              ? "正在搜索文件…"
+              : tree.searchIncomplete
+                ? "搜索尚未完成，可继续搜索更多目录。"
+                : `找到 ${tree.nodes.length} 个匹配文件`}
+          </p>
+        )}
+        {tree.searchIncomplete && (
+          <button disabled={tree.searching} onClick={tree.more("")}>
+            继续搜索
+          </button>
+        )}
         {tree.error && <p role="alert">{tree.error}</p>}
         {!tree.nodes.length && (
           <p className="muted">

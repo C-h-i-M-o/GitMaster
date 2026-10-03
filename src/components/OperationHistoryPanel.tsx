@@ -10,10 +10,12 @@ import { describeGitError } from "../ui/gitPresentation";
 /** 多任务记录按列表与详情呈现，失败保留诊断和恢复路径。 */
 export function OperationHistoryPanel({
   workbench: w,
+  selectedOperationId,
 }: {
   workbench: Workbench;
+  selectedOperationId?: string | null;
 }) {
-  const state = useOperationHistory(w.operations.history);
+  const state = useOperationHistory(w.operations.history, selectedOperationId);
   const detail = state.detail;
   return (
     <div className="operation-history">
@@ -46,7 +48,9 @@ export function OperationHistoryPanel({
             >
               <strong>{describeOperationKind(item.kind)}</strong>
               <span className={`history-status ${item.outcome ?? "running"}`}>
-                {describeOperationPhase(item.phase)}
+                {item.refreshError
+                  ? "状态核实失败"
+                  : describeOperationPhase(item.phase)}
               </span>
               <small title={item.target}>{item.target}</small>
               <time>{formatOperationExpiry(item.startedAt)}</time>
@@ -74,10 +78,16 @@ export function OperationHistoryPanel({
                   ` · 用时 ${Math.max(0, (detail.finishedAt - detail.startedAt) / 1000).toFixed(1)} 秒`}
               </p>
               {detail.outcome === "succeeded" && (
-                <p className="success-text">
-                  {detail.needsMergeCommit
-                    ? "合并内容已准备，请检查并完成合并提交。"
-                    : "操作已完成并核实。"}
+                <p
+                  className={
+                    detail.refreshError ? "error-text" : "success-text"
+                  }
+                >
+                  {detail.refreshError
+                    ? "操作已执行，状态核实失败。"
+                    : detail.needsMergeCommit
+                      ? "合并内容已准备，请检查并完成合并提交。"
+                      : "操作已完成并核实。"}
                 </p>
               )}
               {detail.outcome === "unknown" && (

@@ -1,3 +1,4 @@
+import { nextMatchedOid, matchesCommit } from "../ui/commitSearch";
 import {
   useCallback,
   useEffect,
@@ -49,6 +50,11 @@ export function useCommitGraph(
     size = useRef({ width: 800, height: 600 });
   const [query, setQuery] = useState(""),
     [reduced, setReduced] = useState(false);
+  const [activeMatchOid, setActiveMatchOid] = useState<string | null>(null);
+  useEffect(() => {
+    setQuery("");
+    setActiveMatchOid(null);
+  }, [page?.graphSnapshotId]);
   const layout = useMemo(() => layoutGraph(page), [page]);
   const scene = useRef<ReturnType<typeof createGraphSimulation> | null>(null);
   const snapshot = useRef<string | undefined>(undefined),
@@ -409,8 +415,10 @@ export function useCommitGraph(
   );
   /** 搜索改变强调程度，不改变拓扑。 */
   const changeQuery = useCallback(
-    (event: ChangeEvent<HTMLInputElement>): void =>
-      setQuery(event.target.value),
+    (event: ChangeEvent<HTMLInputElement>): void => {
+      setQuery(event.target.value);
+      setActiveMatchOid(null);
+    },
     [],
   );
   const normalized = query.trim().toLocaleLowerCase();
@@ -418,17 +426,67 @@ export function useCommitGraph(
     () =>
       layout.nodes.map((node) => ({
         ...node,
-        matches:
-          !normalized ||
-          [
-            node.oid,
-            node.commit.subject,
-            node.commit.authorName,
-            ...node.refs.map((ref) => ref.name),
-          ].some((text) => text.toLocaleLowerCase().includes(normalized)),
+        matches: matchesCommit(normalized, [
+          node.oid,
+          node.commit.subject,
+          node.commit.authorName,
+          ...node.refs.map((ref) => ref.name),
+        ]),
       })),
     [layout, normalized],
   );
+  const matches = useMemo(() => nodes.filter((node) => node.matches), [nodes]);
+  const matchIndex = matches.findIndex((node) => node.oid === activeMatchOid);
+  /** 仅平移画布定位目标，保留搜索输入焦点与当前缩放。 */
+  const revealMatch = useCallback(
+    (oid: string | null): void => {
+      const target = matches.find((node) => node.oid === oid);
+      if (!target) return;
+      setActiveMatchOid(target.oid);
+      const point = scene.current?.byId.get(target.oid) ?? target;
+      velocity.current = { x: 0, y: 0 };
+      commitView({
+        ...liveView.current,
+        x: size.current.width / 2 - point.x * liveView.current.zoom,
+        y: size.current.height * 0.4 - point.y * liveView.current.zoom,
+      });
+    },
+    [matches, commitView],
+  );
+  /** 按 OID 导航，追加历史页不会把当前项退回到第一项。 */
+  const goToMatch = useCallback(
+    (direction: 1 | -1): void => {
+      revealMatch(
+        nextMatchedOid(
+          matches.map((node) => node.oid),
+          activeMatchOid,
+          direction,
+        ),
+      );
+    },
+    [matches, activeMatchOid, revealMatch],
+  );
+  /** 组合输入确认不触发提交定位。 */
+  const searchKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>): void => {
+      if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+      event.preventDefault();
+      goToMatch(event.shiftKey ? -1 : 1);
+    },
+    [goToMatch],
+  );
+  /** 按钮与键盘共用同一定位入口。 */
+  function previousMatch(): void {
+    goToMatch(-1);
+  }
+  /** 下一项首次指向第一个匹配。 */
+  function nextMatch(): void {
+    goToMatch(1);
+  }
+  /** 结果按钮绑定稳定 OID，避免分页导致索引指向其他提交。 */
+  function selectMatch(oid: string): () => void {
+    return () => revealMatch(oid);
+  }
   return {
     root,
     svg,
@@ -436,6 +494,13 @@ export function useCommitGraph(
     edges: layout.edges,
     query,
     changeQuery,
+    searchKeyDown,
+    matches,
+    matchIndex,
+    previousMatch,
+    nextMatch,
+    activeMatchOid,
+    selectMatch,
     view,
     transform: `translate(${view.x} ${view.y}) scale(${view.zoom})`,
     center,

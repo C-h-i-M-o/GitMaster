@@ -1,6 +1,6 @@
 //! 统一设置的读写适配，Git 验证发生在保存前，普通偏好不清空仓库。
 use super::{settings_path, DesktopState};
-use crate::settings::{self, Settings, SettingsError, SettingsSnapshot};
+use crate::settings::{self, Settings, SettingsError, SettingsPatch, SettingsSnapshot};
 use gitmaster_core::git::{environment::resolve_git, OperationError};
 use std::path::Path;
 use tauri::State;
@@ -101,6 +101,72 @@ pub async fn apply_app_settings(
             session.install(git, true)?;
         }
         Ok(saved)
+    })
+    .await
+    .map_err(|_| SettingsError {
+        code: "SETTINGS_IO".into(),
+        field_errors: Vec::new(),
+    })?
+}
+
+/// 保存独立设置单元；Git 路径会先验证并使旧会话失效，日志级别同步运行时更新。
+#[tauri::command]
+pub async fn apply_settings_patch(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    expected_revision: String,
+    patch: SettingsPatch,
+) -> Result<SettingsSnapshot, SettingsError> {
+    let path = settings_path(&app)?;
+    let shared = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let current = settings::read_snapshot(&path)?;
+        if current.revision != expected_revision {
+            return Err(SettingsError {
+                code: "STALE_SETTINGS".into(),
+                field_errors: Vec::new(),
+            });
+        }
+        let (changed_git, git) = match &patch {
+            SettingsPatch::Git { git_path } => {
+                let result = resolve_git(git_path.as_deref().map(Path::new));
+                if let Err(error) = &result {
+                    if git_path.is_some() {
+                        return Err(SettingsError {
+                            code: error.code.clone(),
+                            field_errors: vec![settings::FieldError {
+                                field: "gitPath".into(),
+                                message: "所选 Git 未通过验证，请检查可执行文件。".into(),
+                            }],
+                        });
+                    }
+                }
+                (git_path != &current.settings.git_path, Some(result.ok()))
+            }
+            _ => (false, None),
+        };
+        if changed_git {
+            let mut session = shared.lock()?;
+            session.coordinator.invalidate()?;
+            let level = match &patch {
+                SettingsPatch::Logging { log_level } => *log_level,
+                _ => current.settings.log_level,
+            };
+            let saved = crate::logging::save_with_level(level, || {
+                settings::save_patch(&path, &expected_revision, patch)
+            })?;
+            session.install(git.flatten(), true)?;
+            Ok(saved)
+        } else {
+            let level = match &patch {
+                SettingsPatch::Logging { log_level } => *log_level,
+                _ => current.settings.log_level,
+            };
+            crate::logging::save_with_level(level, || {
+                settings::save_patch(&path, &expected_revision, patch)
+            })
+            .map_err(Into::into)
+        }
     })
     .await
     .map_err(|_| SettingsError {

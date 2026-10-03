@@ -58,6 +58,8 @@ export function describeGitError(error: OperationError): string {
       "认证配置来源无法确认，请在用户级或系统级配置可信凭据助手或 SSH agent。",
     CONFLICT_PRESENT: "仓库存在未解决冲突。",
     NOTHING_TO_COMMIT: "没有可提交的内容。",
+    COMMIT_FAILED_AFTER_STAGE:
+      "所选文件已暂存，但提交未完成。请检查暂存内容后重试，提交说明已保留。",
     IDENTITY_REQUIRED: "请先配置 Git 用户身份。",
     INVALID_BRANCH_NAME: "分支名称无效。",
     BRANCH_EXISTS: "分支已存在。",

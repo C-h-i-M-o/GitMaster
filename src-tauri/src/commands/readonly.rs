@@ -367,6 +367,29 @@ impl ProjectFilesRequest {
         desktop.project_files = Some(Arc::new(cache));
         Ok(list)
     }
+    /// 文件树使用工作树发现，不提前读取 Git 索引全量清单。
+    fn run_filesystem_with<T>(
+        self,
+        shared: &DesktopState,
+        project: impl FnOnce(&git::files::ProjectFilesSession) -> T,
+    ) -> Result<T, OperationError> {
+        let key = CoordinationKey::repository(&self.ctx.repository)?;
+        let cache = self.ctx.coordinator.read(&key, || {
+            git::files::ProjectFilesSession::new_filesystem(
+                self.ctx.git.clone(),
+                self.ctx.repository.clone(),
+                self.ctx.state.clone(),
+            )
+        })?;
+        let result = project(&cache);
+        let mut desktop = shared.lock()?;
+        self.ctx.check(&desktop)?;
+        if desktop.project_files_request != self.generation {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
+        desktop.project_files = Some(Arc::new(cache));
+        Ok(result)
+    }
 }
 
 /// 捕获项目文件读取能力，刷新后旧 Arc 不再允许发布结果。
@@ -443,10 +466,9 @@ pub async fn read_project_tree(
 ) -> Result<git::files::tree::ProjectTreePage, OperationError> {
     let shared = state.inner().clone();
     let request = ProjectFilesRequest::begin(&shared, &repository_id, &snapshot_id)?;
+    let _ = include_ignored; // 兼容旧参数；真实目录始终包含忽略文件。
     blocking("read_project_tree", move || {
-        request.run_with(&shared, include_ignored.unwrap_or(false), |cache| {
-            cache.tree_root()
-        })
+        request.run_filesystem_with(&shared, |cache| cache.tree_root())
     })
     .await
 }

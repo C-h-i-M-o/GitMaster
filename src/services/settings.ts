@@ -4,6 +4,7 @@ import type {
   SettingsError,
   SettingsFieldError,
   SettingsSnapshot,
+  SettingsPatch,
 } from "../types/settings";
 
 /** 保留设置专用字段错误，不把未知异常或命令参数展示到界面。 */
@@ -64,4 +65,12 @@ export function applyAppSettings(
   draft: AppSettings,
 ): Promise<SettingsSnapshot> {
   return settingsCall("apply_app_settings", { expectedRevision, draft });
+}
+
+/** 提交一个逻辑设置单元，避免旧草稿覆盖其他字段。 */
+export function applySettingsPatch(
+  expectedRevision: string,
+  patch: SettingsPatch,
+): Promise<SettingsSnapshot> {
+  return settingsCall("apply_settings_patch", { expectedRevision, patch });
 }

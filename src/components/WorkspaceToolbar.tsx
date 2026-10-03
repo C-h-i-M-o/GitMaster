@@ -1,7 +1,8 @@
 import type { Workbench } from "../hooks/useWorkbench";
 import { Icon } from "./Icon";
 import { formatFetchedAt } from "../ui/refreshResult";
-/** 项目菜单仅呈现本会话记录，工具栏为已有业务入口。 */
+import { shortcutLabel } from "../ui/shortcuts";
+/** 项目菜单呈现持久化的最近记录，工具栏为已有业务入口。 */
 export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
   const repository = w.repo.repository;
   return (
@@ -34,7 +35,11 @@ export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
         </button>
         {w.projectMenu && (
           <div className="project-menu">
-            <button disabled={!w.canOpen} onClick={w.open}>
+            <button
+              disabled={!w.canOpen}
+              onClick={w.open}
+              title={`打开本地项目（${shortcutLabel("O")}）`}
+            >
               <Icon name="folder" />
               打开本地项目
             </button>
@@ -50,17 +55,31 @@ export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
               <Icon name="download" />
               下载项目
             </button>
-            {w.recentProjects.length > 0 && (
-              <p className="muted small">本次会话</p>
+            {w.recentProjects.length > 0 && <p className="muted small">最近</p>}
+            {w.recentProjectsError && (
+              <p className="recent-project-error" role="alert">
+                {w.recentProjectsError}{" "}
+                <button onClick={w.refreshRecentProjects}>重试</button>
+              </p>
             )}
-            {w.recentProjects.map((path) => (
+            {w.recentProjects.map((project) => (
               <button
-                key={path}
+                className="recent-project"
+                key={project.rootPath}
                 disabled={!w.canOpen}
-                onClick={w.openRecent(path)}
-                title={path}
+                onClick={w.openRecent(project.rootPath)}
+                title={project.rootPath}
               >
-                {path}
+                <span className="recent-project-avatar" aria-hidden="true">
+                  {project.name.slice(0, 1).toUpperCase()}
+                </span>
+                <span className="recent-project-info">
+                  <strong>{project.name}</strong>
+                  <small>{project.rootPath}</small>
+                </span>
+                {project.rootPath === repository?.rootPath && (
+                  <span aria-label="当前项目">✓</span>
+                )}
               </button>
             ))}
           </div>
@@ -107,10 +126,9 @@ export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
       </div>
       <button
         className="icon-button settings-button"
-        title="应用设置"
+        title={`应用设置（${shortcutLabel(",")}）`}
         aria-label="应用设置"
         onClick={w.openModal("settings")}
-        disabled={w.operations.busy || w.syncRemote.busy || w.conflicts.dirty}
       >
         <Icon name="settings" />
       </button>

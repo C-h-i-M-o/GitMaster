@@ -25,7 +25,7 @@ export function EditorDialogs({ w }: { w: Workbench }) {
           放弃修改
         </button>
         <button
-          onClick={w.editor.controller.saveAndClose}
+          onClick={w.saveEditorTabAndClose}
           disabled={Boolean(w.editor.savingPath)}
         >
           保存并关闭

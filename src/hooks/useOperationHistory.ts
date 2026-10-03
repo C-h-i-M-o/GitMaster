@@ -1,18 +1,30 @@
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import type { OperationHistoryEntry } from "../ui/operationHistory";
 import { describeOperationKind } from "../ui/operationPresentation";
 
 /** 每个记录视图独立管理筛选和选择，共享控制器的任务数据。 */
-export function useOperationHistory(history: readonly OperationHistoryEntry[]) {
+export function useOperationHistory(
+  history: readonly OperationHistoryEntry[],
+  selectedOperationId: string | null = null,
+) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(selectedOperationId);
+  useEffect(() => {
+    if (selectedOperationId) {
+      setFilter("all");
+      setQuery("");
+      setSelected(selectedOperationId);
+    }
+  }, [selectedOperationId]);
   const entries = history.filter(
     (item) =>
       (filter === "all" ||
         (filter === "running"
           ? item.outcome === null
-          : item.outcome === "failed" || item.outcome === "unknown")) &&
+          : item.outcome === "failed" ||
+            item.outcome === "unknown" ||
+            item.refreshError !== null)) &&
       `${describeOperationKind(item.kind)} ${item.target}`
         .toLocaleLowerCase()
         .includes(query.trim().toLocaleLowerCase()),

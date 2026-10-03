@@ -11,6 +11,7 @@ import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import type { DiffSide } from "../types/git";
 import {
   flattenChanges,
+  groupSelection,
   type ChangeGroups,
   type ChangeRow,
 } from "../ui/virtualChanges";
@@ -21,6 +22,7 @@ export interface VirtualChangesProps {
   blocked: boolean;
   toggle(kind: "stage" | "unstage", id: string): () => void;
   inspect(id: string, side: DiffSide): () => void;
+  toggleGroup?: (side: DiffSide) => () => void;
 }
 
 /** 变更列表只负责视口和导航，不改变工作台写入合同。 */
@@ -68,7 +70,11 @@ export function useVirtualChanges(props: VirtualChangesProps) {
     return () => {
       if (row.kind !== "file") return;
       focus(row);
-      if (!props.blocked && row.file.kind !== "submodule")
+      if (
+        !props.blocked &&
+        row.file.kind !== "submodule" &&
+        row.file.kind !== "conflicted"
+      )
         props.toggle(row.action, row.file.changeId)();
     };
   }
@@ -121,6 +127,22 @@ export function useVirtualChanges(props: VirtualChangesProps) {
   function rowId(index: number): string {
     return `${prefix}-change-${index}`;
   }
+  /** 原生复选框的半选状态不使用自造可访问性角色。 */
+  function groupCheckbox(
+    row: ChangeRow,
+  ): (element: HTMLInputElement | null) => void {
+    return (element) => {
+      if (element)
+        element.indeterminate = groupSelection(
+          props.groups[row.side],
+          props.selected[row.action],
+        ).mixed;
+    };
+  }
+  /** 为组标题生成完整可选数量和独立选择状态。 */
+  function selectionFor(row: ChangeRow) {
+    return groupSelection(props.groups[row.side], props.selected[row.action]);
+  }
   return {
     container,
     rows,
@@ -132,5 +154,7 @@ export function useVirtualChanges(props: VirtualChangesProps) {
     keyDown,
     toggle,
     inspect,
+    groupCheckbox,
+    selectionFor,
   };
 }

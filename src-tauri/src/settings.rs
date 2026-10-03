@@ -94,7 +94,7 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Settings {
-                version: 3,
+                version: 4,
                 log_level: None,
                 git_path: None,
                 ui_preferences: UiPreferences::default(),
@@ -109,32 +109,32 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
         serde_json::from_slice(&bytes).map_err(|_| OperationError::new("SETTINGS_IO"))?;
     let preferences = match stored.version {
         1 => UiPreferences::default(),
-        2 | 3 => stored
+        2 | 3 | 4 => stored
             .ui_preferences
             .ok_or_else(|| OperationError::new("SETTINGS_IO"))?,
         _ => return Err(OperationError::new("SETTINGS_IO")),
     };
     validate(&preferences)?;
     let settings = Settings {
-        version: 3,
+        version: 4,
         log_level: stored.log_level,
         git_path: stored.git_path,
         ui_preferences: preferences,
-        terminal: if stored.version == 3 {
+        terminal: if stored.version >= 3 {
             stored
                 .terminal
                 .ok_or_else(|| OperationError::new("SETTINGS_IO"))?
         } else {
             TerminalPreferences::default()
         },
-        editor: if stored.version == 3 {
+        editor: if stored.version >= 3 {
             stored
                 .editor
                 .ok_or_else(|| OperationError::new("SETTINGS_IO"))?
         } else {
             EditorPreferences::default()
         },
-        external_open: if stored.version == 3 {
+        external_open: if stored.version >= 3 {
             stored
                 .external_open
                 .ok_or_else(|| OperationError::new("SETTINGS_IO"))?
@@ -187,7 +187,7 @@ fn snapshot(settings: Settings) -> Result<SettingsSnapshot, OperationError> {
     bytes.hash(&mut hash);
     Ok(SettingsSnapshot {
         settings,
-        revision: format!("v3-{:016x}", hash.finish()),
+        revision: format!("v4-{:016x}", hash.finish()),
     })
 }
 
@@ -212,7 +212,7 @@ pub fn save_all(
         });
     }
     let field_errors = models::validate(&settings);
-    if settings.version != 3 || !field_errors.is_empty() {
+    if settings.version != 4 || !field_errors.is_empty() {
         return Err(SettingsError {
             code: "INVALID_INPUT".into(),
             field_errors,
@@ -221,6 +221,130 @@ pub fn save_all(
     let next = snapshot(settings)?;
     write_unlocked(path, &next.settings)?;
     Ok(next)
+}
+
+/// 将单个逻辑设置单元合并到当前快照，校验失败时不写入文件。
+pub fn save_patch(
+    path: &Path,
+    expected_revision: &str,
+    patch: SettingsPatch,
+) -> Result<SettingsSnapshot, SettingsError> {
+    let _guard = lock()?;
+    let current = snapshot(read_unlocked(path)?)?;
+    if current.revision != expected_revision {
+        return Err(SettingsError {
+            code: "STALE_SETTINGS".into(),
+            field_errors: Vec::new(),
+        });
+    }
+    let mut next = current.settings;
+    match patch {
+        SettingsPatch::Git { git_path } => next.git_path = git_path,
+        SettingsPatch::Logging { log_level } => next.log_level = log_level,
+        SettingsPatch::Appearance {
+            elasticity,
+            show_labels,
+        } => {
+            if elasticity.is_none() && show_labels.is_none() {
+                return Err(SettingsError {
+                    code: "INVALID_INPUT".into(),
+                    field_errors: Vec::new(),
+                });
+            }
+            if let Some(value) = elasticity {
+                next.ui_preferences.elasticity = value;
+            }
+            if let Some(value) = show_labels {
+                next.ui_preferences.show_labels = value;
+            }
+        }
+        SettingsPatch::TerminalProfiles {
+            profiles,
+            default_profile_id,
+        } => {
+            next.terminal.profiles = profiles;
+            next.terminal.default_profile_id = default_profile_id;
+        }
+        SettingsPatch::TerminalDisplay {
+            font_family,
+            font_size,
+            cursor_style,
+            cursor_blink,
+            scrollback_lines,
+        } => {
+            if font_family.is_none()
+                && font_size.is_none()
+                && cursor_style.is_none()
+                && cursor_blink.is_none()
+                && scrollback_lines.is_none()
+            {
+                return Err(SettingsError {
+                    code: "INVALID_INPUT".into(),
+                    field_errors: Vec::new(),
+                });
+            }
+            if let Some(value) = font_family {
+                next.terminal.font_family = value;
+            }
+            if let Some(value) = font_size {
+                next.terminal.font_size = value;
+            }
+            if let Some(value) = cursor_style {
+                next.terminal.cursor_style = value;
+            }
+            if let Some(value) = cursor_blink {
+                next.terminal.cursor_blink = value;
+            }
+            if let Some(value) = scrollback_lines {
+                next.terminal.scrollback_lines = value;
+            }
+        }
+        SettingsPatch::Editor {
+            font_family,
+            font_size,
+            tab_size,
+            word_wrap,
+            save_mode,
+        } => {
+            if font_family.is_none()
+                && font_size.is_none()
+                && tab_size.is_none()
+                && word_wrap.is_none()
+                && save_mode.is_none()
+            {
+                return Err(SettingsError {
+                    code: "INVALID_INPUT".into(),
+                    field_errors: Vec::new(),
+                });
+            }
+            if let Some(value) = font_family {
+                next.editor.font_family = value;
+            }
+            if let Some(value) = font_size {
+                next.editor.font_size = value;
+            }
+            if let Some(value) = tab_size {
+                next.editor.tab_size = value;
+            }
+            if let Some(value) = word_wrap {
+                next.editor.word_wrap = value;
+            }
+            if let Some(value) = save_mode {
+                next.editor.save_mode = value;
+            }
+        }
+        SettingsPatch::ExternalOpen { external_open } => next.external_open = external_open,
+    }
+    let errors = models::validate(&next);
+    if !errors.is_empty() || next.version != 4 {
+        return Err(SettingsError {
+            code: "INVALID_INPUT".into(),
+            field_errors: errors,
+        });
+    }
+    let result = snapshot(next)?;
+    write_unlocked(path, &result.settings)?;
+    Ok(result)
 }
 
 /// 在同目录同步临时文件后原子替换，只清理本次创建的文件。
@@ -267,7 +391,7 @@ pub fn save(path: &Path, git_path: Option<String>) -> Result<(), OperationError>
     write_unlocked(
         path,
         &Settings {
-            version: 3,
+            version: 4,
             log_level: current.log_level,
             git_path,
             ui_preferences: current.ui_preferences,
@@ -288,7 +412,7 @@ pub fn save_preferences(
     write_unlocked(
         path,
         &Settings {
-            version: 3,
+            version: 4,
             log_level: current.log_level,
             git_path: current.git_path,
             ui_preferences: preferences.clone(),
@@ -303,6 +427,73 @@ pub fn save_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    /// v3 读取补齐手动保存，首次按项保存才将配置升级为 v4。
+    fn v3_migrates_manual_save_without_rewriting_on_read() {
+        let p = path();
+        let original = read_snapshot(&p).unwrap();
+        let mut stored = serde_json::to_value(original.settings).unwrap();
+        stored["version"] = 3.into();
+        stored["editor"].as_object_mut().unwrap().remove("saveMode");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let bytes = serde_json::to_vec(&stored).unwrap();
+        fs::write(&p, &bytes).unwrap();
+        let loaded = read_snapshot(&p).unwrap();
+        assert_eq!(loaded.settings.editor.save_mode, SaveMode::Manual);
+        assert_eq!(fs::read(&p).unwrap(), bytes);
+        let patch = serde_json::from_str(r#"{"kind":"editor","saveMode":"auto"}"#).unwrap();
+        save_patch(&p, &loaded.revision, patch).unwrap();
+        let reloaded = load(&p).unwrap();
+        assert_eq!(reloaded.version, 4);
+        assert_eq!(reloaded.editor.save_mode, SaveMode::Auto);
+        cleanup(&p);
+    }
+    #[test]
+    /// 非法字段不污染磁盘，也不阻止后续无关设置成功写入。
+    fn invalid_patch_preserves_bytes_and_other_fields_can_save() {
+        let p = path();
+        save(&p, None).unwrap();
+        let original = read_snapshot(&p).unwrap();
+        let bytes = fs::read(&p).unwrap();
+        let invalid = serde_json::from_str(r#"{"kind":"editor","fontSize":1}"#).unwrap();
+        let error = save_patch(&p, &original.revision, invalid).unwrap_err();
+        assert_eq!(error.code, "INVALID_INPUT");
+        assert!(error
+            .field_errors
+            .iter()
+            .any(|error| error.field == "editor.fontSize"));
+        assert_eq!(fs::read(&p).unwrap(), bytes);
+        let valid = serde_json::from_str(r#"{"kind":"editor","wordWrap":"on"}"#).unwrap();
+        let saved = save_patch(&p, &original.revision, valid).unwrap();
+        assert_eq!(saved.settings.editor.word_wrap, WordWrap::On);
+        assert_eq!(
+            saved.settings.editor.font_size,
+            original.settings.editor.font_size
+        );
+        assert_eq!(saved.settings.terminal, original.settings.terminal);
+        cleanup(&p);
+    }
+    #[test]
+    /// 并发旧版本和空 patch 均不产生新的配置写入。
+    fn stale_and_empty_patches_preserve_saved_settings() {
+        let p = path();
+        let original = read_snapshot(&p).unwrap();
+        let first = serde_json::from_str(r#"{"kind":"appearance","elasticity":9}"#).unwrap();
+        let saved = save_patch(&p, &original.revision, first).unwrap();
+        let bytes = fs::read(&p).unwrap();
+        let stale = serde_json::from_str(r#"{"kind":"appearance","showLabels":false}"#).unwrap();
+        assert_eq!(
+            save_patch(&p, &original.revision, stale).unwrap_err().code,
+            "STALE_SETTINGS"
+        );
+        let empty = serde_json::from_str(r#"{"kind":"editor"}"#).unwrap();
+        assert_eq!(
+            save_patch(&p, &saved.revision, empty).unwrap_err().code,
+            "INVALID_INPUT"
+        );
+        assert_eq!(fs::read(&p).unwrap(), bytes);
+        cleanup(&p);
+    }
     #[test]
     /// 过期草稿不能覆盖其他分类已保存的设置。
     fn stale_settings_draft_is_rejected() {
@@ -365,7 +556,7 @@ mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, br#"{"version":2,"gitPath":"C:/Git/git.exe","uiPreferences":{"elasticity":8,"showLabels":false},"logLevel":"warn"}"#).unwrap();
         let value = serde_json::to_value(load(&p).unwrap()).unwrap();
-        assert_eq!(value["version"], 3);
+        assert_eq!(value["version"], 4);
         assert_eq!(value["gitPath"], "C:/Git/git.exe");
         assert_eq!(value["uiPreferences"]["elasticity"], 8);
         assert_eq!(value["logLevel"], "warn");
@@ -400,7 +591,7 @@ mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"{\"version\":1,\"gitPath\":\"/git\"}").unwrap();
         let s = load(&p).unwrap();
-        assert_eq!(s.version, 3);
+        assert_eq!(s.version, 4);
         assert_eq!(s.git_path.as_deref(), Some("/git"));
         assert_eq!(s.ui_preferences, UiPreferences::default());
         cleanup(&p);

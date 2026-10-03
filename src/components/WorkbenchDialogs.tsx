@@ -305,8 +305,8 @@ export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
         aria-labelledby="settings-discard-title"
       >
         <div className="dialog-body">
-          <h2 id="settings-discard-title">设置尚未应用</h2>
-          <p>是否保存当前设置更改？</p>
+          <h2 id="settings-discard-title">部分设置未能保存</h2>
+          <p>请返回修改无效输入，或放弃尚未保存的更改。</p>
           {w.appSettings.error && (
             <p role="alert">保存失败，草稿已保留。请继续编辑并检查提示。</p>
           )}
@@ -328,10 +328,10 @@ export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
           </button>
           <button
             className="primary"
-            disabled={w.appSettings.activity !== "idle" || w.operations.busy}
+            disabled={w.appSettings.activity !== "idle"}
             onClick={w.saveSettingsAndContinue}
           >
-            保存并继续
+            重试保存并继续
           </button>
         </div>
       </dialog>

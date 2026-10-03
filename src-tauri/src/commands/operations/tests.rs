@@ -158,6 +158,7 @@ fn stage_commit_and_duplicate_execute() {
     let preview = f
         .prepare(LocalWriteRequest::Commit {
             message: "保存说明".into(),
+            stage_change_ids: Vec::new(),
         })
         .run(&f.shared)
         .unwrap();

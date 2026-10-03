@@ -17,7 +17,7 @@ import {
 type SettingsState = ReturnType<typeof useAppSettings>;
 type Input = ChangeEvent<HTMLInputElement | HTMLSelectElement>;
 
-/** 为设置展示层提供受控事件；所有值先进入草稿，不直接持久化。 */
+/** 为设置展示层提供受控事件；修改交给统一设置队列即时持久化。 */
 export function useSettingsForm(
   settings: SettingsState,
   category: SettingsCategory,
@@ -63,7 +63,12 @@ export function useSettingsForm(
   function field(update: (draft: AppSettings, value: string) => AppSettings) {
     return (event: Input): void => {
       const value = event.target.value;
-      settings.edit((draft) => update(draft, value));
+      settings.edit(
+        (draft) => update(draft, value),
+        event.target.tagName === "SELECT" ||
+          (event.target instanceof HTMLInputElement &&
+            event.target.type === "range"),
+      );
     };
   }
   /** 通用显示选项只接受输入框提供的有限数字。 */
@@ -166,7 +171,7 @@ export function useSettingsForm(
         })),
       );
   }
-  /** Git 选择器只更新候选路径，点击应用后才验证和生效。 */
+  /** Git 选择器返回后将候选路径交给保存队列验证。 */
   async function choosePath(target: SettingsPathTarget): Promise<void> {
     if (picking.current || !settings.editable) return;
     const expected = settings.draft;
@@ -178,8 +183,9 @@ export function useSettingsForm(
           ? await chooseGitPath()
           : await chooseTerminalPath(target.kind);
       if (mounted.current && path !== null)
-        settings.edit((draft) =>
-          applyPickedSettingsPath(draft, expected, target, path),
+        settings.edit(
+          (draft) => applyPickedSettingsPath(draft, expected, target, path),
+          true,
         );
     } catch {
       if (mounted.current) setPickerError("无法打开路径选择器，请重试。");
@@ -187,7 +193,7 @@ export function useSettingsForm(
       picking.current = false;
     }
   }
-  /** Git 选择结果保持草稿语义，不立即检测或保存。 */
+  /** 选择路径后即时验证并保存，失败时保留输入。 */
   function chooseGit(): void {
     void choosePath({ kind: "git" });
   }
@@ -219,13 +225,16 @@ export function useSettingsForm(
       uiPreferences: { ...draft.uiPreferences, elasticity: Number(value) },
     })),
     labels: (event: ChangeEvent<HTMLInputElement>): void =>
-      settings.edit((draft) => ({
-        ...draft,
-        uiPreferences: {
-          ...draft.uiPreferences,
-          showLabels: event.target.checked,
-        },
-      })),
+      settings.edit(
+        (draft) => ({
+          ...draft,
+          uiPreferences: {
+            ...draft.uiPreferences,
+            showLabels: event.target.checked,
+          },
+        }),
+        true,
+      ),
     logLevel: field((draft, value) =>
       ["auto", "error", "warn", "info", "debug", "trace"].includes(value)
         ? {
@@ -247,10 +256,13 @@ export function useSettingsForm(
         : draft,
     ),
     cursorBlink: (event: ChangeEvent<HTMLInputElement>): void =>
-      settings.edit((draft) => ({
-        ...draft,
-        terminal: { ...draft.terminal, cursorBlink: event.target.checked },
-      })),
+      settings.edit(
+        (draft) => ({
+          ...draft,
+          terminal: { ...draft.terminal, cursorBlink: event.target.checked },
+        }),
+        true,
+      ),
     tabSize: field((draft, value) => {
       const size = Number(value);
       return size === 2 || size === 4 || size === 8
@@ -260,6 +272,11 @@ export function useSettingsForm(
     wordWrap: field((draft, value) =>
       value === "on" || value === "off"
         ? { ...draft, editor: { ...draft.editor, wordWrap: value } }
+        : draft,
+    ),
+    saveMode: field((draft, value) =>
+      value === "manual" || value === "auto"
+        ? { ...draft, editor: { ...draft.editor, saveMode: value } }
         : draft,
     ),
     externalApp: field((draft, value) =>

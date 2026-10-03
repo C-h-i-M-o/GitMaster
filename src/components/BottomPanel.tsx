@@ -6,6 +6,7 @@ import { TerminalPanel } from "../ui/terminalLoader";
 import { Suspense } from "react";
 import { useNativeDialog } from "../hooks/useNativeDialog";
 import { defaultSettings } from "../ui/settingsDraft";
+import { shortcutLabel } from "../ui/shortcuts";
 
 /** 底部工作区的标签与面板独立于任务生命周期。 */
 export function BottomPanel({ workbench: w }: { workbench: Workbench }) {
@@ -17,6 +18,7 @@ export function BottomPanel({ workbench: w }: { workbench: Workbench }) {
     preferences,
     w.guardExit,
     w.exitProtected,
+    w.operations.failureNotification?.id ?? null,
   );
   const closing = useNativeDialog(
     panel.pendingClose !== null || panel.quitPending,
@@ -84,6 +86,7 @@ export function BottomPanel({ workbench: w }: { workbench: Workbench }) {
         <div className="bottom-add">
           <button
             className="icon-button"
+            ref={panel.addButton}
             onClick={panel.toggleMenu}
             aria-expanded={panel.menu}
             aria-label="新建底部标签"
@@ -91,7 +94,7 @@ export function BottomPanel({ workbench: w }: { workbench: Workbench }) {
             <Icon name="plus" />
           </button>
           {panel.menu && (
-            <div className="bottom-add-menu">
+            <div ref={panel.addMenu} className="bottom-add-menu">
               <button onClick={panel.addOperations}>
                 <Icon name="activity" />
                 操作记录
@@ -119,6 +122,7 @@ export function BottomPanel({ workbench: w }: { workbench: Workbench }) {
           onClick={w.toggleOperations}
           aria-expanded={w.showOperations}
           aria-label={w.showOperations ? "折叠底部面板" : "展开底部面板"}
+          title={`${w.showOperations ? "折叠" : "展开"}底部面板（${shortcutLabel("J")}）`}
         >
           <Icon name="chevron" />
         </button>
@@ -135,7 +139,10 @@ export function BottomPanel({ workbench: w }: { workbench: Workbench }) {
             key={tab.id}
           >
             {tab.kind === "operations" ? (
-              <OperationHistoryPanel workbench={w} />
+              <OperationHistoryPanel
+                workbench={w}
+                selectedOperationId={w.operations.failureNotification?.id}
+              />
             ) : (
               <Suspense fallback={<p role="status">正在加载终端视图…</p>}>
                 <TerminalPanel

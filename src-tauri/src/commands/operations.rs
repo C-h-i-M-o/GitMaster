@@ -211,9 +211,10 @@ impl WritePreparation {
                 LocalWriteRequest::Unstage { change_ids } => {
                     git::write::prepare_index_change(c, g, r, s, change_ids, false)
                 }
-                LocalWriteRequest::Commit { message } => {
-                    git::write::prepare_commit(c, g, r, s, message)
-                }
+                LocalWriteRequest::Commit {
+                    message,
+                    stage_change_ids,
+                } => git::write::prepare_commit_selected(c, g, r, s, message, stage_change_ids),
                 LocalWriteRequest::CreateBranch { name } => {
                     git::branches::prepare_create_branch(c, g, r, s, name)
                 }

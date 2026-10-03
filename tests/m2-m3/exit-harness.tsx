@@ -2,13 +2,17 @@ import {createRoot} from 'react-dom/client';
 import {mockIPC} from '@tauri-apps/api/mocks';
 import {useWorkbench} from '../../src/hooks/useWorkbench';
 import {defaultSettings} from '../../src/ui/settingsDraft';
+import {runExitRegression} from './exit-autosave-regression';
+import {mergeSettingsPatch} from '../../src/ui/settingsPatch';
+import type {SettingsPatch} from '../../src/types/settings';
 let exits=0, fail=false;
+let settings=defaultSettings(), settingsRevision=1;
 const repository={repositoryId:'r',snapshotId:'s',rootPath:'/test',head:{kind:'branch',name:'main',oid:'a'.repeat(40)},operations:['merge'],changes:[]};
 Object.assign(window,{isTauri:true});
 mockIPC((cmd,payload)=>{
  if(cmd==='read_operation')return null;
- if(cmd==='read_app_settings')return {revision:'1',settings:defaultSettings()};
- if(cmd==='apply_app_settings'){if(fail)throw {code:'SETTINGS_IO',fieldErrors:[]};return {revision:'2',settings:(payload as {draft:unknown}).draft};}
+ if(cmd==='read_app_settings')return {revision:String(settingsRevision),settings};
+ if(cmd==='apply_settings_patch'){if(fail)throw {code:'SETTINGS_IO',fieldErrors:[]};const request=payload as {expectedRevision:string;patch:SettingsPatch};if(request.expectedRevision!==String(settingsRevision))throw {code:'STALE_SETTINGS',fieldErrors:[]};settings=mergeSettingsPatch(settings,request.patch);settingsRevision++;return {revision:String(settingsRevision),settings};}
  if(cmd==='detect_git')return {status:'ready',executablePath:'/test/git',version:'git version 2.49.0',source:'path'};
  if(cmd==='open_repository'||cmd==='read_repository_state')return repository;
  if(cmd==='read_repository_watch')return {repositoryId:'r',revision:0,reliable:true};
@@ -21,5 +25,5 @@ mockIPC((cmd,payload)=>{
  throw {code:'TEST_UNSUPPORTED',message:cmd,retryable:false};
 });
 /** 使用实际工作台 hook 验证退出延续不绕过设置草稿。 */
-function Harness(){const w=useWorkbench();Object.assign(window,{exitHarness:{w,get exits(){return exits;},setFail:(value:boolean)=>{fail=value;},quit:()=>w.guardExit(async()=>{exits++;})}});return <output>{w.appSettings.activity}/{String(w.appSettings.dirty)}/{w.settingsPending ?? 'none'}/{exits}</output>;}
+function Harness(){const w=useWorkbench();Object.assign(window,{exitHarness:{w,get exits(){return exits;},setFail:(value:boolean)=>{fail=value;},quit:()=>w.guardExit(async()=>{exits++;})}});return <><output>{w.appSettings.activity}/{String(w.appSettings.dirty)}/{w.settingsPending ?? 'none'}/{exits}</output><button onClick={runExitRegression}>运行退出组合回归</button><pre id="exit-results" /></>;}
 createRoot(document.getElementById('root')!).render(<Harness/>);

@@ -1,8 +1,12 @@
+import { useEditorAutosave } from "./useEditorAutosave";
+import { useWorkbenchShortcuts } from "./useWorkbenchShortcuts";
 import { useChangeDetailFocus } from "./useChangeDetailFocus";
 import { useLogSettings } from "./useLogSettings";
 import { useManualRefresh } from "./useManualRefresh";
 import { useRemoteSync } from "./useRemoteSync";
 import { useFileEditor } from "./useFileEditor";
+import { useRecentProjects } from "./useRecentProjects";
+import { toggleGroupSelection } from "../ui/virtualChanges";
 import { mergeTreeFiles } from "../ui/projectTree";
 import { selectionAction } from "../ui/selectionAction";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
@@ -76,7 +80,15 @@ export function useWorkbench() {
     workspace.setRemoteWorkflowActive(syncRemote.busy || manualRefresh.busy);
     return () => workspace.setRemoteWorkflowActive(false);
   }, [workspace.setRemoteWorkflowActive, syncRemote.busy, manualRefresh.busy]);
-  const appSettings = useAppSettings(!workspace.preview, settingsApplied);
+  const appSettings = useAppSettings(
+    !workspace.preview,
+    settingsApplied,
+    () =>
+      !operations.getSnapshot().busy &&
+      !conflicts.dirty &&
+      !editorGate.current?.dirty &&
+      workspace.git.status !== "loading",
+  );
   const preferences = {
     saved: appSettings.saved?.settings.uiPreferences ?? null,
   };
@@ -94,13 +106,7 @@ export function useWorkbench() {
   }
   /** 应用设置失败时保持表单与所有输入。 */
   async function applySettings(): Promise<void> {
-    if (
-      !operations.busy &&
-      !conflicts.dirty &&
-      !editorGate.current?.dirty &&
-      workspace.git.status !== "loading"
-    )
-      await appSettings.save();
+    await appSettings.save();
   }
   /** 恢复当前分类仅变更内存草稿。 */
   function restoreSettings(): void {
@@ -134,13 +140,6 @@ export function useWorkbench() {
   }
   /** 保存并关闭只有在持久化成功后才离开。 */
   async function saveSettingsAndContinue(): Promise<void> {
-    if (
-      operations.busy ||
-      conflicts.dirty ||
-      Boolean(editorGate.current?.dirty) ||
-      workspace.git.status === "loading"
-    )
-      return;
     const next = settingsPending;
     if (!(await appSettings.save())) return;
     setSettingsPending(null);
@@ -169,7 +168,7 @@ export function useWorkbench() {
   const [showOperations, setShowOperations] = useState(false);
   const [branchesExpanded, setBranchesExpanded] = useState(true);
   const [projectMenu, setProjectMenu] = useState(false);
-  const [recentProjects, setRecentProjects] = useState<string[]>([]);
+  const recent = useRecentProjects();
   const [settingsCategory, setSettingsCategory] =
     useState<SettingsCategory>("general");
   const [branches, setBranches] = useState<BranchList | null>(null);
@@ -220,6 +219,32 @@ export function useWorkbench() {
     repository?.repositoryId ?? null,
   );
   editorGate.current = editor;
+  const autosave = useEditorAutosave(
+    {
+      mode: appSettings.saved?.settings.editor.saveMode ?? "manual",
+      getSnapshot: () => ({
+        documents: editor.controller.getSnapshot().tabs.map((tab) => ({
+          path: tab.document.path,
+          draft: tab.draft,
+          baseline: tab.baseline,
+        })),
+      }),
+      save: editor.controller.save,
+      blocked: () =>
+        workspace.preview ||
+        operations.getSnapshot().busy ||
+        syncRemote.busy ||
+        repo.getSnapshot().loading ||
+        repo.getSnapshot().stale ||
+        Boolean(editor.controller.getSnapshot().savingPath),
+    },
+    repository?.repositoryId ?? null,
+  );
+  /** 内容修改经同一草稿控制器，再按设置调度保存。 */
+  function editDocument(path: string, content: string): void {
+    editor.controller.edit(path, content);
+    autosave.notifyChanged(path);
+  }
   const [editorAction, setEditorAction] = useState<
     (() => Promise<void>) | null
   >(null);
@@ -227,21 +252,33 @@ export function useWorkbench() {
   const [editorReloadPath, setEditorReloadPath] = useState<string | null>(null);
   /** 离开前记录动作，保存失败或继续输入时保留草稿和原项目。 */
   function guardEditor(action: () => Promise<void>): void {
-    if (editor.controller.getSnapshot().savingPath) return;
     setEditorReloadPath(null);
-    if (editor.controller.dirty()) setEditorAction(() => action);
-    else void action();
+    void (async () => {
+      if (
+        appSettings.saved?.settings.editor.saveMode === "auto" ||
+        editor.controller.getSnapshot().savingPath
+      )
+        await autosave.flush();
+      if (editor.controller.getSnapshot().savingPath) return;
+      if (editor.controller.dirty()) setEditorAction(() => action);
+      else await action();
+    })();
   }
-  /** 冲突处理后仍须确认设置草稿，避免保存设置绕过冲突门禁。 */
+  /** 冲突处理后等待实时设置队列，避免刚编辑时旧渲染状态跳过保存。 */
   async function continueExit(action: () => Promise<void>): Promise<void> {
-    if (appSettings.dirty) {
+    if (appSettings.saved !== null && !(await appSettings.save())) {
       settingsExit.current = action;
       setSettingsPending("exit");
     } else await action();
   }
   /** 退出依次经过文件、冲突、设置确认，最后才交给终端结束流程。 */
   function guardExit(action: () => Promise<void>): void {
-    if (operations.busy || appSettings.activity !== "idle") return;
+    if (
+      (operations.getSnapshot().busy &&
+        !editor.controller.getSnapshot().savingPath) ||
+      appSettings.activity === "loading"
+    )
+      return;
     guardEditor(async () => {
       if (conflicts.dirty) {
         setDiscardAction(() => () => {
@@ -285,11 +322,9 @@ export function useWorkbench() {
     if (editorLeaving || editor.savingPath) return;
     setEditorLeaving(true);
     try {
-      for (const tab of editor.controller.getSnapshot().tabs) {
-        if (editorReloadPath && tab.document.path !== editorReloadPath)
-          continue;
-        if (!(await editor.controller.save(tab.document.path))) return;
-      }
+      if (editorReloadPath) {
+        if (!(await autosave.retry(editorReloadPath))) return;
+      } else await autosave.flush();
       if (
         editorReloadPath
           ? editor.controller
@@ -337,11 +372,17 @@ export function useWorkbench() {
   }
   /** 关闭单个文件由控制器提供保存、放弃与取消状态。 */
   function closeEditor(path: string): () => void {
-    return () => editor.controller.close(path);
+    return () => {
+      void (async () => {
+        if (appSettings.saved?.settings.editor.saveMode === "auto")
+          await autosave.retry(path);
+        editor.controller.close(path);
+      })();
+    };
   }
   /** 编辑保存只修改工作文件，不暂存或提交。 */
   function saveEditor(path: string): void {
-    void editor.controller.save(path);
+    void autosave.retry(path);
   }
   /** 重读脏文档前复用统一的保存或放弃确认。 */
   function reloadEditor(): void {
@@ -384,15 +425,9 @@ export function useWorkbench() {
   const fileGeneration = useRef(0);
   const alive = useRef(true);
   useEffect(() => {
-    if (repository?.rootPath)
-      setRecentProjects((old) =>
-        [
-          repository.rootPath,
-          ...old.filter((path) => path !== repository.rootPath),
-        ].slice(0, 10),
-      );
-  }, [repository?.rootPath]);
-  /** 项目菜单只列出当前会话真实打开成功的路径。 */
+    if (repository?.rootPath) recent.refresh();
+  }, [repository?.rootPath, recent.refresh]);
+  /** 项目菜单展示跨启动保存的最近成功打开项目。 */
   function toggleProjectMenu(): void {
     setProjectMenu((value) => !value);
   }
@@ -523,7 +558,6 @@ export function useWorkbench() {
   useEffect(() => {
     const done = workspace.completion;
     if (!done) return;
-    setShowOperations(true);
     if (
       done.verified &&
       done.result.outcome === "succeeded" &&
@@ -537,6 +571,9 @@ export function useWorkbench() {
     }
     if (done.result.outcome === "needsResolution") setDrawer("conflicts");
   }, [workspace.completion]);
+  useEffect(() => {
+    if (operations.failureNotification) setShowOperations(true);
+  }, [operations.failureNotification]);
   const blocked =
     operations.busy || syncRemote.busy || repo.loading || repo.stale;
   /** 为禁用按钮附近和辅助技术提供明确的同步门禁原因。 */
@@ -569,7 +606,9 @@ export function useWorkbench() {
       !blocked &&
       !conflicts.dirty &&
       !editor.dirty &&
-      context?.capabilities[kind].status === "allowed"
+      context?.capabilities[
+        kind === "commit" && selected.stage.length > 0 ? "commitSelected" : kind
+      ]?.status === "allowed"
     );
   }
   /** 提供按钮和读屏可使用的能力门禁原因。 */
@@ -582,7 +621,10 @@ export function useWorkbench() {
     if (conflicts.dirty) return "请先保存或放弃冲突草稿";
     if (editor.dirty) return "请先保存或放弃文件草稿";
     if (repo.loading || repo.stale) return "请等待仓库刷新成功";
-    const capability = context?.capabilities[kind];
+    const capability =
+      context?.capabilities[
+        kind === "commit" && selected.stage.length > 0 ? "commitSelected" : kind
+      ];
     return !capability
       ? "正在读取写入能力"
       : capability.status === "error"
@@ -608,9 +650,8 @@ export function useWorkbench() {
   function openModal(next: Modal): () => void {
     return () => {
       if (
-        !operations.busy &&
-        !conflicts.dirty &&
-        (next === "settings" || !editor.dirty)
+        next === "settings" ||
+        (!operations.busy && !conflicts.dirty && !editor.dirty)
       ) {
         setProjectMenu(false);
         setModal(next);
@@ -620,11 +661,12 @@ export function useWorkbench() {
   /** 关闭表单，不取消任何后台任务。 */
   function closeModal(): void {
     if (modal === "settings") {
-      if (appSettings.activity !== "idle") return;
-      if (appSettings.dirty) {
-        setSettingsPending("close");
-        return;
-      }
+      if (appSettings.activity === "loading") return;
+      void appSettings.save().then((saved) => {
+        if (saved) setModal(null);
+        else setSettingsPending("close");
+      });
+      return;
     }
     if (operations.activity === "preparing") operations.discardPreview();
     setModal(null);
@@ -653,6 +695,17 @@ export function useWorkbench() {
           ? old[kind].filter((value) => value !== id)
           : [...old[kind], id],
       }));
+  }
+  /** 分组全选覆盖虚拟列表外文件，不改变其他组勾选。 */
+  function toggleChangeGroup(side: DiffSide): () => void {
+    return () => {
+      if (blocked) return;
+      const action = side === "staged" ? "unstage" : "stage";
+      setSelected((old) => ({
+        ...old,
+        [action]: toggleGroupSelection(changeGroups[side], old[action]),
+      }));
+    };
   }
   /** 查看单文件差异，不隐式勾选或暂存。 */
   function inspectChange(id: string, side: DiffSide): () => void {
@@ -702,7 +755,11 @@ export function useWorkbench() {
   function prepareCommit(): void {
     if (!canWrite("commit")) return;
     pendingCommit.current = fields.message;
-    void operations.runLocal({ kind: "commit", message: fields.message });
+    void operations.runLocal({
+      kind: "commit",
+      message: fields.message,
+      stageChangeIds: selected.stage,
+    });
   }
   /** 创建分支只创建引用，不切换工作区。 */
   function prepareBranch(): void {
@@ -879,21 +936,35 @@ export function useWorkbench() {
           []) {
           const path = tab.document.path;
           if (files.files.some((file) => file.path === path)) continue;
-          let offset: number | null = 0;
-          while (offset !== null) {
-            const page = await api.searchProjectFiles(
-              value.repositoryId,
-              value.snapshotId,
-              value.treeId,
-              path.slice(-256),
-              offset,
-            );
-            const match = page.entries.filter(
-              (entry) => entry.kind === "file" && entry.path === path,
-            );
-            files = mergeTreeFiles(files, { ...page, entries: match });
-            if (match.length) break;
-            offset = page.nextOffset;
+          let parent = value;
+          const parts = path.split("/");
+          for (let index = 0; index < parts.length; index++) {
+            let page = parent;
+            let entry = page.entries.find((item) => item.name === parts[index]);
+            while (!entry && page.nextOffset !== null) {
+              if (!alive.current || listRequest.current?.key !== key) return;
+              page = await api.readProjectDirectory(
+                value.repositoryId,
+                value.snapshotId,
+                value.treeId,
+                page.directoryId,
+                page.nextOffset,
+              );
+              entry = page.entries.find((item) => item.name === parts[index]);
+            }
+            if (!entry) break;
+            if (index === parts.length - 1) {
+              if (entry.kind === "file")
+                files = mergeTreeFiles(files, { ...page, entries: [entry] });
+            } else if (entry.kind === "directory") {
+              parent = await api.readProjectDirectory(
+                value.repositoryId,
+                value.snapshotId,
+                value.treeId,
+                entry.id,
+                0,
+              );
+            } else break;
           }
         }
         if (
@@ -1017,6 +1088,11 @@ export function useWorkbench() {
     const path = editor.controller.getSnapshot().pendingClose;
     if (path) editor.controller.close(path, true);
   }
+  /** 关闭确认复用串行保存队列，避免与自动保存并发写入。 */
+  async function saveEditorTabAndClose(): Promise<void> {
+    const path = editor.controller.getSnapshot().pendingClose;
+    if (path && (await autosave.retry(path))) editor.controller.close(path);
+  }
   /** 保存工具栏当前文档。 */
   function saveActiveEditor(): void {
     if (editor.activePath) saveEditor(editor.activePath);
@@ -1024,6 +1100,41 @@ export function useWorkbench() {
   useEffect(() => {
     setProjectPath(editor.activePath ?? "");
   }, [editor.activePath]);
+  useWorkbenchShortcuts(
+    {
+      togglePanel: toggleOperations,
+      save: saveActiveEditor,
+      openProject,
+      openSettings: openModal("settings"),
+      dismiss: () => {
+        if (projectMenu) setProjectMenu(false);
+        else if (changeDetailOpen) closeChangeDetail();
+        else if (drawer) closeDrawer();
+        else return false;
+        return true;
+      },
+      focusSearch: () =>
+        document
+          .querySelector<HTMLInputElement>(".graph-search input")
+          ?.focus(),
+    },
+    (event) => {
+      if (
+        document.querySelector("dialog[open]") ||
+        modal ||
+        editorAction ||
+        settingsPending
+      )
+        return false;
+      const target = event.target instanceof Element ? event.target : null;
+      const key = event.key.toLowerCase();
+      if (target?.closest(".monaco-editor") && (key === "s" || key === "f"))
+        return false;
+      if (target?.closest(".xterm") && key !== "j") return false;
+      if (key === "o" && !workspace.canOpen) return false;
+      return true;
+    },
+  );
   return {
     ...workspace,
     git: { ...workspace.git, refresh: refreshGitProtected },
@@ -1031,6 +1142,9 @@ export function useWorkbench() {
     resetGit: resetGitProtected,
     open: openProject,
     editor,
+    editDocument,
+    editorCompositionStart: autosave.compositionStart,
+    editorCompositionEnd: autosave.compositionEnd,
     editorPending: editorAction !== null,
     editorLeaving,
     editorReloadPath,
@@ -1041,6 +1155,7 @@ export function useWorkbench() {
     closeEditor,
     saveEditor,
     discardEditorTab,
+    saveEditorTabAndClose,
     saveActiveEditor,
     reloadEditor,
     guardEditor,
@@ -1057,7 +1172,11 @@ export function useWorkbench() {
     syncReason,
     branchesExpanded,
     projectMenu,
-    recentProjects,
+    recentProjects: recent.projects,
+    refreshRecentProjects: recent.refresh,
+    recentProjectsError: recent.error
+      ? "最近项目记录读取或保存失败，请重试。"
+      : null,
     settingsCategory,
     toggleProjectMenu,
     openRecent,
@@ -1113,6 +1232,7 @@ export function useWorkbench() {
     toggleOperations,
     field,
     toggleChange,
+    toggleChangeGroup,
     inspectChange,
     prepareSelection,
     prepareCommit,

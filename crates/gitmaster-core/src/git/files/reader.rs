@@ -341,11 +341,7 @@ impl super::ProjectFilesSession {
     pub fn open_read_document(&self, file_id: &str) -> Result<ReadDocument, OperationError> {
         let deadline = Instant::now() + Duration::from_secs(120);
         write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
-        let (_, path, _) = self
-            .files
-            .iter()
-            .find(|(id, _, _)| id == file_id)
-            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let path = self.file_path(file_id)?;
         if self
             .readers
             .lock()
@@ -355,7 +351,7 @@ impl super::ProjectFilesSession {
         {
             return Err(OperationError::new("FILE_READ_LIMIT"));
         }
-        let reader = PagedDocument::open(&self.repository.root, path, file_id)?;
+        let reader = PagedDocument::open(&self.repository.root, &path, file_id)?;
         let document = reader.metadata();
         let mut readers = self
             .readers

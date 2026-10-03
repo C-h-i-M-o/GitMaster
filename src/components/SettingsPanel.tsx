@@ -1,9 +1,9 @@
+import { SettingsFieldError } from "./SettingsFieldError";
 import type { Workbench } from "../hooks/useWorkbench";
 import { useSettingsForm } from "../hooks/useSettingsForm";
 import { describeGitError } from "../ui/gitPresentation";
 import type { SettingsCategory } from "../types/settings";
 import { settingsFieldLocation } from "../ui/settingsField";
-import { terminalResetBlocked } from "../ui/settingsDraft";
 
 const categories: { id: SettingsCategory; label: string }[] = [
   { id: "general", label: "Git 环境" },
@@ -20,7 +20,13 @@ export function SettingsPanel({ w }: { w: Workbench }) {
   const f = useSettingsForm(s, w.settingsCategory, w.selectSettings);
   const d = s.draft;
   return (
-    <div className="settings-layout" ref={f.form}>
+    <div
+      className="settings-layout"
+      ref={f.form}
+      onBlur={s.flushOnBlur}
+      onCompositionStart={s.compositionStart}
+      onCompositionEnd={s.compositionEnd}
+    >
       <nav aria-label="设置分类">
         {categories.map((category) => (
           <button
@@ -35,13 +41,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
       <div className="settings-content">
         {w.preview && <p role="status">请在桌面应用中配置设置。</p>}
         {s.activity === "loading" && <p role="status">正在读取设置…</p>}
-        {w.editor.dirty && <p role="status">请先保存文件草稿，再应用设置。</p>}
-        <fieldset
-          className="settings-fields"
-          disabled={
-            !s.editable || w.operations.busy || w.git.status === "loading"
-          }
-        >
+        <fieldset className="settings-fields" disabled={!s.editable}>
           {w.settingsCategory === "general" && (
             <section>
               <h3>Git 环境</h3>
@@ -54,6 +54,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   placeholder="留空自动检测系统 Git"
                   spellCheck={false}
                 />
+                <SettingsFieldError error={s.error} field="gitPath" />
               </label>
               <div className="button-row">
                 <button className="secondary" onClick={f.chooseGit}>
@@ -67,7 +68,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                 </button>
               </div>
               <p className="muted small">
-                候选路径将在应用时验证。更换 Git 后需要重新打开项目。
+                候选路径保存前会先验证。更换 Git 后需要重新打开项目。
               </p>
               {w.git.environment?.status === "ready" && (
                 <div className="git-ready">
@@ -99,6 +100,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   max={10}
                   value={d.uiPreferences.elasticity}
                   onChange={f.elasticity}
+                />
+                <SettingsFieldError
+                  error={s.error}
+                  field="uiPreferences.elasticity"
                 />
               </label>
               <label className="checkbox-label">
@@ -161,6 +166,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                     </option>
                   ))}
                 </select>
+                <SettingsFieldError
+                  error={s.error}
+                  field="terminal.defaultProfileId"
+                />
               </label>
               {d.terminal.profiles.map((p, profileIndex) => (
                 <fieldset
@@ -177,6 +186,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                       value={p.name}
                       onChange={f.profileField(p.profileId, "name")}
                     />
+                    <SettingsFieldError
+                      error={s.error}
+                      field={`terminal.profiles.${profileIndex}.name`}
+                    />
                   </label>
                   <label>
                     Shell 程序路径
@@ -186,6 +199,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                       onChange={f.profileField(p.profileId, "executablePath")}
                       placeholder="留空使用系统默认 Shell"
                       spellCheck={false}
+                    />
+                    <SettingsFieldError
+                      error={s.error}
+                      field={`terminal.profiles.${profileIndex}.executablePath`}
                     />
                   </label>
                   <button
@@ -214,6 +231,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                           value={p.cwd.path}
                           onChange={f.profileField(p.profileId, "path")}
                         />
+                        <SettingsFieldError
+                          error={s.error}
+                          field={`terminal.profiles.${profileIndex}.cwd`}
+                        />
                       </label>
                       <button
                         className="secondary"
@@ -236,6 +257,14 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                           value={arg}
                           onChange={f.argument(p.profileId, index)}
                           spellCheck={false}
+                        />
+                        <SettingsFieldError
+                          error={s.error}
+                          field={
+                            index === 0
+                              ? `terminal.profiles.${profileIndex}.args`
+                              : undefined
+                          }
                         />
                       </label>
                       <button
@@ -291,6 +320,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   value={d.terminal.fontFamily}
                   onChange={f.displayField("terminal", "fontFamily")}
                 />
+                <SettingsFieldError
+                  error={s.error}
+                  field="terminal.fontFamily"
+                />
               </label>
               <label>
                 字号
@@ -302,6 +335,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   data-settings-field="terminal.fontSize"
                   onChange={f.displayField("terminal", "fontSize")}
                 />
+                <SettingsFieldError error={s.error} field="terminal.fontSize" />
               </label>
               <label>
                 光标
@@ -329,6 +363,10 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   data-settings-field="terminal.scrollbackLines"
                   onChange={f.displayField("terminal", "scrollbackLines")}
                 />
+                <SettingsFieldError
+                  error={s.error}
+                  field="terminal.scrollbackLines"
+                />
               </label>
               <p className="muted small">
                 每项参数独立传入，无需为包含空格的参数加引号。程序、参数和目录仅对新会话生效，保存不会启动或重启终端。
@@ -345,6 +383,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   data-settings-field="editor.fontFamily"
                   onChange={f.displayField("editor", "fontFamily")}
                 />
+                <SettingsFieldError error={s.error} field="editor.fontFamily" />
               </label>
               <label>
                 字号
@@ -356,6 +395,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   data-settings-field="editor.fontSize"
                   onChange={f.displayField("editor", "fontSize")}
                 />
+                <SettingsFieldError error={s.error} field="editor.fontSize" />
               </label>
               <label>
                 Tab 宽度
@@ -368,6 +408,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   <option value="4">4</option>
                   <option value="8">8</option>
                 </select>
+                <SettingsFieldError error={s.error} field="editor.tabSize" />
               </label>
               <label>
                 自动折行
@@ -376,8 +417,15 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   <option value="on">开启</option>
                 </select>
               </label>
+              <label>
+                文件保存方式
+                <select value={d.editor.saveMode} onChange={f.saveMode}>
+                  <option value="manual">手动保存</option>
+                  <option value="auto">自动保存</option>
+                </select>
+              </label>
               <p className="muted small">
-                显示设置不转换原文件编码或换行，文件使用手动保存。
+                手动保存使用 ⌘S / Ctrl+S；自动保存会在停止输入后写入文件。
               </p>
             </section>
           )}
@@ -405,7 +453,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
           <div role="alert">
             <p>
               {s.error.code === "STALE_SETTINGS"
-                ? "设置已被其他操作修改。草稿已保留，请重新读取后核对。"
+                ? "此项设置已在其他位置修改。输入已保留，请核对后重试保存。"
                 : "设置未保存，请检查输入或重试。"}
             </p>
             {s.error.fieldErrors.map((error) => (
@@ -421,64 +469,11 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                 {error.message}
               </p>
             ))}
+            <button className="secondary" onClick={w.applySettings}>
+              重试保存
+            </button>
           </div>
         )}
-        <div className="settings-actions">
-          {w.settingsCategory === "terminal" && terminalResetBlocked(d) && (
-            <p role="status">
-              配置已达 32
-              个且没有默认自动检测项。请先删除一个不需要的配置，再恢复默认值。
-            </p>
-          )}
-          <span role="status">
-            {s.activity === "saving"
-              ? "正在保存…"
-              : s.dirty
-                ? "有未应用的更改"
-                : s.saved
-                  ? "与已保存设置一致"
-                  : "设置尚未加载"}
-          </span>
-          <div className="button-row">
-            <button
-              className="secondary"
-              disabled={
-                !s.editable ||
-                (w.settingsCategory === "terminal" && terminalResetBlocked(d))
-              }
-              onClick={w.restoreSettings}
-            >
-              恢复当前分类默认
-            </button>
-            <button
-              className="secondary"
-              disabled={s.activity !== "idle"}
-              onClick={w.reloadSettings}
-            >
-              重新读取
-            </button>
-            <button
-              className="secondary"
-              disabled={s.activity !== "idle"}
-              onClick={w.closeModal}
-            >
-              取消
-            </button>
-            <button
-              className="primary"
-              disabled={
-                !s.editable ||
-                !s.dirty ||
-                w.editor.dirty ||
-                w.operations.busy ||
-                w.git.status === "loading"
-              }
-              onClick={w.applySettings}
-            >
-              应用
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

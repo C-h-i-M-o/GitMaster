@@ -48,8 +48,24 @@ export function VirtualChanges(props: VirtualChangesProps) {
               }}
             >
               {row.kind === "header" ? (
-                <div role="gridcell" aria-colspan={2}>
-                  <strong>{row.title}</strong> <span>{row.count}</span>
+                <div
+                  role="gridcell"
+                  aria-colspan={2}
+                  className="change-group-heading"
+                >
+                  <input
+                    type="checkbox"
+                    ref={view.groupCheckbox(row)}
+                    checked={view.selectionFor(row).checked}
+                    disabled={props.blocked || !view.selectionFor(row).total}
+                    aria-label={`全选${row.title}文件`}
+                    onChange={props.toggleGroup?.(row.side)}
+                  />
+                  <strong>{row.title}</strong>
+                  <span>
+                    {view.selectionFor(row).selected}/
+                    {view.selectionFor(row).total}
+                  </span>
                 </div>
               ) : row.kind === "empty" ? (
                 <div role="gridcell" aria-colspan={2} className="muted small">
@@ -65,7 +81,11 @@ export function VirtualChanges(props: VirtualChangesProps) {
                       checked={props.selected[row.action].includes(
                         row.file.changeId,
                       )}
-                      disabled={props.blocked || row.file.kind === "submodule"}
+                      disabled={
+                        props.blocked ||
+                        row.file.kind === "submodule" ||
+                        row.file.kind === "conflicted"
+                      }
                       onChange={view.toggle(row)}
                     />
                   </div>

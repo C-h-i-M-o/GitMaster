@@ -16,6 +16,7 @@ import { normalizeOperationError } from "../services/gitErrors.ts";
 import { captureOperationTarget } from "../ui/operationTarget.ts";
 import {
   updateOperationHistory,
+  appendPreparationFailure,
   type OperationHistoryEntry,
 } from "../ui/operationHistory.ts";
 
@@ -73,6 +74,8 @@ export interface OperationsViewState {
   history: OperationHistoryEntry[];
   busy: boolean;
   immediate: boolean;
+  failureNotification: { id: string; sequence: number } | null;
+  operationScope: { kind: OperationKind; repositoryId: string | null } | null;
 }
 export interface CompletionScope {
   repositoryId: string | null;
@@ -101,6 +104,20 @@ function schedule(callback: () => void, delay: number): () => void {
   const timer = setTimeout(callback, delay);
   return () => clearTimeout(timer);
 }
+/** 将编排请求归并到后端公开的关键 Git 操作类型。 */
+function remoteOperationKind(request: RemoteWriteRequest): OperationKind {
+  switch (request.kind) {
+    case "fetchAll":
+      return "fetch";
+    case "publishBranch":
+    case "syncPush":
+      return "push";
+    case "syncFastForward":
+      return "integrate";
+    default:
+      return request.kind;
+  }
+}
 /** 管理已确认任务；窗口只停止查询，不拥有或取消后台 Git 生命周期。 */
 export function createOperationsController(
   api: OperationsApi,
@@ -116,6 +133,8 @@ export function createOperationsController(
     history: [],
     busy: false,
     immediate: false,
+    failureNotification: null,
+    operationScope: null,
   };
   let repository: RepositoryState | null = null;
   let enabled = false;
@@ -162,6 +181,7 @@ export function createOperationsController(
     const nextKey = available
       ? `${next?.repositoryId ?? ""}\0${next?.snapshotId ?? ""}`
       : "disabled";
+    const changedRepository = repository?.repositoryId !== next?.repositoryId;
     repository = next;
     enabled = available;
     if (nextKey === key) return;
@@ -169,6 +189,9 @@ export function createOperationsController(
     generation += 1;
     update({
       preview: null,
+      ...(changedRepository && state.activity === "idle"
+        ? { error: null, operationScope: null }
+        : {}),
       ...(state.activity === "preparing" ? { activity: "idle" as const } : {}),
     });
     if (!enabled) stopQuery();
@@ -181,10 +204,23 @@ export function createOperationsController(
   async function prepare(
     task: () => Promise<Confirmation>,
     immediate = false,
+    failure?: {
+      kind: OperationKind;
+      target: string;
+      repositoryId: string | null;
+    },
   ): Promise<void> {
     if (!active || !enabled || state.activity !== "idle") return;
     const token = ++generation;
-    update({ activity: "preparing", preview: null, error: null, immediate });
+    update({
+      activity: "preparing",
+      preview: null,
+      error: null,
+      immediate,
+      operationScope: failure
+        ? { kind: failure.kind, repositoryId: failure.repositoryId }
+        : null,
+    });
     try {
       const preview = await task();
       if (current(token)) {
@@ -202,22 +238,60 @@ export function createOperationsController(
         }
       }
     } catch (error: unknown) {
-      if (current(token))
-        update({ activity: "idle", error: normalizeOperationError(error) });
+      if (current(token)) {
+        const normalized = normalizeOperationError(error);
+        const beforeHistory = state.history;
+        const nextHistory =
+          failure &&
+          failure.kind !== "saveFile" &&
+          failure.kind !== "saveConflict"
+            ? appendPreparationFailure(
+                beforeHistory,
+                failure.kind,
+                failure.repositoryId,
+                failure.target,
+                normalized,
+                Date.now(),
+              )
+            : beforeHistory;
+        update({
+          activity: "idle",
+          error: normalized,
+          ...(failure &&
+          failure.kind !== "saveFile" &&
+          failure.kind !== "saveConflict"
+            ? {
+                history: nextHistory,
+                failureNotification: {
+                  id: nextHistory[0]!.id,
+                  sequence: 0,
+                },
+              }
+            : {}),
+        });
+      }
     }
   }
   /** 准备当前快照选定的本地操作。 */
   function prepareLocal(request: LocalWriteRequest): Promise<void> {
     const repo = repository;
     if (!repo) return Promise.resolve();
-    return prepare(async () => ({
-      type: "write",
-      value: await api.prepareLocalWrite(
-        repo.repositoryId,
-        repo.snapshotId,
-        request,
-      ),
-    }));
+    return prepare(
+      async () => ({
+        type: "write",
+        value: await api.prepareLocalWrite(
+          repo.repositoryId,
+          repo.snapshotId,
+          request,
+        ),
+      }),
+      false,
+      {
+        kind: request.kind,
+        target: repo.rootPath,
+        repositoryId: repo.repositoryId,
+      },
+    );
   }
   /** 页面明确范围后的低风险动作直接执行，仍经过原预检和一次性计划。 */
   function runLocal(
@@ -235,6 +309,11 @@ export function createOperationsController(
         ),
       }),
       true,
+      {
+        kind: request.kind,
+        repositoryId: repo.repositoryId,
+        target: repo.rootPath,
+      },
     );
   }
   /** 保存按钮明确提交文件版本和完整草稿，复用直接执行与结果查询。 */
@@ -257,20 +336,33 @@ export function createOperationsController(
         ),
       }),
       true,
+      {
+        kind: "saveFile",
+        repositoryId: repo.repositoryId,
+        target: repo.rootPath,
+      },
     );
   }
   /** 远端准备只能由显式表单动作触发，push 可能查询真实远端。 */
   function prepareRemote(request: RemoteWriteRequest): Promise<void> {
     const repo = repository;
     if (!repo) return Promise.resolve();
-    return prepare(async () => ({
-      type: "write",
-      value: await api.prepareRemoteWrite(
-        repo.repositoryId,
-        repo.snapshotId,
-        request,
-      ),
-    }));
+    return prepare(
+      async () => ({
+        type: "write",
+        value: await api.prepareRemoteWrite(
+          repo.repositoryId,
+          repo.snapshotId,
+          request,
+        ),
+      }),
+      false,
+      {
+        kind: remoteOperationKind(request),
+        repositoryId: repo.repositoryId,
+        target: repo.rootPath,
+      },
+    );
   }
   /** 编辑保存等待真实终态，用于准确确认提交文本和关闭保护。 */
   function runFileSave(
@@ -279,14 +371,17 @@ export function createOperationsController(
     version: string,
     content: string,
   ): Promise<OperationResult> {
-    return runWrite(next, () =>
-      api.prepareFileSave(
-        next.repositoryId,
-        next.snapshotId,
-        fileId,
-        version,
-        content,
-      ),
+    return runWrite(
+      next,
+      () =>
+        api.prepareFileSave(
+          next.repositoryId,
+          next.snapshotId,
+          fileId,
+          version,
+          content,
+        ),
+      "saveFile",
     );
   }
   /** 同步编排等待本次任务及终态本地刷新。 */
@@ -294,14 +389,17 @@ export function createOperationsController(
     next: RepositoryState,
     request: RemoteWriteRequest,
   ): Promise<OperationResult> {
-    return runWrite(next, () =>
-      api.prepareRemoteWrite(next.repositoryId, next.snapshotId, request),
+    return runWrite(
+      next,
+      () => api.prepareRemoteWrite(next.repositoryId, next.snapshotId, request),
+      remoteOperationKind(request),
     );
   }
   /** 自动后续动作只接受本次已核实任务，不把恢复记录当作写入许可。 */
   async function runWrite(
     next: RepositoryState,
     createPreview: () => Promise<WritePreview>,
+    kind?: OperationKind,
   ): Promise<OperationResult> {
     if (
       !active ||
@@ -318,6 +416,9 @@ export function createOperationsController(
         value: await createPreview(),
       }),
       true,
+      kind
+        ? { kind, repositoryId: next.repositoryId, target: next.rootPath }
+        : undefined,
     );
     const handle = getSnapshot().handle;
     if (!handle || handle === previous)
@@ -361,6 +462,7 @@ export function createOperationsController(
         ),
       }),
       true,
+      { kind: "fetch", repositoryId: repo.repositoryId, target: repo.rootPath },
     );
     const latest = getSnapshot();
     if (latest.handle !== previousHandle || latest.activity === "unverified")
@@ -380,21 +482,33 @@ export function createOperationsController(
   ): Promise<void> {
     const repo = repository;
     if (!repo) return Promise.resolve();
-    return prepare(async () => ({
-      type: "write",
-      value: await api.prepareConflictWrite(
-        repo.repositoryId,
-        session,
-        request,
-      ),
-    }));
+    return prepare(
+      async () => ({
+        type: "write",
+        value: await api.prepareConflictWrite(
+          repo.repositoryId,
+          session,
+          request,
+        ),
+      }),
+      false,
+      {
+        kind: request.kind,
+        repositoryId: repo.repositoryId,
+        target: repo.rootPath,
+      },
+    );
   }
   /** clone 无需已有仓库，仍要求已连接桌面 Git 环境。 */
   function prepareClone(request: CloneRequest): Promise<void> {
-    return prepare(async () => ({
-      type: "clone",
-      value: await api.prepareClone(request),
-    }));
+    return prepare(
+      async () => ({
+        type: "clone",
+        value: await api.prepareClone(request),
+      }),
+      false,
+      { kind: "clone", repositoryId: null, target: request.directoryName },
+    );
   }
   /** 关闭确认只丢弃前端预览，不代表任何已启动操作被回滚。 */
   function discardPreview(): void {
@@ -449,6 +563,10 @@ export function createOperationsController(
     const result = record.result;
     update({
       record,
+      operationScope: {
+        kind: record.progress.kind,
+        repositoryId: record.progress.handle.repositoryId,
+      },
       error: null,
       events: appendEvent(record),
       history: updateOperationHistory(
@@ -462,6 +580,20 @@ export function createOperationsController(
       activity: result ? "idle" : "running",
     });
     if (result) {
+      if (
+        state.failureNotification?.id !== result.operationId &&
+        result.kind !== "saveFile" &&
+        result.kind !== "saveConflict" &&
+        (result.outcome === "failed" ||
+          result.outcome === "unknown" ||
+          result.refresh.status === "failed")
+      )
+        update({
+          failureNotification: {
+            id: result.operationId,
+            sequence: record.progress.sequence,
+          },
+        });
       stopQuery();
       recovery = null;
       settledVerified = false;

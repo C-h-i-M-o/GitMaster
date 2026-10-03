@@ -97,7 +97,11 @@ pub enum LocalWriteRequest {
     #[serde(rename_all = "camelCase")]
     Unstage { change_ids: Vec<String> },
     #[serde(rename_all = "camelCase")]
-    Commit { message: String },
+    Commit {
+        message: String,
+        #[serde(default)]
+        stage_change_ids: Vec<String>,
+    },
     #[serde(rename_all = "camelCase")]
     CreateBranch { name: String },
     #[serde(rename_all = "camelCase")]
@@ -177,6 +181,7 @@ pub struct WriteCapabilities {
     pub stage: WriteCapability,
     pub unstage: WriteCapability,
     pub commit: WriteCapability,
+    pub commit_selected: WriteCapability,
     pub create_branch: WriteCapability,
     pub switch_branch: WriteCapability,
     pub fetch: WriteCapability,

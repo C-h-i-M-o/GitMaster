@@ -35,6 +35,8 @@ export interface MonacoEditorProps {
   readOnly?: boolean;
   edit(path: string, content: string): void;
   save(path: string): void;
+  compositionStart(): void;
+  compositionEnd(): void;
 }
 interface ModelEntry {
   model: monaco.editor.ITextModel;
@@ -53,23 +55,52 @@ export function useMonacoEditor(props: MonacoEditorProps) {
   const replacing = useRef(false);
   useEffect(() => {
     if (!container.current) return;
+    monaco.editor.defineTheme("gitmaster-light", {
+      base: "vs",
+      inherit: true,
+      rules: [],
+      colors: {
+        "editor.background": "#f7f9f5",
+        "editor.foreground": "#233b3c",
+        "editorLineNumber.foreground": "#91a39b",
+        "editorLineNumber.activeForeground": "#378e80",
+        "editor.selectionBackground": "#b9ddd1",
+        "editor.inactiveSelectionBackground": "#dcece6",
+        "editor.lineHighlightBackground": "#eef6f2",
+        "editorGutter.background": "#f7f9f5",
+        "editorWidget.background": "#ffffff",
+        "editorWidget.border": "#c9ddd5",
+        "scrollbarSlider.background": "#a9c8be88",
+      },
+    });
+    monaco.editor.setTheme("gitmaster-light");
     const view = monaco.editor.create(container.current, {
       model: null,
       automaticLayout: true,
-      theme: "vs-dark",
+      theme: "gitmaster-light",
       minimap: { enabled: false },
       detectIndentation: false,
       links: false,
       fontLigatures: false,
       scrollBeyondLastLine: false,
       renderValidationDecorations: "off",
-      ...current.current.preferences,
+      fontFamily: current.current.preferences.fontFamily,
+      fontSize: current.current.preferences.fontSize,
+      wordWrap: current.current.preferences.wordWrap,
     });
     editor.current = view;
+    const compositionStart = view.onDidCompositionStart(() =>
+      current.current.compositionStart(),
+    );
+    const compositionEnd = view.onDidCompositionEnd(() =>
+      current.current.compositionEnd(),
+    );
     view.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       if (active.current) current.current.save(active.current);
     });
     return () => {
+      compositionStart.dispose();
+      compositionEnd.dispose();
       view.dispose();
       for (const entry of models.current.values()) {
         entry.subscription.dispose();
@@ -156,7 +187,11 @@ export function useMonacoEditor(props: MonacoEditorProps) {
     props.preferences.tabSize,
   ]);
   useEffect(() => {
-    editor.current?.updateOptions(props.preferences);
+    editor.current?.updateOptions({
+      fontFamily: props.preferences.fontFamily,
+      fontSize: props.preferences.fontSize,
+      wordWrap: props.preferences.wordWrap,
+    });
   }, [props.preferences]);
   useEffect(() => {
     editor.current?.updateOptions({ readOnly: props.readOnly ?? false });

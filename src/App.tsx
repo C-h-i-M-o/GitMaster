@@ -7,7 +7,7 @@ import { BottomPanel } from "./components/BottomPanel";
 import { ChangeDetailDrawer } from "./components/ChangeDetailDrawer";
 import { WorkbenchDialogs } from "./components/WorkbenchDialogs";
 import { WriteConfirmation } from "./components/WriteConfirmation";
-import { describeGitError } from "./ui/gitPresentation";
+import { WorkspaceNotices } from "./components/WorkspaceNotices";
 /** 按 HTML 设计稿组合真实工作台，事件与副作用交给独立 hook。 */
 export default function App() {
   const w = useWorkbench();
@@ -132,50 +132,7 @@ export default function App() {
           </div>
         </aside>
         <main className="main-content">
-          <div className="workspace-alerts" aria-live="polite">
-            {w.syncRemote.notice && (
-              <p role="status">
-                {w.syncRemote.notice}{" "}
-                {w.syncRemote.diverged && (
-                  <button onClick={w.openModal("remote")}>打开合并流程</button>
-                )}
-              </p>
-            )}
-            {w.manualRefresh.notice && (
-              <p role="status">{w.manualRefresh.notice}</p>
-            )}
-            {w.manualRefresh.resultLabel && (
-              <p role="status">{w.manualRefresh.resultLabel}</p>
-            )}
-            {[
-              w.actionError,
-              w.resourceError,
-              w.repo.error,
-              w.operations.error,
-              w.manualRefresh.error,
-              w.syncRemote.error,
-            ]
-              .filter((value) => value !== null)
-              .map((error, index) => (
-                <p role="alert" key={`${error.code}-${index}`}>
-                  {describeGitError(error)}
-                </p>
-              ))}
-            {w.repo.stale && (
-              <p role="alert">
-                仓库刷新失败，正在展示旧状态。请刷新后继续写操作。
-              </p>
-            )}
-            {w.operations.activity === "preparing" && (
-              <p role="status">正在准备操作预览…</p>
-            )}
-            {w.operations.activity === "unverified" && (
-              <p role="alert">
-                任务状态尚未核实。
-                <button onClick={w.operations.resume}>重新查询任务</button>
-              </p>
-            )}
-          </div>
+          <WorkspaceNotices w={w} />
           <div className="canvas-area">
             <CommitGraph workbench={w} />
             <WorkbenchDrawer workbench={w} />

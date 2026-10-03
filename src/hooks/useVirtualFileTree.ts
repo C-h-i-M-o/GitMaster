@@ -14,7 +14,7 @@ import { flattenFileTree, type FileTreeRow } from "../ui/virtualTree";
 export type VirtualFileTreeState = Pick<
   ReturnType<typeof useFileTree>,
   "nodes" | "isOpen" | "toggle" | "hasMore" | "more" | "loading"
->;
+> & { revealPath?: string | null; revealVersion?: number };
 
 /** 成熟虚拟器负责视口，单一树焦点保证行卸载时键盘仍可导航。 */
 export function useVirtualFileTree(
@@ -25,6 +25,7 @@ export function useVirtualFileTree(
   const prefix = useId();
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const previousIndex = useRef(0);
+  const lastReveal = useRef<string | null>(null);
   const rows = useMemo(
     () => flattenFileTree(tree.nodes, tree.isOpen, tree.hasMore, tree.loading),
     [tree.nodes, tree.isOpen, tree.hasMore, tree.loading],
@@ -66,6 +67,25 @@ export function useVirtualFileTree(
         virtual.scrollToIndex(activeIndex, { align: "auto" });
     }
   }, [found, activeKey, activeIndex, rows, virtual]);
+  useEffect(() => {
+    if (tree.revealPath == null) {
+      lastReveal.current = null;
+      return;
+    }
+    const request = `${tree.revealVersion ?? 0}:${tree.revealPath}`;
+    if (lastReveal.current === request) return;
+    const index =
+      tree.revealPath === ""
+        ? 0
+        : rows.findIndex(
+            (row) => row.kind === "node" && row.node.path === tree.revealPath,
+          );
+    if (index >= 0) {
+      lastReveal.current = request;
+      setActiveKey(rows[index]?.key ?? null);
+      virtual.scrollToIndex(index, { align: "auto" });
+    }
+  }, [tree.revealPath, tree.revealVersion, rows, virtual]);
   /** 聚焦逻辑项时滚动到对应行，不强迫 DOM 接管焦点。 */
   function select(index: number): void {
     const row = rows[index];

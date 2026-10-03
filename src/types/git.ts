@@ -71,7 +71,7 @@ export type OperationKind =
   | "finishMerge";
 export type LocalWriteRequest =
   | { kind: "stage" | "unstage"; changeIds: string[] }
-  | { kind: "commit"; message: string }
+  | { kind: "commit"; message: string; stageChangeIds?: string[] }
   | { kind: "createBranch"; name: string }
   | { kind: "switchBranch"; branchId: string };
 export type RemoteWriteRequest =
@@ -104,6 +104,7 @@ export interface WriteContext {
     stage: WriteCapability;
     unstage: WriteCapability;
     commit: WriteCapability;
+    commitSelected: WriteCapability;
     createBranch: WriteCapability;
     switchBranch: WriteCapability;
     fetch: WriteCapability;
@@ -318,6 +319,7 @@ export type ProjectTreeEntry =
       status: ProjectFileKind;
     };
 export interface ProjectTreePage {
+  searchIncomplete?: boolean;
   repositoryId: string;
   snapshotId: string;
   treeId: string;

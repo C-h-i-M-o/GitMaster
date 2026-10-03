@@ -1,5 +1,6 @@
 //! 当前工作树项目文件的只读列表与按需内容读取。
 pub mod editor_text;
+mod filesystem;
 pub mod reader;
 pub mod tree;
 use super::{
@@ -31,11 +32,58 @@ pub struct ProjectFilesSession {
     repository: RepositoryHandle,
     state: RepositoryState,
     files: Vec<(String, String, ProjectFileKind)>,
+    filesystem: Option<std::sync::Mutex<filesystem::FilesystemTree>>,
     tree: std::sync::OnceLock<tree::TreeIndex>,
     readers: std::sync::Mutex<BTreeMap<String, reader::PagedDocument>>,
 }
 
 impl ProjectFilesSession {
+    /// 按工作树文件系统发现普通文件，保留隐藏文件并跳过 .git 与符号链接。
+    /// 文件内容仍由既有安全读取原语重新校验；该入口不依赖 Git 索引或忽略开关。
+    pub fn new_filesystem(
+        git: GitExecutable,
+        repository: RepositoryHandle,
+        state: RepositoryState,
+    ) -> Result<Self, OperationError> {
+        if state.repository_id != repository.id {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
+        let fresh = read_repository_state(&git, &repository)?;
+        if fresh.head != state.head
+            || fresh.operations != state.operations
+            || fresh.changes != state.changes
+        {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
+        let filesystem = filesystem::FilesystemTree::new(&repository.root)?;
+        Ok(Self {
+            git,
+            repository,
+            state,
+            files: Vec::new(),
+            filesystem: Some(std::sync::Mutex::new(filesystem)),
+            tree: std::sync::OnceLock::new(),
+            readers: std::sync::Mutex::new(BTreeMap::new()),
+        })
+    }
+    /// 文件 ID 只从当前会话的已发现映射解析，动态展开与旧平面入口共用保存边界。
+    fn file_path(&self, file_id: &str) -> Result<String, OperationError> {
+        if let Some(filesystem) = &self.filesystem {
+            return filesystem
+                .lock()
+                .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?
+                .files
+                .get(file_id)
+                .map(|(path, _)| path.clone())
+                .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"));
+        }
+        self.files
+            .iter()
+            .find(|(id, _, _)| id == file_id)
+            .map(|(_, path, _)| path.clone())
+            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))
+    }
+
     /// 生成一次性保存计划，执行由原协调器排队并发布标准任务结果。
     pub fn prepare_save(
         self: &std::sync::Arc<Self>,
@@ -100,19 +148,15 @@ impl ProjectFilesSession {
     ) -> Result<(), OperationError> {
         let deadline = Instant::now() + Duration::from_secs(120);
         super::write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
-        let (_, path, _) = self
-            .files
-            .iter()
-            .find(|(id, _, _)| id == file_id)
-            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let path = self.file_path(file_id)?;
         let original = super::conflicts::read_regular(
             &self.repository.root,
-            path,
+            &path,
             editor_text::MAX_EDIT_BYTES,
             deadline,
         )
         .map_err(editor_read_error)?;
-        if file_version(&self.repository.id, file_id, path, &original) != expected_version {
+        if file_version(&self.repository.id, file_id, &path, &original) != expected_version {
             return Err(OperationError::new("FILE_CHANGED"));
         }
         let document = editor_text::decode(&original.bytes)?;
@@ -122,7 +166,7 @@ impl ProjectFilesSession {
         }
         super::conflicts::replace_regular(
             &self.repository.root,
-            path,
+            &path,
             &original,
             &bytes,
             editor_text::MAX_EDIT_BYTES,
@@ -134,14 +178,10 @@ impl ProjectFilesSession {
     pub fn read_editable(&self, file_id: &str) -> Result<EditableFile, OperationError> {
         let deadline = Instant::now() + Duration::from_secs(120);
         super::write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
-        let (_, path, _) = self
-            .files
-            .iter()
-            .find(|(id, _, _)| id == file_id)
-            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let path = self.file_path(file_id)?;
         let file = super::conflicts::read_regular(
             &self.repository.root,
-            path,
+            &path,
             editor_text::MAX_EDIT_BYTES,
             deadline,
         )
@@ -150,7 +190,7 @@ impl ProjectFilesSession {
         Ok(EditableFile {
             file_id: file_id.to_owned(),
             path: path.clone(),
-            version: file_version(&self.repository.id, file_id, path, &file),
+            version: file_version(&self.repository.id, file_id, &path, &file),
             text,
         })
     }
@@ -247,6 +287,7 @@ impl ProjectFilesSession {
             repository,
             state,
             files,
+            filesystem: None,
             tree: std::sync::OnceLock::new(),
             readers: std::sync::Mutex::new(BTreeMap::new()),
         })
@@ -254,11 +295,20 @@ impl ProjectFilesSession {
 
     /// 返回后端生成且与本会话绑定的文件 ID。
     pub fn list(&self) -> ProjectFileList {
+        let discovered = self.filesystem.as_ref().map(|tree| {
+            tree.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .files
+                .iter()
+                .map(|(id, (path, kind))| (id.clone(), path.clone(), *kind))
+                .collect::<Vec<_>>()
+        });
         ProjectFileList {
             repository_id: self.repository.id.clone(),
             snapshot_id: self.state.snapshot_id.clone(),
-            files: self
-                .files
+            files: discovered
+                .as_ref()
+                .unwrap_or(&self.files)
                 .iter()
                 .map(|(file_id, path, kind)| ProjectFile {
                     file_id: file_id.clone(),
@@ -278,12 +328,8 @@ impl ProjectFilesSession {
         {
             return Err(OperationError::new("STALE_REQUEST"));
         }
-        let (_, path, _) = self
-            .files
-            .iter()
-            .find(|(id, _, _)| id == file_id)
-            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
-        preview(&self.repository, path)
+        let path = self.file_path(file_id)?;
+        preview(&self.repository, &path)
     }
 }
 
@@ -392,6 +438,122 @@ mod tests {
                 .code,
             "STALE_REQUEST"
         );
+    }
+
+    /// 文件系统入口发现隐藏文件并拒绝跟随仓库外符号链接，发现的 ID 可直接读取。
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_session_discovers_hidden_files_and_rejects_link_reads() {
+        let f = Fixture::new();
+        f.write(".hidden", b"hidden\n");
+        std::fs::create_dir(f.root.join("empty")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("outside"), b"outside\n").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("outside"), f.root.join("link")).unwrap();
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new_filesystem(f.git.clone(), repo, state).unwrap();
+        let list = session.list();
+        let hidden = list
+            .files
+            .iter()
+            .find(|file| file.path == ".hidden")
+            .unwrap();
+        assert_eq!(
+            session.read_editable(&hidden.file_id).unwrap().text.content,
+            "hidden\n"
+        );
+        let link = list.files.iter().find(|file| file.path == "link").unwrap();
+        assert!(session.read_editable(&link.file_id).is_err());
+    }
+
+    /// 根首屏不扫描后代；忽略项、空目录、动态文件身份与分页搜索都来自实际磁盘。
+    #[test]
+    fn filesystem_lazy_directories_and_bounded_search() {
+        let f = Fixture::new();
+        f.write(".gitignore", b"ignored/\n");
+        std::fs::create_dir_all(f.root.join("ignored/deep/empty")).unwrap();
+        f.write("ignored/deep/document.txt", b"original\n");
+        for index in 0..210 {
+            f.write(&format!("ignored/match-{index}.txt"), b"entry\n");
+        }
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new_filesystem(f.git.clone(), repo, state).unwrap();
+        let root = session.tree_root();
+        assert!(!session
+            .list()
+            .files
+            .iter()
+            .any(|file| file.path.starts_with("ignored/")));
+        assert!(!root.entries.iter().any(|entry| entry.name() == ".git"));
+        let ignored = root
+            .entries
+            .iter()
+            .find(|entry| entry.name() == "ignored")
+            .unwrap();
+        let children = session.tree_page(&root.tree_id, ignored.id(), 0).unwrap();
+        assert_eq!(children.entries.len(), 200);
+        assert_eq!(children.next_offset, Some(200));
+        let deep = children
+            .entries
+            .iter()
+            .find(|entry| entry.name() == "deep")
+            .unwrap();
+        let page = session.tree_page(&root.tree_id, deep.id(), 0).unwrap();
+        let empty = page
+            .entries
+            .iter()
+            .find(|entry| entry.name() == "empty")
+            .unwrap();
+        assert!(session
+            .tree_page(&root.tree_id, empty.id(), 0)
+            .unwrap()
+            .entries
+            .is_empty());
+        let doc = page
+            .entries
+            .iter()
+            .find(|entry| entry.name() == "document.txt")
+            .unwrap();
+        let editable = session.read_editable(doc.id()).unwrap();
+        assert_eq!(editable.text.content, "original\n");
+        session
+            .save_editable(doc.id(), &editable.version, "saved\n")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(f.root.join("ignored/deep/document.txt")).unwrap(),
+            b"saved\n"
+        );
+        let search = session.tree_search(&root.tree_id, "match-", 0).unwrap();
+        assert_eq!(search.entries.len(), 200);
+        assert!(search.search_incomplete);
+        let rest = session
+            .tree_search(&root.tree_id, "match-", search.next_offset.unwrap())
+            .unwrap();
+        assert_eq!(rest.entries.len(), 10);
+        assert!(!rest.search_incomplete);
+        assert_eq!(rest.total, 210);
+        assert!(session.tree_page("forged", ignored.id(), 0).is_err());
+    }
+
+    /// 目录能力签发后被替换为链接，也不能越界列出其内容。
+    #[test]
+    #[cfg(unix)]
+    fn filesystem_rejects_directory_link_replacement() {
+        let f = Fixture::new();
+        std::fs::create_dir(f.root.join("directory")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), b"secret").unwrap();
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new_filesystem(f.git.clone(), repo, state).unwrap();
+        let root = session.tree_root();
+        let directory = root
+            .entries
+            .iter()
+            .find(|entry| entry.name() == "directory")
+            .unwrap();
+        std::fs::remove_dir(f.root.join("directory")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), f.root.join("directory")).unwrap();
+        assert!(session.tree_page(&root.tree_id, directory.id(), 0).is_err());
     }
 
     /// 相同字节的新目录项不能复用旧文件的保存授权，删除后也不能隐式重建。

@@ -3,6 +3,7 @@ import type { Workbench } from "../hooks/useWorkbench";
 import { Icon } from "./Icon";
 import { BranchHeads } from "./BranchHeads";
 import { describeGitError } from "../ui/gitPresentation";
+import { shortcutLabel } from "../ui/shortcuts";
 /** 以真实提交和父关系绘制可导航画布，拖动仅改变展示坐标。 */
 export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
   const graph = useCommitGraph(
@@ -21,11 +22,59 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
         <Icon name="search" />
         <input
           aria-label="查找提交或引用"
+          title={`查找已加载的提交（${shortcutLabel("F")}）`}
           placeholder="查找提交、作者或引用"
           value={graph.query}
           onChange={graph.changeQuery}
+          onKeyDown={graph.searchKeyDown}
         />
       </label>
+      {graph.query.trim() && (
+        <div className="graph-search-results" aria-live="polite">
+          <span>已加载历史中有 {graph.matches.length} 个匹配提交</span>
+          <span>
+            {graph.matches.length
+              ? `${graph.matchIndex + 1}/${graph.matches.length}`
+              : "0/0"}
+          </span>
+          <button
+            type="button"
+            disabled={!graph.matches.length}
+            onClick={graph.previousMatch}
+            aria-label="上一个匹配提交"
+            title="上一个匹配提交（Shift+Enter）"
+          >
+            上一项
+          </button>
+          <button
+            type="button"
+            disabled={!graph.matches.length}
+            onClick={graph.nextMatch}
+            aria-label="下一个匹配提交"
+            title="下一个匹配提交（Enter）"
+          >
+            下一项
+          </button>
+          {!!graph.matches.length && (
+            <details>
+              <summary>查看匹配结果</summary>
+              <ul>
+                {graph.matches.map((node, index) => (
+                  <li key={node.oid}>
+                    <button
+                      type="button"
+                      aria-current={index === graph.matchIndex}
+                      onClick={graph.selectMatch(node.oid)}
+                    >
+                      {node.commit.subject}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
       {w.history.error && (
         <p className="graph-notice" role="alert">
           {describeGitError(w.history.error)}
@@ -88,7 +137,7 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
               transform={`translate(${node.x} ${node.y})`}
               role="group"
               onKeyDown={graph.nodeKeyDown}
-              className={`graph-node ${node.matches ? "" : "dimmed"} ${w.history.selectedOid === node.oid ? "selected" : ""}`}
+              className={`graph-node ${node.matches ? "" : "dimmed"} ${w.history.selectedOid === node.oid || graph.activeMatchOid === node.oid ? "selected" : ""}`}
             >
               <g
                 tabIndex={0}

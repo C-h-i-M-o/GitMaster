@@ -7,7 +7,7 @@ import type {
 /** 每次创建独立默认草稿，禁止共享终端参数数组。 */
 export function defaultSettings(): AppSettings {
   return {
-    version: 3,
+    version: 4,
     gitPath: null,
     logLevel: null,
     uiPreferences: { elasticity: 6, showLabels: true },
@@ -33,6 +33,7 @@ export function defaultSettings(): AppSettings {
       fontSize: 14,
       tabSize: 4,
       wordWrap: "off",
+      saveMode: "manual",
     },
     externalOpen: { defaultAppId: "fileManager" },
   };
@@ -157,6 +158,7 @@ function canonicalSettings(value: AppSettings): unknown {
     value.editor.fontSize,
     value.editor.tabSize,
     value.editor.wordWrap,
+    value.editor.saveMode,
     value.externalOpen.defaultAppId,
   ];
 }
