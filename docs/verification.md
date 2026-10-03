@@ -1396,3 +1396,12 @@ computer use 已成功操作本次构建的 macOS Debug `.app`，通过原生目
 用户已明确授权阶段收尾、合并 main 与当前分支并推送 GitHub，同时明确不启动 M4。M2/M3 开发阶段标记为已收尾；本次仅调整文档和 Git 分支，不修改生产代码。Windows 继续按本轮指示跳过，第 16.2 节专项未测保持未测，阶段关闭不代表发布验收完成。
 
 整合前工作区干净，m2m3-fix 位于已推送的 7cd8c3e。重新 fetch 后，origin/main 没有相对当前分支独有的提交，可以快进整合；保留原历史和功能分支。整合后的工程检查和远端核对以本节后续实测及本轮交付回复为准，不预写成功。
+
+合并后复验（本地 main，686d7c5）：
+
+- main 已从 origin/main 的 0474f55 快进至 686d7c5；与 m2m3-fix 内容一致，未产生冲突或重写历史。
+- Node 行为回归 81/81 通过；`pnpm build`（含类型检查）与 `pnpm format:check` 通过。
+- `cargo fmt --all -- --check`、`cargo test -p gitmaster-core --locked --offline`（248 通过、4 忽略）、`cargo test -p gitmaster-desktop --locked --offline --lib`（44 通过）、`cargo check -p gitmaster-desktop --locked --offline` 全部通过。
+- 仍有既有 Monaco 构建体积提示及 external.rs 的 app 未使用参数警告；本次不修改无关代码，不将警告消失作为收尾条件。
+- 此后仅补充本条实测记录和 README 的整合状态，进行文档格式及差异检查。M4 未启动，原生专项未测与 Windows 跳过保持原状态。
+- 推送两个分支后以 GitHub 远端 refs 与本地 HEAD 一致、ahead/behind 0/0、工作区干净作为交付核验；最终提交号及推送结果在本轮交付回复提供。
