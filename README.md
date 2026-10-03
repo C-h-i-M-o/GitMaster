@@ -1,4 +1,4 @@
-# gitMaster
+# gitMaster README
 
 面向 Git 初学者的 Windows/macOS 图形化桌面工具。用清晰的操作流程、流畅动效与克制的玻璃质感，让版本管理更容易理解。
 
