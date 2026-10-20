@@ -1405,3 +1405,291 @@ computer use 已成功操作本次构建的 macOS Debug `.app`，通过原生目
 - 仍有既有 Monaco 构建体积提示及 external.rs 的 app 未使用参数警告；本次不修改无关代码，不将警告消失作为收尾条件。
 - 此后仅补充本条实测记录和 README 的整合状态，进行文档格式及差异检查。M4 未启动，原生专项未测与 Windows 跳过保持原状态。
 - 推送两个分支后以 GitHub 远端 refs 与本地 HEAD 一致、ahead/behind 0/0、工作区干净作为交付核验；最终提交号及推送结果在本轮交付回复提供。
+
+## 2026-10-16 本地交互性能 P0/P1
+
+用户授权本轮文档和代码修改、实施及性能验证，明确保留写入校验，暂不提交推送。基线 `c0fd250`；Windows 11、系统 Git 2.55.0.windows.3、Node 24、pnpm 11.15.1。用户仓库 EvalSpark 仅用于只读性能测量；外部文件修改、引用变化和保存安全测试均使用临时仓库。
+
+### 根因与实现范围
+
+旧 Debug 日志记录文件树 33,145ms、编辑读取 22,943ms、同点击第二次预览 26,729ms、目录展开 12,520ms；空闲目录仅 22ms。编辑读取重复调用五个 Git 进程，文件读取又和 Git 查询共用 FIFO。普通刷新清空所有会话及前端资源，放大了重复加载。直接文件 IO 为亚毫秒量级，不能把等待归因于文件大小或 WebView 本身。
+
+本轮普通文件读取去除全仓库 Git 核验，保留文件 ID、目录句柄、路径/身份/大小限制；四路文件读取与 Git 查询独立，已排队写任务阻止新文件进入，写入及结果核实保持排他。取消注册有界，过期读取不会安装结果。历史/目录/正文按域失效；手工刷新与不可靠监听仍保守核实。保存准备和执行使用当前 Git 快照及原始文件版本，未放宽写保护。
+
+参考的开源实现是 [VS Code Git 仓库监听与刷新](https://github.com/microsoft/vscode/blob/main/extensions/git/src/repository.ts)、[GitHub Desktop 状态查询](https://github.com/desktop/desktop/blob/development/app/src/lib/git/status.ts)及[Git Store](https://github.com/desktop/desktop/blob/development/app/src/lib/stores/git-store.ts)：借鉴按变化合并刷新、普通文件阅读与 Git 查询分离、按稳定身份复用结果；没有复制整套缓存框架。
+
+### 工程回归
+
+| 项目               | 结果与范围                                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| 已跟踪前端行为回归 | 82/82 通过；按 `git ls-files tests` 选择 `.test.ts/.test.mjs`，不混入历史临时测试                                      |
+| 类型与前端生产构建 | `pnpm typecheck`、`pnpm build` 通过；保留既有 Monaco 大块体积提示                                                      |
+| 格式及差异         | `pnpm format:check`、`cargo fmt --all -- --check`、`git diff --check`，最终文档同步后复验                              |
+| 文件模块           | 15 项中 14 通过；包括无 Git 可执行文件的普通阅读、旧文件会话配合当前写快照保存、外部改写/替换/删除拒绝、字节与编码保护 |
+| 读写调度新增用例   | 3/3 通过：绕过慢 Git 查询、最多四路读取；排队写任务公平屏障；取消释放槽位                                              |
+| 监听分类           | 6/6 通过；Windows 正文事件误分类的新增断言修复前失败，修复后通过                                                       |
+| 桌面只读会话       | 8/8 通过；覆盖旧能力拒绝、切仓库、分页释放、普通刷新保留缓存、变化域失效                                               |
+| 取消注册表         | 1/1 通过；重复 ID、跨仓库隔离、抢先取消、有界容量与释放                                                                |
+| 桌面编译           | `cargo check -p gitmaster-desktop` 通过；Release 构建及实机最终结果见下节                                              |
+
+完整 Rust 回归已尝试，但出现写配置拒绝和并行 Git 超时，未取得全量通过结果。降低测试并发后完成上述受影响专项；未通过或中断的全量运行不记为通过。以下两项用 `git archive HEAD` 的独立源码和独立 Cargo target 复现，属于本机原基线失败：
+
+- `git::branches::tests::create_supports_sha256_repository`：`UNSUPPORTED_WRITE_CONFIGURATION`。
+- `git::files::tests::conflict_stages_are_deduplicated_and_old_snapshot_is_rejected`：夹具未形成预期冲突，断言失败；本轮文件模块唯一失败与此相同。
+
+未为了通过测试关闭写配置校验；其他全量失败未逐项证明同因，不声称全是基线问题。定向 Rust 测试在子进程 PATH 使用同一套 Git 安装的 `mingw64/bin`，避免包装进程开销；应用设置和正式性能采样仍使用其实际配置的系统 Git。
+
+### Windows Release 实测方法
+
+通过已有 Playwright 连接真实 Tauri WebView2 的本机调试端口，页面为 `http://tauri.localhost/`，没有 Vite 服务、模拟 IPC 或模拟 Git。临时脚本保存在忽略目录 `tests/windows-history/p01-performance.cjs`、`p01-refresh.cjs`，数据与截图在 `target/p01-*`，不纳入提交。
+
+文件为 EvalSpark 的 `scripts/start-local-vue.sh`（5,820 字节），目录为 `docker`（两项）。UI 从页面内点击计时，等待真实编辑状态及 Monaco 正文出现后再经过两帧；每次关闭文档再打开，模块冷加载单独记录。目录 UI 统计已展开过的本地树缓存；后端目录 IPC 另外测 20 次，不把缓存展开等同于磁盘冷读。P95 使用升序第 19/20 项；所有样本保留。Trace 开启仅用于测量，结束恢复原日志级别。
+
+初次原生刷新补测发现 notify 8.2.0 在 Windows 把 `FILE_ACTION_MODIFIED` 映射为 `ModifyKind::Any`，导致正文变化重建目录、旧 fileId 自动重读失败。已修正该平台的分类，并给前端重读加上当前目录能力就绪门禁；后续结果只以修正后的 Release 为准。
+
+### 最终实测结果
+
+最终 `pnpm tauri build --no-bundle` 成功，产物 `target/release/gitmaster-desktop.exe`；SHA-256 为 `1FAD7C0C9A1FD78FC9A08EBE38A1D7A2A5C0984F0773637409564EE28B0A5376`。以下结果均来自此产物，未把前面的中间构建或失败脚本计入验收。
+
+| 测量                                     | 样本 | 中位数 | P95    | 最大值  |
+| ---------------------------------------- | ---- | ------ | ------ | ------- |
+| 小文件点击到 Monaco 正文显示，模块已加载 | 20   | 88.2ms | 89.9ms | 90.0ms  |
+| 完整可编辑文件 IPC，含 WebView 往返      | 20   | 20.2ms | 23.5ms | 39.5ms  |
+| 目录 IPC，含 WebView 往返                | 20   | 7.3ms  | 12.1ms | 15.5ms  |
+| 已加载目录的 UI 折叠/展开                | 20   | 53.7ms | 57.8ms | 490.1ms |
+
+- 本次应用进程首次加载编辑器为 **436.7ms**，单次冷样本不计算 P95。目录 UI 有一次 490.1ms 长尾；虽然本轮暖态 P95 达到目标，不能宣称所有点击都小于 100ms。Monaco 冷加载与长尾仍可继续优化。
+- 同一轮 Trace 中 42 次 `read_editable_file`（首次 1、UI 20、直接 IPC 20、并行验证 1），22 次 `read_project_directory`，均没有 Git 子进程；没有 `read_project_file` 第二条预览路径。64 次文件通道等待均为 0ms，文件读取命令 P95 21ms、目录读取命令 P95 7ms；此处是后端日志计时，不替代 UI 数据。
+- 同时启动真实 Git 状态查询时，状态查询耗时 **2,926.6ms**，文件 IPC 在 **13.6ms** 完成，证明文件读取没有排到 Git 查询之后。
+- 普通无变化自动刷新前后三域均为 `{history:2, files:2, documents:2}`，未调用历史、分支或建树命令。测试派发 focus 事件并观察 2.2 秒，没有额外 Git 状态查询；这是焦点处理路径验证，不声称已覆盖全部物理窗口切换组合。Trace 的 10 个 Git 进程都来自测试主动执行的两次状态查询。
+- 初次打开 EvalSpark 约 **5,653ms**，历史首屏约 **8,085ms**（含测试控制端等待），这是单次观察而非 20 次统计；首次 Git 查询仍慢。本轮解决的是重复读取和相互阻塞，没有完成第 12 节全部性能治理或 1GB 磁盘缓存。
+
+原生临时仓库回归全部通过：快速 A/B/A 最终只显示 A；两份干净文档外部改写后自动重读，历史和树 ID 保持；本地草稿遇到外部新内容时保存返回 `FILE_CHANGED`、磁盘保持外部内容且草稿保留；新建文件更新目录而不重建历史；新建引用更新历史而不重建目录。测试后回到 EvalSpark，保留运行的最终 Release 应用；EvalSpark 已跟踪文件无修改。原日志级别已恢复。
+
+最终类型与前端构建、82 项前端回归、监听 6 项回归、桌面编译和格式检查均通过；桌面只读 8 项、取消注册 1 项、读写屏障 3 项及文件专项结果沿用上述同一实现范围的检查。独立复核已检查共享写屏障、锁序、会话失效及目录能力就绪门禁；主 Agent 按实机失败补齐 Windows 修正。完整 Rust 的未通过情况保持前述记录，不把专项通过扩写为全量通过。
+
+未新增 macOS、安装器、签名、干净系统、真实远端认证或长时间 CPU/RSS 压测证据；不发布、不提交、不推送。
+
+## 2026-10-16 保存、换行差异与工作区恢复
+
+本轮在上述未提交的 P0/P1 改动上继续，范围以 spec-plan 第 18 节为准。用户已授权相关文档和代码修改，保留写安全校验与草稿保护，不提交推送。所有写入验收使用 `target/p18-native-fixture`，未编辑 EvalSpark 文件。
+
+### 原因与修复
+
+- EvalSpark README 的索引为 LF，工作区为 CRLF；规范换行后正文一致。系统 `core.autocrlf=true` 被应用的只读配置隔离跳过，导致全文删除新增。只读 status/diff 现在用一次有界配置探测保留内建 EOL 设置的系统、全局、仓库优先级；继续禁用外部 filter、textconv、hook。编辑器保留原 BOM 和换行，不通过重写全文掩盖差异。
+- 保存 prepare 已校验当前状态，但预览返回旧文件会话快照；现返回实际核实的 snapshotId/head。保存终态已有真实核实结果，桌面新增一次性消费接口，前端不再为成功确认重复发起第四轮完整状态读取。prepare、execute、结果核实和文件版本/路径身份保护均保留。
+- 完整保存事务阻止自动刷新抢先替换快照；保存中请求差异在结束后用当前 changeId 读取。预期差异失效触发一次本地核实，迟到结果不能回填。文件已写入而后续状态刷新失败时分别提示，不把落盘成功误报为保存失败。
+- 工具栏新增有文字的“刷新本地状态”，远端入口标明“获取远端”。本地刷新保留草稿、文档和目录展开。工作区缓存只存项目路径、标签、活动文档、展开路径与光标/滚动位置；正常关闭先等待位置写入，不持久化正文或草稿。
+
+### 工程验证
+
+- 已跟踪的前端 `.test.ts/.test.mjs` 加本轮本地目录恢复测试：89/89 通过。包含保存中继续输入、外部改写保留草稿、已落盘但刷新失败、迟到快照拒绝、过期差异恢复、跨分页目录恢复及路径规范化。
+- 核心换行行为回归通过：系统 true / 全局 false / 仓库 true 分别得到单行 / 全行 / 单行差异；外部过滤器未执行，工作区原字节保持。修复前单行断言失败，修复后通过。
+- 旧文件会话结合当前快照的保存/预览及外部改写拒绝测试通过。默认 Git 包装路径运行出现 revParse/Git 状态超时；定向测试按上一节方法使用同安装的 `mingw64/bin` 子进程 PATH 后通过，耗时 54.12 秒。应用设置与性能采样未替换 Git 路径。
+- 桌面保存结果发布测试 1/1 通过，覆盖 epoch/token、仓库身份、域版本更新及重复消费拒绝；工作区存储测试 3/3 通过，覆盖连续替换、删除的历史目录、损坏记录保留、非法路径/数值和大小上限。
+- 全量核心测试本轮再次尝试，因多项 Git 超时和既有写配置失败未通过，运行过慢后中止。未将中止或未逐项核实的失败算作通过；原基线已证明的两项失败仍以上一节为准。
+- 一次宽泛执行本地所有测试误包含历史临时测试：旧 file-tree 测试引用已删除导出，旧保存测试仍期待“落盘后刷新失败返回 false”。这次宽泛运行失败，不能视为全绿；正式结果使用已跟踪测试加本轮新增用例的明确集合。
+
+最终 Windows Release 产物及原生结果在下节记录；不把中间 Debug 验证作为最终发布验收。
+
+### Windows Release 实机验收
+
+最终 `pnpm tauri build --no-bundle` 成功（4 分 50 秒），产物 SHA-256：`9E3A2796C74120DCAF65AFAACFA6B5A11AD0301918AB873BE1A4D2FEF153BA19`。此次测试通过 CDP 连接真实 `http://tauri.localhost/` WebView2，没有开发服务器或模拟 IPC。
+
+- 真实进程重启自动恢复临时项目、README.md 与 src/deep/a.txt 两个标签、活动 README、项目文件页及 src/deep 展开。实际 Monaco 可见行是第 238–259 行，缓存光标为第 260 行；页面错误为空。
+- 正常窗口关闭测试在最后一次键盘移动后立即关闭，未由脚本调用 flush、未等待 250ms 防抖；进程正常退出，位置记录已更新到第 259 行，证明退出流程等待最后位置落盘。
+- 本地刷新保留未保存测试草稿和目录展开的原生流程通过；测试草稿仅位于临时仓库，检查后恢复为已保存基线。前一轮重启曾因 Git 状态查询超时失败，后续成功结果不抹除该长尾。
+- 连续保存 5/5 成功，每次保存中切至本地修改并请求差异；无过期错误、页面刷新要求或丢失草稿。最终差异为 1 处、`+1/-1`，原始文件仍为 UTF-8 BOM + CRLF。另一次真实外部改写后保存返回 `FILE_CHANGED`，磁盘外部内容和本地草稿各自保留。
+- 中间位置测试两次失败来自测试本身：清理草稿导致 setValue 重置光标，以及 Monaco DOM 用不换行空格渲染；已修正测试操作和空白匹配，并在最终产物检查真实可见行，不只检查 JSON 缓存值。
+
+最终类型检查、前端生产构建、格式检查与 Rust 格式检查通过。Monaco 构建体积、Windows 条件编译未使用导入及链接器输出提示仍保留。完整核心测试未通过的限制见上节；未验证 macOS、安装器、签名或干净系统，不将本地 exe 构建称作发布验收。
+
+### 保存耗时与剩余瓶颈
+
+同一临时仓库、系统配置的 Git 路径、最终 Release，5 次连续保存分别为 19,350 / 17,633 / 19,572 / 20,050 / 18,987ms，中位数 19,350ms；样本只有 5 个，不计算有代表性的 P95。旧版一次成功为 30,650ms，下一次准备超时失败；旧采样与编译并行且每次重新打开仓库，新采样为连续保存，因此不能据此宣称稳定提升百分比。
+
+每次保存日志均为准备 5 个 Git 进程、执行与结果核实合计 10 个；前台确认不再等待第四轮完整刷新。真实文件监听仍允许后台核实，不能把这描述为“整个应用总共只有 15 次 Git 调用”。5 次保存准备的队列等待分别为 9,895 / 7,213 / 9,518 / 9,504 / 9,889ms；准备总耗时 10,435–13,366ms。可见剩余大头是已排队的状态、分支和写能力查询，以及每次约 0.5–0.8 秒的 Git 子进程执行，并非正文写盘。
+
+因此本轮已验证正确性、恢复体验和重复核实消除，但**保存延迟仍未达到流畅目标**。后续应先给后台只读请求做取消/合并与交互优先调度，再依据配置与监听代次复用分支/写能力查询；同仓库真实写入 FIFO、prepare/execute 验证和结果核实不能因此放宽。系统 Git 启动长尾仍需独立采样，未通过关闭防护软件或更换用户配置来制造性能结果。
+
+证据：本地忽略目录 `tests/windows-history/p18-session.cjs`、`p18-ui.cjs`、`p18-safety.cjs`；采样、Trace、存储/恢复结果和截图位于 `target/p18-*`。最终桌面 `cargo check -p gitmaster-desktop` 通过；记录和截图不纳入提交。
+
+结束前已移除本任务临时项目的最近记录与恢复记录，最终 Release 保持运行并打开 EvalSpark 的 README.md，编辑器无错误。新工作区记录只包含 EvalSpark；该仓库 `git diff --numstat` 为空。日志级别已恢复原值，没有提交或推送。
+
+## 2026-10-16 第 19 节：即时保存与差异恢复（验收进行中）
+
+### 已取得的证据
+
+- 新保存入口不调用 Git：将夹具的 Git 路径改为不存在后，读取与保存成功；旧版本、相同字节的新文件实体、HEAD 变化均拒绝覆盖。文件 ID 重签保持版本，BOM/CRLF 原样落盘。定向测试 `filesystem_reads_work_without_git_executable` 通过。
+- 真实只读子进程被保存取消并回收，保存期间 invalidate/begin_prepare 仍返回 OPERATION_IN_PROGRESS，失败后释放门禁：`file_save_cancels_running_read_and_preserves_write_gate` 通过（0.31 秒，包含夹具启动）。协调器 14 项串行回归全部通过，覆盖写 FIFO、排队过期、读取消与共享文件屏障。
+- `expanded_context_reads_hidden_lines_and_rejects_excess` 定向通过，完整上下文包含文件头尾，超出参数上限仍拒绝。并发差异组 10 项通过、2 项在仓库初始化时 TIMEOUT；完整上下文测试串行重跑通过。未将初始化超时当作差异逻辑通过。
+- 前端已有测试与新增恢复/保存回归最终共 94 项通过；typecheck、format:check、cargo fmt --all -- --check、cargo check -p gitmaster-desktop 通过。新增独立文档能力、原版本保留、失败不重试及最新远端评估快照回归。构建保留既有 Monaco 大块提示及平台条件导入警告。
+- 首轮原生 Release 保存五次为 234.4 / 230.9 / 225.3 / 216.8 / 196.6ms，全部成功、保存中切页保留草稿状态，diff 实际为 +1/-1。此轮样本用于发现联调问题，不代替最终 20 次验收。
+- 实机发现并继续修正了 REQUEST_CANCELLED 被资源错误展示、已加载全文仍默认折叠、差异内容透底，以及刷新重选在 pending 门禁中未真正读取的问题。最终产物仍需重新验收。
+- 最终候选版连续保存曾出现 642.3ms 成功后第二次 STALE_REQUEST；单次前端重签方案在快速复测中仍出现 FILE_UNAVAILABLE。失败日志保留在 target/p19-native-failed.log、p19-native-failed-samples.json 和 p19-preflight.log。最终改为成功打开文档后派生独立、最小且有界的保存能力，不再依赖目录列表生命周期，也不自动重试写入。
+- `editor_save_survives_readonly_refresh_and_preserves_version` 通过：强制清空只读缓存、目录域失效后旧文档连续保存成功；旧版本、外部改写、跨仓库访问均拒绝。桌面 `paged_diff_lifecycle_rejects_stale_requests` 通过；先前初始化超时的 `preview_encoding_and_limit` 串行重跑通过。
+- 中间原生版本通过真实临时仓库索引损坏→恢复原字节→重试刷新，差异重新显示；文件恢复 HEAD 内容后显示无差异并保留路径。此测试还发现顶部辅助资源旧错误残留，已改为按来源清除成功恢复的错误。1100×720 WebView 下内容背景为实体 rgb(251,252,248)，差异可滚动高度 297px；最终版本仍需复测。
+- 独立文档能力版本（SHA-256 `08E4198BC760786C98D8A4F3322E1E82C9160BFB6201D6F5031E408458930BC4`）20 次原生保存全部成功；中位数 812.4ms、P95 2710.4ms、最大 7034.9ms，未达目标。前 10 次没有额外注入查询，后 10 次启动真实分支读取再保存，全部返回 REQUEST_CANCELLED，保存后文件仍为 BOM+CRLF，diff +1/-1、261 行完整上下文。诊断日志在部分采样期间打开，最终一致条件采样另行进行；保留全部原始数据 target/p19-document-result.json。
+- 同版本真实刷新重试、无差异保留路径通过，repo/resource/remote/history 错误全部为空；1100×720 内容区可滚动高度 349px、实体背景，无透底。三图标无常驻文字/title，仅 hover 显示说明；重启恢复 2 标签、目录及第 259 行，外部改写返回 FILE_CHANGED 并保留磁盘内容和草稿。
+- 独立 4KB 强制刷盘探针为 0.77–3.92ms，不能把秒级长尾归因于物理刷盘。保存内部原有五次上下文捕获，优化为读取前、替换前、复读后三次，并合并单次捕获内重复 HEAD/同目录身份读取；原子替换、强制刷盘、字节复读及写屏障保留。优化后核心纯文件读写安全测试通过，新版本增加固定阶段诊断，原生性能仍待测。
+- 三次上下文版本阶段诊断：队列等待 0/46/179ms、校验 193–275ms、原子替换 54–83ms、复读 97–150ms。随后 20 次均成功，中位数 384.85ms、P95 606.5ms、最大 1249.2ms；期间并行了后续核心测试编译，因此作为定位数据保留，不作为最终独占构建退出后的性能验收。证据 target/p19-save-phases.log、p19-optimized-result.json。
+- 根据阶段数据新增 Windows 元数据专用读取：持有祖先目录句柄，保持 nofollow、reparse 拒绝、最终句柄/目录项身份及长度/mtime 核对，避免通用工作文件读取的重复祖先打开。纯文件安全回归、元数据大小/父路径/超时回归与桌面编译通过，未移除 sync_all。
+- 元数据版本（SHA-256 `BC009EC5F0A202C09C79FE7FD1F608F342D2407B0855B5FCB2334BA657464B17`）在编译结束、详细日志关闭后，20 次保存全部成功：最小 87.7ms、中位数 131.9ms、P95 329.7ms、最大 370.1ms。最后一次后台 Git 收敛为 15,178.2ms，不能混同前台落盘；此轮 P95 尚高于目标。全部数据保留于 `target/p19-metadata-result.json`、`target/p19-metadata-samples.json`、`target/p19-native-metadata.log`。
+- 后续短诊断三次为 240.6/283.1/318.8ms；阶段显示两次已过时文档重读占用文件屏障约 98/104ms。前端原来仅废弃返回值，现使用既有读取取消接口取消其排队；已进入 I/O 的读取仍安全结束。新增保存取消与迟到正文保护回归先失败后通过，前端回归增至 **95/95**，格式检查通过。当前重新构建，后续原生采样单独保留。
+
+### 全量 Rust 限制
+
+`cargo test -p gitmaster-core -- --test-threads=1` 已尝试，分支测试出现失败，随后停止该全量进程以定位首个失败。单独运行 `create_rejects_unborn_invalid_names_and_existing_namespaces`，实际为 UNSUPPORTED_WRITE_CONFIGURATION，预期 HEAD_REQUIRED；同环境前轮已记录 SHA-256 分支测试的同类配置拒绝。本轮不放宽 Git 写配置安全策略来使测试变绿，不能宣称全量核心测试通过。测试日志为本地 `target/p19-core-all.log` 与 `target/p19-branch-failure.log`。
+
+### 2026-10-20 中断后续验
+
+当前 Release SHA-256 为 `82FE70421D1F76AFF0AB09561FD63D84635169183D18C02BCDB5B26EF3E3D575`，包含文档重读取消修复；构建成功（4m40s），同代码前端 95 项回归、类型与生产构建、格式检查通过。10 月 16 日启动后的重启恢复成功：两个标签、展开目录、活动 README、第 259 行均恢复且无错误；当日 20 次连续保存脚本在首个样本前因窗口关闭而中断，日志保留为 `target/p19-native-cancel-interrupted.log`，不记为通过。
+
+10 月 20 日重新启动同一产物，使用真实 Tauri WebView2、系统配置的 Git、既有临时仓库，详细日志关闭、无并行编译。20 次保存全部成功，前 10 次没有额外注入查询，后 10 次主动启动真实分支读取再保存，后者均返回 REQUEST_CANCELLED。每次保存后切到本地修改和差异页，均无保存错误或残留草稿。
+
+| 指标                          | 结果                      |
+| ----------------------------- | ------------------------- |
+| 保存最小值 / 中位数           | 146.7ms / 316.6ms         |
+| 保存 P95 / 最大值             | 535.8ms / 1,117.1ms       |
+| 成功率                        | 20/20                     |
+| 最后一次保存后的 Git 状态收敛 | 7,810.3ms（单次，非 P95） |
+
+P95 仍高于第 19.4 节的 300ms 目标，不能宣称已全部达标或达到 VS Code 的保存延迟。原先 17.6–20.1 秒的前台 Git 等待已经移出文件保存链路，但不同日期的系统负载并未受控，不据此计算稳定提升比例。全部样本与终态保存在 `target/p19-resumed-result.json`、`target/p19-resumed-samples.json` 和 `target/p19-native-final.log`，保留旧轮失败及长尾。
+
+同一产物补验结果：
+
+- BOM/CRLF 原字节形式保留，少量编辑显示 +1/-1；默认完整上下文共 261 行，可翻到第 259 行，没有默认折叠的区段。
+- 三个顶部按钮均无常驻文字及原生 title，仅 hover 显示功能说明；内容表面不透底。1100×720 下矩形内容空态居中，差异可滚动区域高 349px。
+- 临时仓库索引故障后恢复原字节，点击“重试刷新”恢复差异；仓库、资源、远端本地映射与历史错误均为空。文件恢复 HEAD 内容后显示“此文件已无文本差异”，保留 README 路径。证据 `target/p19-final-ui-state.log`。
+- 外部修改与本地草稿冲突时保存返回 FILE_CHANGED，外部磁盘内容和本地草稿均保留。证据 `target/p19-final-safety.log`。
+- 另开详细日志做三次诊断（不混入上述 20 样本）：265.3/309.6/389.2ms。队列等待 0/33/35ms、校验 121–136ms、原子替换 47–73ms、复读 56–102ms；剩余时间包含 IPC/UI 往返。证据 `target/p19-final-phases-summary.log`、`target/p19-save-phases.log`。诊断后日志恢复原值 null。
+
+本轮五项中，刷新恢复、完整上下文及错误处理、顶部图标、差异空态与背景已取得原生证据；保存正确性通过且明显缩短，但严格性能目标仍未完成。未移除强制刷盘、文件版本与身份校验、外部改写保护或共享写屏障来换取数字。不将本轮验收视为 macOS、安装器、签名、干净系统或全量 Rust 测试通过；不提交推送。
+
+续验结束时重新运行前端回归，95/95 通过（`target/p19-final-front.log`）；格式检查和 `git diff --check` 通过。已按精确项目路径清理测试仓库的最近记录及恢复记录，保留其他项目，正常模式启动最终 Release（窗口标题 gitMaster），上次项目为 EvalSpark、活动文档 README.md。诊断端口未传入正常启动进程，日志配置恢复 null。EvalSpark README 的 SHA-256 与续验前一致（`6CE63D2447071CD52EE84D21DD9D38A1CFBC0AADFD2D5ED26A3D1F395D44B375`），其已有 +1/-1 修改原样保留。
+
+### 单次捕获复用目录能力（继续优化）
+
+依据上述阶段数据，单次元数据捕获现在复用取得目录身份时已打开的 git/common 目录能力，避免 HEAD/ref 读取再次打开相同目录。目录能力仅活到该次捕获结束，下一次捕获仍重新取得当前路径的实体身份；三次保存上下文核验、原子替换、强制刷盘和落盘字节复读保持。
+
+新增无 Git 元数据夹具：20 次相同状态指纹稳定，引用及 MERGE_HEAD 变化改变指纹，index.lock 阻止操作，超时拒绝，分离的 common 目录引用更新可见；捕获结束可重命名原目录，相同路径的新目录即使正文相同仍产生不同身份。该回归、元数据大小/路径/超时回归和无 Git 文件保存安全回归均通过（`target/p19-capture-after.log`、`target/p19-reuse-bounds.log`、`target/p19-reuse-safety.log`）。
+
+独立 Debug 文件系统诊断仅用于定位：调整前上下文捕获多数 30–65ms，调整后多数 26–38ms；两个批次的未修改工作文件读取耗时也有下降，说明系统负载变化存在，不能把整个差值归因于代码。原始全部样本保留在 `target/p19-capture-before.log` 和 `target/p19-capture-after.log`；不将微基准当作 Release 保存验收，原生重测待完成。
+
+该版 Release 构建成功（10m11s），SHA-256 `21CE96B1A608609735F89C6835BD42848DB7BB9B7AFE843F219466CA33D3CB99`。首次脚本在调试端口尚未就绪时连接失败，没有产生样本；确认同一应用进程和端口就绪后重新连接，未重启应用。随后原 20 次采样全部成功：最小 210.3ms、中位数 300.85ms、P95 348.2ms、最大 381.1ms。后 10 次真实分支查询全部被取消，单行 +1/-1、261 行完整上下文、滚动、hover 和无用户错误断言通过。数据保留于 `target/p19-reuse-result.json`、`target/p19-reuse-samples.json`、`target/p19-native-reuse.log`，启动探针失败保留为 `target/p19-reuse-startup.log`。P95 仍未达到 300ms。
+
+进一步诊断改用编辑控制器的状态订阅与后端阶段日志对照：三次保存 233.8/388.7/350.2ms，后端命令 220/368/331ms，前端完成态两次发布只相隔约 2ms；两次长尾的队列等待为 100/82ms，对应已取消的编辑文档读取仍耗时 120/105ms。首个临时探针未能截获封装后的 IPC，已停止该探针、恢复原设置，失败不记为性能结果。有效诊断见 `target/p19-save-boundary.log` 与 `target/p19-reuse-phases.log`；其详细日志结束后恢复 null。
+
+据此将桌面现有 readId 取消信号传入核心读取，在首次上下文之后、正文读取之后等阶段检查；取消只提前结束只读请求，不减少成功结果的核验或中断写事务。`editable_read_cancels_between_stages_and_releases_handles` 在仅检查入口的实现上失败，在四个检查点补齐后通过（9.40 秒）；验证四个阶段均返回 REQUEST_CANCELLED、原文件字节保持、正常读取版本一致，取消后可正常保存。证据 `target/p19-stage-cancel-before.log` 与 `target/p19-stage-cancel-after.log`。这一补充的最终 Release 性能仍待验收。
+
+### 阶段取消版最终产物复核（2026-10-20）
+
+`pnpm tauri build --no-bundle` 成功（4m35s，包含类型检查和前端生产构建），Release SHA-256 为 `B9DDCF54C907051713EF8250C7C85CEDF809D5EB303FF6D1AC5E258D2C7A5ACD`。无 Git 文件保存安全回归再次通过，桌面 `cargo check` 通过，Rust 格式检查通过；未改动前端生产代码，95 项前端回归结果沿用同一实现。全量 Rust 未通过的限制仍见上文，不把专项结果扩写为全量通过。
+
+同产物真实进程重启恢复两个标签、活动 README、src/deep 展开和第 259 行，页面错误为空（`target/p19-stage-cancel-restore.log`）。两组原生保存均为原 20 次场景，详细日志关闭、无并行编译：
+
+| 采样              | 成功  | 最小 / 中位数      | P95 / 最大         |
+| ----------------- | ----- | ------------------ | ------------------ |
+| 阶段取消首组      | 20/20 | 195ms / 262.05ms   | 608.8ms / 3626.4ms |
+| 同进程 CPU 观测组 | 20/20 | 197.3ms / 269.85ms | 360.2ms / 363.3ms  |
+
+首组数据为 `target/p19-stage-cancel-result.json`、`target/p19-stage-cancel-samples.json`、`target/p19-native-stage-cancel.log`。3.63 秒长尾同期另启 PowerShell 读取日志也明显变慢，之后一次系统 CPU 采样为 69%；这个单点不足以证明根因。第二组只从已运行测试进程读取 stdout，并用 Node `os.cpus()` 累计时间差记录 CPU，避免额外启动轮询进程；数据为 `target/p19-observed-result.json`、`target/p19-observed-samples.json`、`target/p19-native-observed.log`。观测窗口包含编辑、IPC 与后台查询结束，CPU 使用率约 31%–70%，不等同于文件写入 CPU，也不能据此归因于特定系统服务。
+
+两组均验证后 10 次真实分支查询返回 REQUEST_CANCELLED，保存中切到差异页没有错误或残留草稿，磁盘 BOM/CRLF 保留，最终 +1/-1、261 行完整上下文及滚到第 259 行均通过；三个顶部按钮仅图标、无原生 title、仅 hover 显示提示。第二组最后一次后台状态收敛为 11101.9ms（单次，非 P95），与前台保存确认分开。P95 300ms 仍未达到，首组长尾不能被第二组覆盖，目标不标为完成。
+
+另开详细日志的三次诊断为 236.0/299.2/386.5ms；队列等待 0/5/29ms，校验 106/129/106ms、替换 43/77/48ms、复读 57/56/152ms。保存成功状态与结束 saving 相隔约 1–2ms，继续增加前端状态优化缺乏依据。诊断见 `target/p19-stage-cancel-boundary.log` 与 `target/p19-stage-cancel-phases.log`，结束后恢复原日志级别。未采用禁止元数据文件删除共享来省去目录项复核的思路：[Windows CreateFile 文档](https://learn.microsoft.com/zh-cn/windows/win32/api/fileapi/nf-fileapi-createfilew) 明确删除权限也控制重命名，这会改变外部 Git 更新引用时的并发行为。
+
+真实临时仓库索引损坏、恢复原字节、点击“重试刷新”后，差异恢复且 repo/resource/remote/history 错误全部为空；文件恢复 HEAD 内容后，显示“此文件已无文本差异”并保留 README 路径。1100×720 下内容背景为实体 rgb(251,252,248)，差异滚动区高 349px，无透底。日志 `target/p19-stage-cancel-ui.log` 已完整退出且通过。
+
+同产物外部改写回归通过：返回 FILE_CHANGED，磁盘外部内容和编辑器草稿各自保留，测试结束恢复临时文件（`target/p19-stage-cancel-safety-native.log`）。之后正常打开 EvalSpark README，确认无草稿、无编辑错误并刷新工作区缓存，正常关闭窗口；精确移除本任务临时项目的最近记录和恢复记录，其他项目保留。日志级别恢复 null，以无远程调试参数的正常模式重新启动该 Release。EvalSpark README 的 SHA-256 仍为 `6CE63D2447071CD52EE84D21DD9D38A1CFBC0AADFD2D5ED26A3D1F395D44B375`，未修改用户文件；未提交或推送。
+
+### 原语诊断与标题栏关闭补验（继续进行）
+
+工作区 target 下的独立临时夹具，20 次交错 Debug 诊断中位数：普通读取 0.076ms、缺失项查询 0.029ms、目录打开与身份读取 0.053ms、cap-std 文件打开 1.981ms、句柄元数据 0.011ms、目录项元数据 2.047ms、完整 HEAD 读取 4.212ms、引用读取 8.627ms、工作文件安全读取 4.354ms。工作文件读取仍有 74.721ms 单次长尾，全部结果保留在 `target/p19-primitives.log`。成本集中在能力路径打开与当前目录项复核，而不是文本正文；独立进程与实际应用耗时尚不一致，不能据此省略校验或宣称原生达标。诊断用例默认忽略，不改变正式运行行为。补充分段白名单日志后的元数据边界回归通过。
+
+检查当前正常启动的应用时，标题栏关闭与操作系统关闭请求均未退出，界面在无终端会话时显示“终端操作未完成”。Computer Use 实际观察确认 README 无未保存标记、工作区位置记录完整；仅结束本任务启动且路径/PID 核对一致的进程用于重建，EvalSpark README 字节哈希保持。既有 IPC 关闭成功不覆盖此路径，正常关闭验收重新标为待修复。下一次原生采样同时记录文档可见性与焦点，避免未记录的窗口最小化状态混入交互性能结论。
+
+分段诊断版 Release 构建成功（5m17s），SHA-256 `98844C44FF4F07E9CEB9B41441F5D9C0059949C298015CF87B6A831D95616163`。实际应用三次保存 145.1/104.3/131.5ms；正文读取阶段每次不足 1ms，单次 HEAD 上下文约 7–10ms，引用约 9–22ms，主要成本仍为能力路径打开和当前目录项复核。证据 `target/p19-detail-boundary.log`、`target/p19-detail-phases.log`。开启详细日志只用于这三次诊断，之后恢复 null。
+
+同产物带窗口状态观测的 20 次保存全部成功：最小 118.2ms、中位数 156.55ms、P95 212.2ms、最大 223.9ms；10 次额外后台分支查询均被取消。每次 WebView 均报告 visible 且 document.hasFocus() 为 true，CPU 观测约 30%–63%；+1/-1、BOM/CRLF、261 行上下文、悬停提示和无用户错误断言全部通过，最后一次后台状态收敛 8363.7ms。数据保留在 `target/p19-diagnostics-result.json`、`target/p19-diagnostics-samples.json` 与 `target/p19-native-diagnostics-observed.log`。这组达到 300ms 指标，但只增加了诊断、没有再降低文件校验成本，不将跨轮差值归因于代码或推断以前窗口必然处于后台；此前全部长尾记录保留。
+
+关闭补验期间，窗口自动化出现 `coordinate input geometry is unavailable` 和重复 `failed to activate captured window`，原生异常观察器未捕获到有效关闭动作，因此不把零异常视为关闭通过。已向用户询问桌面是否解锁并可操作；协议端口所属 WebView 进程与当前 gitMaster 进程已核对，未误连其他应用。尚未取得按钮路径的修复后原生证据。
+
+关闭流程改为所有保护通过后调用 destroy，不再次发起 close 事件，重复请求合并。实际 React Hook 与 Tauri 官方 IPC/event mock 的新增回归先失败（实际请求 close，预期最终销毁），修改后通过四个场景：保护未放行不关闭、重复请求只销毁一次、销毁失败正确提示并可重试、终端需确认且回收失败阻止退出。证据 `target/p19-close-before.log`、`target/p19-close-after.log`。类型检查通过，正在构建包含该修复的最终候选；该模拟回归不替代真实标题栏验收。
+
+### 关闭保护最终候选验证（2026-10-20）
+
+最终 Release 构建成功（3m53s），SHA-256 `35E110D46ECB4E01094E6AB47D779091B77418EAF9DE4741DE32C255EF00F899`，证据 `target/p19-release-guarded-close.log`。95 项前端回归全部通过，关闭 Hook 的四场景模拟回归通过。全量 Rust 的已记录失败尚未解决，专项通过不代表全量通过。
+
+同产物的 20 次真实桌面保存全部成功：最小 139ms、中位数 183.7ms、P95 207.2ms、最大 215.6ms。前 10 次空闲、后 10 次存在主动后台分支查询，后者全部返回 REQUEST_CANCELLED；保存期间切换差异页没有编辑错误或残留草稿。每次 WebView 为 visible 且 hasFocus 为 true。BOM/CRLF、+1/-1、261 行完整上下文、滚到第 259 行、三个图标的悬停提示均通过。数据为 `target/p19-final-guarded-result.json`、`target/p19-final-guarded-samples.json`、`target/p19-final-guarded-native.log`。最后一次后台状态收敛仍需 9075.3ms，属于独立的后台刷新耗时；不能将保存数据推广为所有操作耗时。历史长尾记录全部保留。
+
+刷新后保留草稿、目录展开和阅读位置的回归通过（`target/p19-final-close-setup.log`）。真实桌面 IPC 关闭请求验证：有草稿时出现确认对话框，继续编辑保留草稿，清理测试草稿后正常退出；证据 `target/p19-final-native-close-guard.log`。测试只修改 target 下临时仓库。新进程的 Windows 窗口自动化仍返回 `failed to activate captured window`，截图为黑色，故此 IPC 验证仍不替代标题栏点击验收；后者等待桌面可交互后补验。
+
+同产物退出后重新启动，恢复 README 与 src/deep/a.txt 两个标签、活动文档、目录展开及第 260 行位置，错误和通知均为空（`target/p19-final-guarded-restore.log`）。前端与 Rust 格式检查、`git diff --check` 均通过。最后恢复 EvalSpark README，无草稿、编辑错误为空、日志级别 null，经过正常关闭后只移除本任务临时项目的最近/工作区记录，再以无调试参数的普通模式启动该 Release。EvalSpark README 哈希保持 `6CE63D2447071CD52EE84D21DD9D38A1CFBC0AADFD2D5ED26A3D1F395D44B375`；未提交、推送或修改该用户文件。
+
+### 真实标题栏补验与完整核心回归结果（2026-10-20）
+
+用户确认桌面解锁并保持窗口可见后，Computer Use 取得实际窗口截图：EvalSpark README 无草稿标记，正文显示第 238–260 行，仅有操作记录标签。点击原生标题栏关闭按钮后，PID 4576 退出，后续窗口枚举为空；重新以无调试参数启动同一 Release（PID 1136），实际截图恢复 EvalSpark README 及第 238–260 行，缓存记录活动文档与光标第 260 行一致。没有终端错误，README 哈希不变。此前因窗口不可交互而欠缺的无草稿标题栏关闭/恢复验证已补齐；草稿保护依据同产物真实 IPC 对话框与 Hook 四场景证据。
+
+空仓库分支单项带阶段诊断通过（104.54 秒），未复现之前的配置拒绝，临时诊断已移除，不能据此推断旧失败已修复。完整 `cargo test -p gitmaster-core -- --test-threads=2` 已自然结束，结果 177 通过、38 失败、6 忽略，耗时 3981.39 秒，退出码 101（`target/p19-final-core-all.log`）。失败分为四项 LF/CRLF 字节预期、旧能力快照契约、操作等待器超时及 Git 查询超时；不把这些失败全部归为环境或既有问题。针对已确认的夹具规则不一致进行定向修复，仍未宣布全量通过。
+
+`crlf_stage_preserves_worktree_bytes` 将测试等待器从 10 秒改为生产 120 秒预算加 5 秒后，操作于 29.95 秒返回成功，索引 LF 与工作区 CRLF 的原断言均通过（用例总计 58.37 秒，`target/p19-final-write-budget.log`）。只改变测试等待器，不改变应用期限或保存性能指标；据此修正同类整合/冲突等待器，并启动 38 项失败用例串行复核（`target/p19-core-failed-recheck.log`）。四项 LF 字节用例仅在自身临时仓库显式设定换行规则；能力回归同时断言真正写准备拒绝迟到变化、原文件保持且未创建引用。
+
+串行复核中，分支切换、迟到快照准备拒绝、检出锁与文件/目录转换、合并清理失败防重复、外部合并元数据替换保护均通过；`save_then_finish_commits_confirmed_result_without_touching_unstaged_files` 仍在冲突保存阶段返回真实 TIMEOUT（gitQuery），没有将其当作夹具等待问题。同期绕过应用、用 Node 直接交错启动四组 `git --version`：系统 cmd 启动器为 2279.97/1493.45/5210.86/1559.67ms，mingw64 实际程序为 1171.18/2073.54/1028.99/678.11ms。此诊断与回归并行，不能当作最终空闲性能基准，也不能据此改变用户 Git 路径。随后一次系统观测为 CPU 93%（内核 70%）、可用内存 2482MB、Pages/sec 620；单点不足以归因到具体程序。保存的独立 Release 采样与这些集成测试耗时分别保留。
+
+### 冲突转换临时文件权限修复
+
+上述串行复核继续出现三项 ACCESS_DENIED，以及 BOM/CRLF 冲突保存失败。安装版本 cap-std 的 File::set_permissions 直接委托标准库句柄方法；`target/p19-permissions-probe.rs` 在独立临时文件中复现只读句柄返回 Windows 错误码 5，读写句柄成功。`prepare_conflict_entry` 已改为读写打开它自身创建的私有转换副本，用户文件与 Git 写保护不变。原有 38 项复核运行的是修复前二进制，已明确中止，不作为完整批次结果；新启动五项针对性回归覆盖保存后完成合并、发布后失败、外部文件/锁变化、属性规则及 BOM/CRLF（`target/p19-conflict-permissions-after.log`）。本次改动后的 Rust 格式、文档格式检查通过；尚未将此新改动计入此前 Release 的性能数据。
+
+默认 Git 启动方式下，`failure_after_file_publication_keeps_result_and_unmerged_index` 已通过，验证权限修复后真正进入文件发布后的故障注入，同时保留正文、原索引与冲突状态。串联合并用例遇到后续 Git 查询超时并返回 Unknown；该五项批次随后中止，未取得完整批次通过结果。桌面 `cargo check` 已通过（`target/p19-conflict-permissions-check.log`）。
+
+仅在测试进程 PATH 前置已安装 mingw64 Git 的对照组，五项均在准备阶段返回 UNSUPPORTED_WRITE_CONFIGURATION，耗时 241.46 秒（`target/p19-conflict-permissions-direct-git.log`）；不能用该组替代默认启动方式。单项调用栈定位为配置查询进程返回非成功，尚未确定底层原因；正常/扩展路径以及中文临时目录的外部只读配置查询均成功，不能据此归因于中文路径。临时调用栈诊断已完整移除。应用 Git 配置、系统 PATH 与用户文件均未改动。
+
+默认 Git 启动方式的 BOM/CRLF 冲突保存用例通过（176.41 秒，`target/p19-conflict-bom-default-git.log`），原字节与原生暂存 blob 的断言全部保持。
+
+### Windows Git 程序路径修复
+
+进一步最小复现表明：同一配置读取，标准库 Command 成功，自有执行器失败；清空后重建标准执行器环境仍成功，工作目录先安全简化也不能消除失败。仅将 Git 程序路径从规范卷扩展形式安全简化，自有执行器即成功（`target/p19-config-program-path-before.log`）。因此修复 CreateProcessW 的应用路径与 argv[0]，使用既有 dunce::simplified，不改工作目录、用户配置、参数列表、Job 或管道策略。此前工作目录假设已排除，临时诊断完整移除。
+
+新增 `windows_canonical_git_program_reads_configuration` 回归比较两种程序路径读取的完整配置与中文身份，修复后通过（24.58 秒，`target/p19-config-program-path-after.log`）。第一批八项测试随会话中断：原工具句柄丢失、进程枚举无测试进程，日志没有终态，不能记为通过。已重新启动包含 Windows 参数、超时、后代回收及文件保存的十二项批次（`target/p19-windows-program-path-resumed.log`），并重新构建 Release（`target/p19-release-windows-program-path.log`）；两者结果待补，旧 Release 性能数据不冒充新产物结果。
+
+十二项批次自然结束，423.06 秒，9 通过、2 失败、1 辅助用例忽略。通过范围包括普通编辑器非法草稿拒绝、保存与迟到字节保护、冲突 BOM/CRLF、发布后故障、外部文件/锁变化、程序路径配置读取，以及 Windows 参数/输入输出边界、超时/输出上限、后代回收。串联保存再合并返回 WRITE_OUTCOME_UNKNOWN，属性文件冲突保存返回 TIMEOUT/status；不将这两个失败计为通过。该批次使用两个测试线程，后半程与 Release 构建重叠，不能作为性能指标；待构建完成后串行复核两个失败项，不改生产超时或安全断言。
+
+Release 构建成功（6m33s，包含前端类型检查与生产构建），SHA-256 为 `34ED947F9CFA8C7E9D5C72DADF4F61C9E88EFBA25DDBBD768CFA250BCEDE8CEC`。Rust 格式、文档格式与 diff 空白检查通过。结束构建后，两项失败用例串行复核全部通过（201.35 秒，`target/p19-conflicts-idle-serial.log`）；该结果不覆盖此前并行时的失败，也不等同于新的完整核心回归。
+
+新产物启动后，实际 Windows 截图确认自动恢复 EvalSpark README 与第 260 行位置。没有并行编译或核心测试时，20 次真实保存全部成功：最小 194.9ms、中位数 219.95ms、P95 247.2ms、最大 262.9ms。10 次主动后台分支查询全部被取消，每个样本均 visible 且 focused；保存期间切换差异页无错误或残留草稿，BOM/CRLF、单行 +1/-1、261 行完整上下文、滚动至第 259 行和三个图标的仅悬停提示全部通过。最后一次后台状态收敛为 7676.3ms，独立于保存确认。证据为 `target/p19-windows-path-native.log`、`target/p19-windows-path-result.json`、`target/p19-windows-path-samples.json`；原有全部样本继续保留。
+
+### 刷新读取去重与前端测试补齐
+
+上述产物的索引故障恢复测试在点击重试后仍遇到 TIMEOUT，不能算恢复通过（`target/p19-windows-path-ui.log`）。finally 恢复临时索引并刷新后，普通刷新成功；阶段日志确认同一手动刷新重复读取分支/远端两轮，总计 19.69 秒（`target/p19-refresh-retry-diagnostic.log`、`target/p19-refresh-retry-phases.log`）。该产物的外部改写保护通过，EvalSpark README 字节未变，随后正常关闭，避免旧版本混入新产物验收。
+
+真实 useWorkspace/useHistory 与官方 IPC mock 回归先失败：新历史尚未返回就发起第二次远端查询，预期计数 1、实际 2（`target/p19-refresh-scheduling-before.log`）。增加当前请求身份/版本的 ready 判定后，延迟历史成功或失败均只放行一轮，普通同版本更新不重读，显式远端重试清除真实错误；脚本自然退出 0（`target/p19-refresh-ready-hook.log`）。原生分支读取次数和恢复场景待本次 Release 验证。
+
+扩展前端测试最初为 139 通过、7 失败，其中六项为旧保存返回接口/参数不匹配，一项引用了 HEAD 已不存在的 buildFileTree。更新保存夹具后，排除这一已废弃函数测试的 145 项全部通过，0 跳过，退出 0（`target/p19-refresh-ready-front.log`）。外部改写拒绝、磁盘保持、保存期间新输入和关闭保护仍有断言；没有恢复废弃目录树实现。全量旧测试集合仍包含该失效测试，不能把本结果称为无排除的全量通过。格式检查和 diff 空白检查通过；本次 Release 的前置类型检查及前端生产构建已通过。
+
+### 当前 Windows 产物验收（2026-10-20）
+
+Release 构建自然结束，退出 0，耗时 4m32s；SHA-256 为 `9295090E11BB67C5679692ABD461A5F5B7E570CD06B4351DD310A1BA9D04E752`（`target/p19-refresh-ready-release.log`）。以下实机结果均来自此产物，采样时没有并行编译、核心测试或测试开发服务器。
+
+- 20 次保存全部成功，最小 199.9ms、中位数 237.8ms、P95 261.8ms、最大 267.8ms；10 次后台分支请求全部返回 REQUEST_CANCELLED，每次 WebView 均 visible、focused。保存中切页没有错误、没有残留草稿；磁盘 BOM/CRLF、+1/-1、261 行上下文、滚动到第 259 行及三个图标的仅悬停提示均通过。最后一次后台状态收敛 8448.5ms，与保存确认分开。证据：`target/p19-refresh-ready-native.log`、`target/p19-refresh-ready-result.json`、`target/p19-refresh-ready-samples.json`。
+- 一次显式刷新阶段日志只有一轮历史、分支、远端读取，各来源错误为空，README 差异和选择保留。总耗时 21439.3ms，不能宣称完整刷新加速；本次状态读取 4434ms、历史 6796ms、分支 8637ms、远端 10107ms（包含排队，不能相加视为独立执行）。证据：`target/p19-refresh-ready-diagnostic.log`、`target/p19-refresh-ready-phases.log`。本次证明去重正确，完整 Git 刷新仍存在明显等待。
+- 临时索引损坏后点击“重试刷新”恢复，repo/resource/remote/history 错误全部为空。恢复 HEAD 内容后显示“此文件已无文本差异”且保留 README 路径；1100×720 下实体背景 rgb(251,252,248)，差异滚动区高 349px。脚本 finally 恢复临时索引和正文后自然退出 0（`target/p19-refresh-ready-ui.log`）。
+- 外部改写返回 FILE_CHANGED，磁盘外部内容和用户草稿各自保留，脚本恢复临时文件并退出 0（`target/p19-refresh-ready-safety.log`）。
+- 恢复 EvalSpark 后正常关闭；新进程无需重新选目录，自动恢复 README 和第 238–260 行阅读位置，草稿/编辑错误均为空，日志级别 null，再次正常关闭。证据：`target/p19-refresh-ready-normal-close.log`、`target/p19-refresh-ready-restore.log`、`target/p19-refresh-ready-restored.png`。本次原生窗口自动化返回 minimized/user input，未获得新的标题栏点击证据；此前真实标题栏通过记录继续有效，相关关闭实现此后没有变化，不将本次 IPC 关闭说成标题栏点击。
+
+精确清理本任务临时仓库的最近项目/会话记录，保留 EvalSpark 记录，随后以无调试参数的正常模式启动上述产物。EvalSpark README 哈希仍为 `6CE63D2447071CD52EE84D21DD9D38A1CFBC0AADFD2D5ED26A3D1F395D44B375`，未修改用户文件；未提交或推送。上述五项交互验收不等同于发布验收：完整核心批次仍是前述 177/38/6，修复后的专项通过不能替代新全量结果；macOS、安装包和签名也不在本次已测范围。
+
+## 最终代码审查与提交核对（2026-10-20）
+
+用户授权审查当前改动、同步文档并提交远程。fetch 后本地 `m2m3-fix` 与 `origin/m2m3-fix` 均为 `c0fd250`，没有分叉；仅向该开发分支推送，不合并 main 或发布安装包。审查覆盖队列与写屏障、文件版本及换行、读取取消和生命周期、差异界面、会话持久化及对应接口文档。
+
+发现并修复一项 P2：第 51 个及以后的文档被选为活动文档时，前端截断文档列表但保留原 activePath，触发后端结构校验失败，整份位置记录无法保存。修复后有界列表优先包含活动文档，未知路径不补入；接口和缓存上限不变。回归纳入已跟踪的 `tests/m2-m3/supplement-tree-files.test.ts`，临时原生脚本和诊断日志不加入提交。另纠正接口文档中“入口能力再次扫描仓库”的旧说明，明确 prepare/execute 才执行最新状态与完整写入校验，并更新 README 与文档索引。
+
+本轮验证结果：
+
+- `pnpm build` 通过，包含两份 TypeScript 配置检查与 Vite 生产构建（`target/final-review-build.log`）。
+- 随 Git 跟踪的全部 Node `.test.ts` / `.test.mjs` 共 94 项通过，0 失败、0 跳过（`target/final-review-tracked-tests.log`）；扩展本地集合为 147 项通过，仍排除前述引用废弃函数的本地旧测试（`target/final-review-front.log`）。
+- `cargo fmt --all -- --check` 通过；队列、保存上下文和 watcher 专项 22 项通过、1 项手动诊断忽略、199 项未选中，117.46 秒，退出 0（`target/final-review-core.log`）。
+- `cargo check -p gitmaster-desktop` 通过（`target/final-review-desktop-check.log`）；格式检查通过（`target/final-review-format.log`）。既有平台条件相关 unused 警告、前端大 chunk 提示保留，不作无关清理。
+
+本轮仅新增会话缓存边界修复，没有改变已采样的保存与 Git 调度实现；没有重新构建或重测 Windows Release，不将上述 `9295090...` 原生产物说成包含本次边界修复。完整核心回归尚未取得新的全绿结果，完整 Git 刷新仍约 21 秒，macOS 与安装包仍未补验；这些作为开发分支已知限制保留。审查修复后未发现其他已证实的新增阻断问题，按本轮授权提交当前源码、已跟踪测试及同步文档；不将提交远程等同于发布验收通过。

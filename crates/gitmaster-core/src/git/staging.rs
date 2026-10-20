@@ -117,7 +117,12 @@ pub(crate) fn prepare_conflict_entry(
         .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
     let file = directory.path().join("input-0");
     fs::write(&file, bytes).map_err(|_| OperationError::new("ACCESS_DENIED"))?;
-    let handle = fs::File::open(&file).map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+    // Windows 设置句柄权限需要写属性访问；仅为私有转换副本申请读写权限。
+    let handle = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&file)
+        .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
     cap_std::fs::File::from_std(handle)
         .set_permissions(permissions)
         .map_err(|_| OperationError::new("ACCESS_DENIED"))?;

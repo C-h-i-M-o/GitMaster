@@ -91,6 +91,7 @@ export function useManualRefresh(
     } catch (cause: unknown) {
       if (token !== generation.current) return;
       const error = normalizeOperationError(cause);
+      if (error.code === "REQUEST_CANCELLED") return;
       const uncertain =
         getOperation().busy || error.code === "WRITE_OUTCOME_UNKNOWN";
       setError(error);
@@ -139,7 +140,9 @@ export function useManualRefresh(
       }
     } catch (cause: unknown) {
       if (token === generation.current) {
-        setError(normalizeOperationError(cause));
+        const error = normalizeOperationError(cause);
+        if (error.code === "REQUEST_CANCELLED") return;
+        setError(error);
         setNetworkStatus("failed");
         if (!current.current.blocked) await refreshLocal(token);
       }
@@ -174,8 +177,10 @@ export function useManualRefresh(
     try {
       await fetchAndRefresh(selected, token);
     } catch (cause: unknown) {
-      if (generation.current === token)
-        setError(normalizeOperationError(cause));
+      if (generation.current === token) {
+        const error = normalizeOperationError(cause);
+        if (error.code !== "REQUEST_CANCELLED") setError(error);
+      }
     } finally {
       if (generation.current === token) {
         pending.current = false;

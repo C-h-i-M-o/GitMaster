@@ -15,6 +15,7 @@ pub struct WatchState {
     repository_id: String,
     revision: u64,
     reliable: bool,
+    versions: RepositoryVersions,
 }
 
 /// 监听生命周期绑定仓库会话；回调不持有会话锁、不运行 Git。
@@ -22,14 +23,24 @@ pub(super) struct RepositoryMonitor {
     repository_id: String,
     revision: Arc<AtomicU64>,
     reliable: Arc<AtomicBool>,
+    history: Arc<AtomicU64>,
+    files: Arc<AtomicU64>,
+    documents: Arc<AtomicU64>,
     _watcher: Option<git::watcher::RepositoryWatcher>,
 }
 
 impl RepositoryMonitor {
+    /// 监听丢失事件或初始化失败时要求刷新保守重建全部读取域。
+    pub(super) fn reliable(&self) -> bool {
+        self.reliable.load(Ordering::Acquire)
+    }
     /// 监听失败不阻止打开项目，前端收到不可靠状态后使用低频核实。
     pub(super) fn new(handle: &RepositoryHandle, app: tauri::AppHandle) -> Self {
         let revision = Arc::new(AtomicU64::new(0));
         let reliable = Arc::new(AtomicBool::new(true));
+        let history = Arc::new(AtomicU64::new(0));
+        let files = Arc::new(AtomicU64::new(0));
+        let documents = Arc::new(AtomicU64::new(0));
         let event_revision = Arc::clone(&revision);
         let event_reliable = Arc::clone(&reliable);
         let repository_id = handle.id.clone();
@@ -38,6 +49,9 @@ impl RepositoryMonitor {
         // 容量为一的通知只表示“有变化”；版本存在原子计数器中，不因事件洪泛丢失。
         let worker_revision = Arc::clone(&revision);
         let worker_reliable = Arc::clone(&reliable);
+        let worker_history = Arc::clone(&history);
+        let worker_files = Arc::clone(&files);
+        let worker_documents = Arc::clone(&documents);
         let worker = thread::Builder::new()
             .name("repository-watch".into())
             .spawn(move || {
@@ -56,6 +70,11 @@ impl RepositoryMonitor {
                             repository_id: event_id.clone(),
                             revision: worker_revision.load(Ordering::Acquire),
                             reliable: worker_reliable.load(Ordering::Acquire),
+                            versions: RepositoryVersions {
+                                history: worker_history.load(Ordering::Acquire),
+                                files: worker_files.load(Ordering::Acquire),
+                                documents: worker_documents.load(Ordering::Acquire),
+                            },
                         },
                     );
                 }
@@ -63,15 +82,27 @@ impl RepositoryMonitor {
         if worker.is_err() {
             reliable.store(false, Ordering::Release);
         }
-        let watcher = git::watcher::RepositoryWatcher::new(
+        let event_history = Arc::clone(&history);
+        let event_files = Arc::clone(&files);
+        let event_documents = Arc::clone(&documents);
+        let watcher = git::watcher::RepositoryWatcher::new_scoped(
             &handle.root,
             &handle.git_dir,
             &handle.common_dir,
-            move |is_reliable| {
-                if !is_reliable {
+            move |change| {
+                if !change.reliable {
                     if event_reliable.swap(false, Ordering::AcqRel) {
                         log::warn!(target: "gitmaster::diagnostic", "文件监听失效，启用低频核实");
                     }
+                }
+                if change.history {
+                    event_history.fetch_add(1, Ordering::AcqRel);
+                }
+                if change.files {
+                    event_files.fetch_add(1, Ordering::AcqRel);
+                }
+                if change.documents {
+                    event_documents.fetch_add(1, Ordering::AcqRel);
                 }
                 event_revision.fetch_add(1, Ordering::AcqRel);
                 let _ = sender.try_send(());
@@ -86,6 +117,9 @@ impl RepositoryMonitor {
             repository_id,
             revision,
             reliable,
+            history,
+            files,
+            documents,
             _watcher: watcher,
         }
     }
@@ -96,6 +130,15 @@ impl RepositoryMonitor {
             repository_id: self.repository_id.clone(),
             revision: self.revision.load(Ordering::Acquire),
             reliable: self.reliable.load(Ordering::Acquire),
+            versions: self.versions(),
+        }
+    }
+    /// 原子读取当前各域版本，供刷新请求建立起始快照。
+    pub(super) fn versions(&self) -> RepositoryVersions {
+        RepositoryVersions {
+            history: self.history.load(Ordering::Acquire),
+            files: self.files.load(Ordering::Acquire),
+            documents: self.documents.load(Ordering::Acquire),
         }
     }
 }

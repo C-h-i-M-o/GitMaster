@@ -52,14 +52,11 @@ export function useBottomPanel(
     if (isTauri())
       void getCurrentWindow()
         .onCloseRequested((event) => {
-          if (
-            !exitAllowed.current &&
-            (draftExit.current.exitProtected ||
-              busy.current ||
-              current.current.tabs.some((tab) => tab.kind === "terminal"))
-          ) {
-            event.preventDefault();
+          // 即使没有草稿，也先等待工作区位置持久化，避免关闭丢失最后一次导航。
+          event.preventDefault();
+          if (!exitAllowed.current) {
             draftExit.current.guardExit(async () => {
+              if (exitAllowed.current) return;
               if (
                 busy.current ||
                 current.current.tabs.some((tab) => tab.kind === "terminal")
@@ -68,10 +65,11 @@ export function useBottomPanel(
               else {
                 exitAllowed.current = true;
                 try {
-                  await getCurrentWindow().close();
-                } catch (cause: unknown) {
+                  // 保护已经完成，直接结束窗口，不重入第二次关闭请求。
+                  await getCurrentWindow().destroy();
+                } catch {
                   exitAllowed.current = false;
-                  setTerminalMessage(terminalError(cause));
+                  setTerminalMessage("窗口关闭失败，请重试关闭。");
                 }
               }
             });
@@ -251,10 +249,11 @@ export function useBottomPanel(
       if (quitPending) {
         exitAllowed.current = true;
         try {
-          await getCurrentWindow().close();
-        } catch (cause: unknown) {
+          await getCurrentWindow().destroy();
+        } catch {
           exitAllowed.current = false;
-          throw cause;
+          setTerminalMessage("窗口关闭失败，请重试关闭。");
+          return;
         }
       }
       setQuitPending(false);

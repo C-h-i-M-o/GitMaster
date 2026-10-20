@@ -18,6 +18,8 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
     w.projectTree,
     w.loadProjectDirectory,
     w.searchProjectFiles,
+    w.workspaceSession.expandedPaths,
+    w.workspaceSession.recordExpanded,
   );
   const selected = w.editor.tabs.find(
     (tab) => tab.document.path === w.projectPath,
@@ -130,8 +132,24 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
       </div>
       <section className="project-file-content" aria-label="文件内容">
         {w.resourceError && (
-          <p role="alert">{describeGitError(w.resourceError)}</p>
+          <p role="alert">
+            {describeGitError(w.resourceError)}{" "}
+            <button
+              onClick={w.refreshLocal}
+              disabled={
+                Boolean(w.editor.savingPath) ||
+                w.operations.busy ||
+                w.repo.loading
+              }
+            >
+              刷新本地状态
+            </button>
+          </p>
         )}
+        {w.workspaceSession.notice && (
+          <p role="status">{w.workspaceSession.notice}</p>
+        )}
+        {w.editor.notice && <p role="status">{w.editor.notice}</p>}
         {!folder.available && (
           <p role="status">所选应用尚不可用，请选择其他打开方式。</p>
         )}
@@ -144,6 +162,17 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
             </button>{" "}
             <button type="button" onClick={w.reloadEditor}>
               重新读取
+            </button>
+            <button
+              type="button"
+              onClick={w.refreshLocal}
+              disabled={
+                Boolean(w.editor.savingPath) ||
+                w.operations.busy ||
+                w.repo.loading
+              }
+            >
+              刷新本地状态
             </button>
           </p>
         )}
@@ -168,6 +197,8 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
                     !w.editor.savingPath)
                 }
                 save={w.saveEditor}
+                readPosition={w.workspaceSession.readPosition}
+                recordPosition={w.workspaceSession.recordPosition}
               />
             </Suspense>
           )}

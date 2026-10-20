@@ -776,6 +776,8 @@ mod tests {
     #[test]
     fn switch_is_readonly_until_execution_and_checks_actual_target() {
         let f = Fixture::new();
+        // 本用例断言 LF 字节，准备命令和应用必须使用同一显式换行规则。
+        f.command(&["config", "core.autocrlf", "false"]);
         f.write("a", b"main\n");
         f.write("deleted", b"main only\n");
         f.command(&["add", "."]);

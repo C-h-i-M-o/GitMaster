@@ -749,13 +749,16 @@ mod tests {
         let handle = coordinator
             .execute(Some(&repo.id), &preview.plan_id)
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // 等待实际生产预算结束，不能在操作仍合法执行时由夹具提前销毁仓库。
+        let started = Instant::now();
+        let deadline = started + LOCAL_BUDGET + Duration::from_secs(5);
         loop {
             let record = coordinator
                 .read_operation(Some(&handle.operation_id))
                 .unwrap()
                 .unwrap();
             if let Some(result) = record.result {
+                eprintln!("测试写操作终态耗时 {:?}", started.elapsed());
                 return result;
             }
             assert!(Instant::now() < deadline, "写操作超出测试期限");

@@ -19,10 +19,18 @@ export function useRemote(
     controller.setRepository(enabled ? repository : null);
     if (enabled) void controller.refresh();
     return () => controller.deactivate();
+  }, [
+    controller,
+    repository?.repositoryId,
+    repository?.versions?.history,
+    enabled,
+  ]);
+  useEffect(() => {
+    controller.setRepository(enabled ? repository : null);
   }, [controller, repository, enabled]);
   return {
     ...state,
-    refresh: controller.refresh,
+    refresh: () => controller.refresh(),
     selectBranch: controller.selectBranch,
   };
 }

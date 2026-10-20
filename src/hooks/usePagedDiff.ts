@@ -27,7 +27,9 @@ export function usePagedDiff({ scope, document }: PagedDiffProps) {
     controller.getSnapshot,
   );
   const container = useRef<HTMLDivElement>(null);
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(
+    () => new Set(document.folds.map((fold) => fold.startRow)),
+  );
   const positions = useMemo(
     () => diffLayout(document.rowCount, document.folds, expanded),
     [document, expanded],

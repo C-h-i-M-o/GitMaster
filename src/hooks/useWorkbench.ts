@@ -6,6 +6,9 @@ import { useManualRefresh } from "./useManualRefresh";
 import { useRemoteSync } from "./useRemoteSync";
 import { useFileEditor } from "./useFileEditor";
 import { useRecentProjects } from "./useRecentProjects";
+import { useWorkspaceSession } from "./useWorkspaceSession";
+import { restoreTreePaths } from "../ui/restoreTreePaths";
+import type { WorkspaceSession } from "../types/workspaceSession";
 import { toggleGroupSelection } from "../ui/virtualChanges";
 import { mergeTreeFiles } from "../ui/projectTree";
 import { selectionAction } from "../ui/selectionAction";
@@ -48,6 +51,8 @@ export function useWorkbench() {
     [repository?.changes],
   );
   const editorGate = useRef<ReturnType<typeof useFileEditor> | null>(null);
+  const documentsVersion = repository?.versions?.documents;
+  const previousDocumentsVersion = useRef<number | undefined>(documentsVersion);
   const manualRefresh = useManualRefresh(
     repo,
     workspace.preview || operations.busy || repo.loading || conflicts.dirty,
@@ -135,7 +140,7 @@ export function useWorkbench() {
       const action = settingsExit.current;
       settingsExit.current = null;
       setModal(null);
-      void action?.();
+      void workspaceSession.flush().then(() => action?.());
     }
   }
   /** 保存并关闭只有在持久化成功后才离开。 */
@@ -149,7 +154,8 @@ export function useWorkbench() {
       const action = settingsExit.current;
       settingsExit.current = null;
       setModal(null);
-      void action?.();
+      await workspaceSession.flush();
+      await action?.();
     }
   }
   const [drawer, setDrawer] = useState<Drawer>(null);
@@ -173,9 +179,24 @@ export function useWorkbench() {
     useState<SettingsCategory>("general");
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [context, setContext] = useState<WriteContext | null>(null);
-  const [resourceError, setResourceError] = useState<OperationError | null>(
-    null,
-  );
+  const [resourceErrors, setResourceErrors] = useState<
+    Partial<
+      Record<
+        "branches" | "context" | "files" | "preview" | "chooser",
+        OperationError | null
+      >
+    >
+  >({});
+  const resourceError = Object.values(resourceErrors).find(Boolean) ?? null;
+  /** 资源独立记录失败，成功只清除自身错误；过期后台响应不显示为用户故障。 */
+  function setResourceError(
+    error: OperationError | null,
+    source: keyof typeof resourceErrors = "chooser",
+  ): void {
+    if (error?.code === "STALE_REQUEST" || error?.code === "REQUEST_CANCELLED")
+      return;
+    setResourceErrors((previous) => ({ ...previous, [source]: error }));
+  }
   const [projectFiles, setProjectFiles] = useState<ProjectFileList | null>(
     null,
   );
@@ -196,28 +217,77 @@ export function useWorkbench() {
     {
       repository: () => repo.getSnapshot().repository,
       files: () => fileList.current,
+      onSavingChange: workspace.setFileSaveActive,
       blocked: () =>
-        workspace.preview ||
-        operations.getSnapshot().busy ||
-        syncRemote.busy ||
-        repo.getSnapshot().loading ||
-        repo.getSnapshot().stale,
-      read: (state, id) =>
-        api.readEditableFile(state.repositoryId, state.snapshotId, id),
+        workspace.preview || operations.getSnapshot().busy || syncRemote.busy,
+      read: (state, id, signal) =>
+        api.readEditableFile(
+          state.repositoryId,
+          fileList.current?.snapshotId ?? state.snapshotId,
+          id,
+          signal,
+        ),
       save: async (state, document, content) => {
-        const result = await operations.runFileSave(
-          state,
+        const result = await api.saveEditorFile(
+          state.repositoryId,
           document.fileId,
           document.version,
           content,
         );
         if (repo.getSnapshot().repository?.repositoryId === state.repositoryId)
-          await reloadProjectFiles();
+          repo.markDirty();
         return result;
       },
     },
     repository?.repositoryId ?? null,
   );
+  useEffect(() => {
+    if (
+      documentsVersion === undefined ||
+      previousDocumentsVersion.current === undefined ||
+      documentsVersion === previousDocumentsVersion.current
+    ) {
+      previousDocumentsVersion.current = documentsVersion;
+      return;
+    }
+    if (repo.loading || operations.busy || editor.savingPath || !projectFiles)
+      return;
+    // 拓扑刷新保留旧视图，但重读必须等待当前目录版本的新能力安装。
+    if (
+      loadedTreeKey.current !==
+      JSON.stringify([
+        repository?.repositoryId,
+        repository?.versions?.files ?? repository?.snapshotId,
+        includeIgnored,
+      ])
+    )
+      return;
+    editor.controller.markExternalChange();
+    let cancelled = false;
+    // 控制器使用单读取代次，逐份重读，避免并行请求令前面的干净文档过期。
+    void (async () => {
+      for (const tab of editor.controller.getSnapshot().tabs) {
+        if (cancelled) return;
+        if (tab.draft === tab.baseline)
+          await editor.controller.reload(tab.document.path);
+      }
+      if (!cancelled) previousDocumentsVersion.current = documentsVersion;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    documentsVersion,
+    editor.controller,
+    repo.loading,
+    operations.busy,
+    editor.savingPath,
+    projectFiles,
+    repository?.repositoryId,
+    repository?.versions?.files,
+    repository?.snapshotId,
+    includeIgnored,
+  ]);
   editorGate.current = editor;
   const autosave = useEditorAutosave(
     {
@@ -234,8 +304,6 @@ export function useWorkbench() {
         workspace.preview ||
         operations.getSnapshot().busy ||
         syncRemote.busy ||
-        repo.getSnapshot().loading ||
-        repo.getSnapshot().stale ||
         Boolean(editor.controller.getSnapshot().savingPath),
     },
     repository?.repositoryId ?? null,
@@ -269,7 +337,10 @@ export function useWorkbench() {
     if (appSettings.saved !== null && !(await appSettings.save())) {
       settingsExit.current = action;
       setSettingsPending("exit");
-    } else await action();
+    } else {
+      await workspaceSession.flush();
+      await action();
+    }
   }
   /** 退出依次经过文件、冲突、设置确认，最后才交给终端结束流程。 */
   function guardExit(action: () => Promise<void>): void {
@@ -347,6 +418,7 @@ export function useWorkbench() {
   }
   /** 原生项目选择在处理草稿后执行，不隐式丢弃当前文件。 */
   function openProject(): void {
+    workspaceSession.userOpening();
     guardEditor(workspace.open);
   }
   /** 重新检测可能更换 Git 身份，先处理未保存文件。 */
@@ -366,6 +438,7 @@ export function useWorkbench() {
   /** 编辑标签选择同步文件列表中的可见路径。 */
   function selectEditor(path: string): () => void {
     return () => {
+      workspaceSession.userOpening();
       setProjectPath(path);
       void editor.controller.open(path);
     };
@@ -373,6 +446,7 @@ export function useWorkbench() {
   /** 关闭单个文件由控制器提供保存、放弃与取消状态。 */
   function closeEditor(path: string): () => void {
     return () => {
+      workspaceSession.userOpening();
       void (async () => {
         if (appSettings.saved?.settings.editor.saveMode === "auto")
           await autosave.retry(path);
@@ -421,6 +495,7 @@ export function useWorkbench() {
   const [remoteId, setRemoteId] = useState("");
   const [discardAction, setDiscardAction] = useState<(() => void) | null>(null);
   const pendingCommit = useRef<string | null>(null);
+  const pendingDiff = useRef<{ path: string; side: DiffSide } | null>(null);
   const resourceGeneration = useRef(0);
   const fileGeneration = useRef(0);
   const alive = useRef(true);
@@ -435,6 +510,7 @@ export function useWorkbench() {
   function openRecent(path: string): () => void {
     return () => {
       if (workspace.canOpen) {
+        workspaceSession.userOpening();
         setProjectMenu(false);
         guardEditor(async () => {
           await repo.open(path);
@@ -467,16 +543,14 @@ export function useWorkbench() {
     setProjectDiff(null);
     setProjectPath(editor.controller.getSnapshot().activePath ?? "");
     setProjectLoading(false);
-    setResourceError(null);
+    setResourceErrors({});
     setSelected({ stage: [], unstage: [] });
     setChangeDetailOpen(false);
     return () => {
       resourceGeneration.current += 1;
     };
-  }, [repository, workspace.preview]);
-  const historyReady = Boolean(
-    workspace.history.page || workspace.history.error,
-  );
+  }, [repository?.repositoryId, workspace.preview]);
+  const historyReady = workspace.history.ready;
   useEffect(() => {
     if (!repository || workspace.preview || !historyReady) return;
     const generation = resourceGeneration.current;
@@ -490,25 +564,36 @@ export function useWorkbench() {
           generation !== resourceGeneration.current
         )
           return;
-        if (value.repositoryId === repository.repositoryId) setBranches(value);
+        if (value.repositoryId === repository.repositoryId) {
+          setBranches(value);
+          setResourceError(null, "branches");
+        }
       })
       .catch((error: unknown) => {
         if (
           active &&
           alive.current &&
-          generation === resourceGeneration.current
+          generation === resourceGeneration.current &&
+          normalizeOperationError(error).code !== "REQUEST_CANCELLED"
         )
-          setResourceError(normalizeOperationError(error));
+          setResourceError(normalizeOperationError(error), "branches");
       });
     return () => {
       active = false;
     };
-  }, [repository, workspace.preview, historyReady]);
+  }, [
+    repository?.repositoryId,
+    repository?.versions?.history,
+    workspace.preview,
+    historyReady,
+  ]);
   const needsWriteContext =
-    drawer === "changes" ||
-    drawer === "conflicts" ||
-    modal === "branch" ||
-    modal === "remote";
+    !operations.busy &&
+    !editor.savingPath &&
+    (drawer === "changes" ||
+      drawer === "conflicts" ||
+      modal === "branch" ||
+      modal === "remote");
   useEffect(() => {
     if (!repository || workspace.preview || !needsWriteContext) return;
     let active = true;
@@ -520,11 +605,17 @@ export function useWorkbench() {
           active &&
           value.repositoryId === repository.repositoryId &&
           value.snapshotId === repository.snapshotId
-        )
+        ) {
           setContext(value);
+          setResourceError(null, "context");
+        }
       })
       .catch((error: unknown) => {
-        if (active) setResourceError(normalizeOperationError(error));
+        if (
+          active &&
+          normalizeOperationError(error).code !== "REQUEST_CANCELLED"
+        )
+          setResourceError(normalizeOperationError(error), "context");
       });
     return () => {
       active = false;
@@ -633,6 +724,7 @@ export function useWorkbench() {
   }
   /** 切换视图前显式保留或放弃冲突草稿。 */
   function navigate(next: Drawer): void {
+    workspaceSession.userOpening();
     if (conflicts.dirty && next !== "conflicts") {
       setDiscardAction(() => () => {
         void conflicts.refresh(true);
@@ -711,11 +803,22 @@ export function useWorkbench() {
   function inspectChange(id: string, side: DiffSide): () => void {
     return () => {
       setChangeDetailOpen(true);
+      if (
+        editor.controller.getSnapshot().savingPath ||
+        operations.getSnapshot().busy
+      ) {
+        const change = repo
+          .getSnapshot()
+          .repository?.changes.find((item) => item.changeId === id);
+        pendingDiff.current = change ? { path: change.path, side } : null;
+        return;
+      }
       void repo.selectDiff(id, side);
     };
   }
   /** 返回文件列表时保留勾选与提交说明。 */
   function closeChangeDetail(): void {
+    pendingDiff.current = null;
     setChangeDetailOpen(false);
     repo.closeDiff();
   }
@@ -917,16 +1020,12 @@ export function useWorkbench() {
     if (!current || workspace.preview) return;
     const key = JSON.stringify([
       current.repositoryId,
-      current.snapshotId,
+      current.versions?.files ?? current.snapshotId,
       includeIgnored,
     ]);
     if (listRequest.current?.key === key) return listRequest.current.promise;
     if (treeCurrent.current && loadedTreeKey.current === key) return;
     setProjectLoading(true);
-    treeCurrent.current = null;
-    setProjectTree(null);
-    fileList.current = null;
-    setProjectFiles(null);
     const promise = api
       .readProjectTree(current.repositoryId, current.snapshotId, includeIgnored)
       .then(async (value) => {
@@ -970,18 +1069,23 @@ export function useWorkbench() {
         if (
           alive.current &&
           listRequest.current?.key === key &&
-          repo.getSnapshot().repository?.snapshotId === current.snapshotId
+          repo.getSnapshot().repository?.repositoryId ===
+            current.repositoryId &&
+          (repo.getSnapshot().repository?.versions?.files ??
+            repo.getSnapshot().repository?.snapshotId) ===
+            (current.versions?.files ?? current.snapshotId)
         ) {
           treeCurrent.current = value;
           loadedTreeKey.current = key;
           setProjectTree(value);
           fileList.current = files;
           setProjectFiles(files);
+          setResourceError(null, "files");
         }
       })
       .catch((error: unknown) => {
         if (alive.current && listRequest.current?.key === key)
-          setResourceError(normalizeOperationError(error));
+          setResourceError(normalizeOperationError(error), "files");
       })
       .finally(() => {
         if (alive.current && listRequest.current?.key === key) {
@@ -996,13 +1100,84 @@ export function useWorkbench() {
   function acceptTreePage(page: ProjectTreePage): ProjectTreePage {
     if (
       treeCurrent.current?.treeId !== page.treeId ||
-      repo.getSnapshot().repository?.snapshotId !== page.snapshotId
+      repo.getSnapshot().repository?.repositoryId !== page.repositoryId
     )
       throw { code: "STALE_REQUEST" };
     const files = mergeTreeFiles(fileList.current, page);
     fileList.current = files;
     setProjectFiles(files);
     return page;
+  }
+  /** 按路径恢复标签，所有读取都使用新树签发的文件身份。 */
+  async function restoreWorkspace(
+    session: WorkspaceSession,
+    valid: () => boolean,
+  ): Promise<void> {
+    await reloadProjectFiles();
+    const root = treeCurrent.current;
+    if (!root || !valid()) return;
+    const current = (): boolean =>
+      valid() && treeCurrent.current?.treeId === root.treeId;
+    const parents = session.documents.map((item) =>
+      item.path.split("/").slice(0, -1).join("/"),
+    );
+    const pages = await restoreTreePaths(
+      root,
+      parents,
+      loadProjectDirectory,
+      current,
+    );
+    let missing = false;
+    for (const item of session.documents) {
+      if (!current()) return;
+      const parentPath = item.path.split("/").slice(0, -1).join("/");
+      const directoryId = parentPath
+        ? Object.values(pages)
+            .flatMap((page) => page.entries)
+            .find(
+              (entry) =>
+                entry.kind === "directory" && entry.path === parentPath,
+            )?.id
+        : root.directoryId;
+      let page = directoryId ? pages[directoryId] : undefined;
+      if (!page) {
+        missing = true;
+        continue;
+      }
+      while (
+        !page.entries.some((entry) => entry.path === item.path) &&
+        page.nextOffset !== null
+      ) {
+        const next = await loadProjectDirectory(
+          page.directoryId,
+          page.nextOffset,
+        );
+        if (!current()) return;
+        page = { ...next, entries: [...page.entries, ...next.entries] };
+        pages[page.directoryId] = page;
+      }
+      acceptTreePage(page);
+      if (
+        !page.entries.some(
+          (entry) => entry.kind === "file" && entry.path === item.path,
+        )
+      ) {
+        missing = true;
+        continue;
+      }
+      await editor.controller.open(item.path);
+    }
+    if (!current()) return;
+    if (
+      session.activePath &&
+      editor.controller
+        .getSnapshot()
+        .tabs.some((tab) => tab.document.path === session.activePath)
+    )
+      await editor.controller.open(session.activePath);
+    if (!current()) return;
+    setDrawer(session.activePage === "history" ? null : session.activePage);
+    if (missing) throw { code: "FILE_UNAVAILABLE" };
   }
   /** 展开和翻页复用当前文件会话，不作废其他文档 ID。 */
   async function loadProjectDirectory(
@@ -1060,27 +1235,14 @@ export function useWorkbench() {
   /** 只预览当前签发列表中的项目文件。 */
   function inspectProjectFile(id: string): () => void {
     return () => {
+      workspaceSession.userOpening();
       const file = projectFiles?.files.find((value) => value.fileId === id);
       if (!file || !repository) return;
-      const generation = ++fileGeneration.current;
+      fileGeneration.current += 1;
       setProjectPath(file.path);
       void editor.controller.open(file.path);
       setProjectDiff(null);
-      setProjectLoading(true);
-      void api
-        .readProjectFile(repository.repositoryId, repository.snapshotId, id)
-        .then((value) => {
-          if (alive.current && generation === fileGeneration.current)
-            setProjectDiff(value);
-        })
-        .catch((error: unknown) => {
-          if (alive.current && generation === fileGeneration.current)
-            setResourceError(normalizeOperationError(error));
-        })
-        .finally(() => {
-          if (alive.current && generation === fileGeneration.current)
-            setProjectLoading(false);
-        });
+      setProjectLoading(false);
     };
   }
   /** 关闭确认只放弃当前待关闭文档。 */
@@ -1100,6 +1262,104 @@ export function useWorkbench() {
   useEffect(() => {
     setProjectPath(editor.activePath ?? "");
   }, [editor.activePath]);
+  useEffect(() => {
+    const code = editor.error?.code;
+    if (
+      !projectPath ||
+      !repository ||
+      !projectFiles ||
+      ![
+        "FILE_EDIT_BINARY",
+        "FILE_EDIT_ENCODING",
+        "FILE_EDIT_UNSUPPORTED",
+      ].includes(code ?? "")
+    )
+      return;
+    const file = projectFiles.files.find((item) => item.path === projectPath);
+    if (!file) return;
+    let aliveFallback = true;
+    const generation = fileGeneration.current;
+    const fileSnapshot = projectFiles.snapshotId;
+    setProjectLoading(true);
+    void api
+      .readProjectFile(
+        repository.repositoryId,
+        projectFiles.snapshotId,
+        file.fileId,
+      )
+      .then((value) => {
+        if (
+          aliveFallback &&
+          generation === fileGeneration.current &&
+          fileList.current?.snapshotId === fileSnapshot
+        ) {
+          setProjectDiff(value);
+          setResourceError(null, "preview");
+        }
+      })
+      .catch((error: unknown) => {
+        if (aliveFallback)
+          setResourceError(normalizeOperationError(error), "preview");
+      })
+      .finally(() => {
+        if (aliveFallback) setProjectLoading(false);
+      });
+    return () => {
+      aliveFallback = false;
+    };
+  }, [editor.error?.code, projectPath, projectFiles, repository]);
+  const workspaceSession = useWorkspaceSession({
+    enabled: !workspace.preview,
+    ready: workspace.git.environment?.status === "ready" && !repo.loading,
+    repository,
+    paths: editor.tabs.map((tab) => tab.document.path),
+    activePath: editor.activePath,
+    page: drawer === "files" || drawer === "changes" ? drawer : "history",
+    open: repo.open,
+    restore: restoreWorkspace,
+  });
+  useEffect(() => {
+    const pending = pendingDiff.current;
+    if (!pending || operations.busy || editor.savingPath || repo.loading)
+      return;
+    pendingDiff.current = null;
+    if (drawer !== "changes") return;
+    const change = repository?.changes.find(
+      (item) => item.path === pending.path,
+    );
+    if (change) void repo.selectDiff(change.changeId, pending.side);
+    else setChangeDetailOpen(false);
+  }, [
+    operations.busy,
+    editor.savingPath,
+    repo.loading,
+    repository,
+    drawer,
+    repo.selectDiff,
+  ]);
+  /** 显式本地核实保留文档草稿，不触发远端获取。 */
+  async function refreshLocal(): Promise<void> {
+    if (
+      editor.controller.getSnapshot().savingPath ||
+      operations.getSnapshot().busy ||
+      syncRemote.busy ||
+      manualRefresh.busy
+    )
+      return;
+    const previous = repo.getSnapshot().repository;
+    await repo.refresh();
+    await reloadProjectFiles();
+    const current = repo.getSnapshot();
+    // 新历史版本会自动重读远端；同版本重试才补读，避免两个入口重复排队。
+    if (
+      current.repository &&
+      !current.loading &&
+      !current.error &&
+      previous?.repositoryId === current.repository.repositoryId &&
+      previous?.versions?.history === current.repository.versions?.history
+    )
+      await workspace.remote.refresh();
+  }
   useWorkbenchShortcuts(
     {
       togglePanel: toggleOperations,
@@ -1142,6 +1402,8 @@ export function useWorkbench() {
     resetGit: resetGitProtected,
     open: openProject,
     editor,
+    workspaceSession,
+    refreshLocal,
     editDocument,
     editorCompositionStart: autosave.compositionStart,
     editorCompositionEnd: autosave.compositionEnd,

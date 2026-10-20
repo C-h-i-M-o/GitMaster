@@ -13,7 +13,9 @@ export function useFileEditor(api: FileEditorApi, repositoryId: string | null) {
       repository: () => current.current.repository(),
       files: () => current.current.files(),
       blocked: () => current.current.blocked(),
-      read: (repository, id) => current.current.read(repository, id),
+      onSavingChange: (active) => current.current.onSavingChange?.(active),
+      read: (repository, id, signal) =>
+        current.current.read(repository, id, signal),
       save: (repository, document, content) =>
         current.current.save(repository, document, content),
     }),

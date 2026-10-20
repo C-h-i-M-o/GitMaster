@@ -90,7 +90,7 @@ pub fn open_diff_document(
     snapshot: &RepositoryState,
     change_id: &str,
     side: DiffSide,
-    context_lines: u16,
+    context_lines: u32,
 ) -> Result<DiffDocumentResult, OperationError> {
     match read_with_limits(
         git,

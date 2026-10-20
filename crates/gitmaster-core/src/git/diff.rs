@@ -1,8 +1,5 @@
 use super::*;
-use super::{
-    process::run_git,
-    repository::{command_error, read_repository_state},
-};
+use super::{process::run_git, repository::command_error};
 use std::{
     ffi::OsString,
     io::Read,
@@ -43,7 +40,7 @@ pub fn read_file_diff_with_context(
     snapshot: &RepositoryState,
     change_id: &str,
     side: DiffSide,
-    context_lines: u16,
+    context_lines: u32,
 ) -> Result<FileDiff, OperationError> {
     read_with_limits(
         git,
@@ -63,10 +60,10 @@ fn read_with_limits(
     snapshot: &RepositoryState,
     change_id: &str,
     side: DiffSide,
-    context_lines: u16,
+    context_lines: u32,
     limits: DiffLimits,
 ) -> Result<FileDiff, OperationError> {
-    if context_lines > 2000 {
+    if context_lines > 1_000_000_000 {
         return Err(OperationError::new("INVALID_INPUT"));
     }
     if snapshot.repository_id != repository.id {
@@ -77,13 +74,8 @@ fn read_with_limits(
         .iter()
         .find(|c| c.change_id == change_id)
         .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
-    let fresh = read_repository_state(git, repository)?;
-    if fresh.head != snapshot.head
-        || fresh.operations != snapshot.operations
-        || fresh.changes != snapshot.changes
-    {
-        return Err(OperationError::new("STALE_REQUEST"));
-    }
+    // 只读差异使用服务端签发的路径读取当前比较侧；无关文件变化不应让它失败。
+    // 快照只绑定仓库和路径能力，不授权任何写入；写操作继续使用完整快照校验。
     if change.kind == "conflicted" {
         return Ok(FileDiff::Unsupported {
             reason: "conflict".into(),
@@ -135,7 +127,7 @@ fn diff_args(
     change: &FileChange,
     side: DiffSide,
     stats: bool,
-    context_lines: u16,
+    context_lines: u32,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--literal-pathspecs",
@@ -331,7 +323,7 @@ mod tests {
         ));
     }
 
-    /// 过期快照和错误比较侧不能变为任意文件读取。
+    /// 路径能力和比较侧必须有效；只读预览不因无关索引刷新失效。
     #[test]
     fn rejects_stale_and_invalid_side() {
         let f = Fixture::new();
@@ -349,11 +341,24 @@ mod tests {
         )
         .is_err());
         f.command(&["add", "."]);
-        assert_eq!(
+        assert!(matches!(
             read_file_diff(
                 &f.git,
                 &repo,
                 &state,
+                &state.changes[0].change_id,
+                DiffSide::Untracked
+            )
+            .unwrap(),
+            FileDiff::Text { content, .. } if content == "one\n"
+        ));
+        let mut foreign = state.clone();
+        foreign.repository_id = "another-repository".into();
+        assert_eq!(
+            read_file_diff(
+                &f.git,
+                &repo,
+                &foreign,
                 &state.changes[0].change_id,
                 DiffSide::Untracked
             )
@@ -454,10 +459,34 @@ mod tests {
         assert!(expanded.contains("+changed30\n"));
         assert!(expanded.contains("-line30\n"));
         assert!(!truncated);
+        let FileDiff::Text {
+            content: full,
+            truncated,
+        } = read_file_diff_with_context(
+            &f.git,
+            &repo,
+            &state,
+            id,
+            DiffSide::Unstaged,
+            1_000_000_000,
+        )
+        .unwrap()
+        else {
+            panic!("预期完整上下文");
+        };
+        assert!(full.contains(" line0\n") && full.contains(" line59\n"));
+        assert!(!truncated);
         assert_eq!(
-            read_file_diff_with_context(&f.git, &repo, &state, id, DiffSide::Unstaged, 2001)
-                .unwrap_err()
-                .code,
+            read_file_diff_with_context(
+                &f.git,
+                &repo,
+                &state,
+                id,
+                DiffSide::Unstaged,
+                1_000_000_001
+            )
+            .unwrap_err()
+            .code,
             "INVALID_INPUT"
         );
     }

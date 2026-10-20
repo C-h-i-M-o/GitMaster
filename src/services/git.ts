@@ -31,6 +31,10 @@ import type {
   WritePreview,
 } from "../types/git";
 
+export type RepositorySnapshot = RepositoryState & {
+  versions: { history: number; files: number; documents: number };
+};
+
 import { normalizeOperationError } from "./gitErrors";
 
 /** 文件监视状态，用于在不读取 Git 的情况下判断仓库是否可能变化。 */
@@ -63,13 +67,50 @@ export const prepareFileSave = (
     version,
     content,
   });
+/** 原子保存并复读确认，不等待后台 Git 状态扫描。 */
+export const saveEditorFile = (
+  repositoryId: string,
+  fileId: string,
+  expectedVersion: string,
+  content: string,
+): Promise<EditableFile> =>
+  call("save_editor_file", {
+    repositoryId,
+    fileId,
+    expectedVersion,
+    content,
+  });
+
 /** 读取完整编辑文档和原始文件版本，不复用截断预览。 */
 export const readEditableFile = (
   repositoryId: string,
   snapshotId: string,
   fileId: string,
-): Promise<EditableFile> =>
-  call("read_editable_file", { repositoryId, snapshotId, fileId });
+  signal?: AbortSignal,
+): Promise<EditableFile> => {
+  if (signal?.aborted)
+    return Promise.reject(new DOMException("读取已取消", "AbortError"));
+  const readId = crypto.randomUUID();
+  const request = call<EditableFile>("read_editable_file", {
+    repositoryId,
+    snapshotId,
+    fileId,
+    readId,
+  });
+  if (!signal) return request;
+  return new Promise<EditableFile>((resolve, reject) => {
+    const cancel = () => {
+      void call("cancel_project_read", { repositoryId, readId }).catch(
+        () => {},
+      );
+      reject(new DOMException("读取已取消", "AbortError"));
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    request
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", cancel));
+  });
+};
 
 /** 打开已签发仓库的根目录，不向桌面端传入任意路径。 */
 export type ExternalAppId = "fileManager" | "vsCode" | "terminal";
@@ -119,7 +160,9 @@ export const openRepository = (path: string): Promise<RepositoryState> =>
 /** 刷新当前仓库状态。 */
 export const readRepositoryState = (
   repositoryId: string,
-): Promise<RepositoryState> => call("read_repository_state", { repositoryId });
+  force = true,
+): Promise<RepositoryState> =>
+  call("read_repository_state", { repositoryId, force });
 /** 读取后端文件监视状态；失败时由调用方降级为低频核实。 */
 export const readRepositoryWatch = (
   repositoryId: string,
@@ -276,6 +319,12 @@ export const executeClone = (planId: string): Promise<OperationHandle> =>
 export const readOperation = (
   operationId: string | null,
 ): Promise<OperationRecord | null> => call("read_operation", { operationId });
+/** 消费写任务已核实的仓库状态，失败时由调用方执行真实刷新。 */
+export const acceptOperationState = (
+  repositoryId: string,
+  operationId: string,
+): Promise<RepositorySnapshot | null> =>
+  call("accept_operation_state", { repositoryId, operationId });
 /** 读取仓库远端状态。 */
 export const readRemotes = (repositoryId: string): Promise<RemoteState> =>
   call("read_remotes", { repositoryId });

@@ -45,9 +45,15 @@ export function createRemoteController(api: RemoteApi) {
   function setRepository(next: RepositoryState | null): void {
     if (
       repository?.repositoryId === next?.repositoryId &&
-      repository?.snapshotId === next?.snapshotId
-    )
+      repository?.versions?.history === next?.versions?.history
+    ) {
+      if (repository?.snapshotId !== next?.snapshotId) {
+        assessmentRequest += 1;
+        update({ assessment: null, assessing: false });
+      }
+      repository = next;
       return;
+    }
     repository = next;
     generation += 1;
     assessmentRequest += 1;
@@ -61,7 +67,7 @@ export function createRemoteController(api: RemoteApi) {
     });
   }
   /** 显式刷新远端映射，不执行 fetch。 */
-  async function refresh(): Promise<void> {
+  async function refresh(retry = true): Promise<void> {
     if (!active || !repository || state.loading) return;
     const id = repository.repositoryId;
     const token = ++generation;
@@ -80,8 +86,23 @@ export function createRemoteController(api: RemoteApi) {
       if (remote.repositoryId !== id) throw { code: "STALE_REQUEST" };
       update({ remote, loading: false });
     } catch (error: unknown) {
-      if (active && token === generation)
-        update({ loading: false, error: normalizeOperationError(error) });
+      if (active && token === generation) {
+        const normalized = normalizeOperationError(error);
+        update({
+          loading: false,
+          error:
+            normalized.code === "REQUEST_CANCELLED" ||
+            normalized.code === "STALE_REQUEST"
+              ? null
+              : normalized,
+        });
+        if (
+          retry &&
+          (normalized.code === "REQUEST_CANCELLED" ||
+            normalized.code === "STALE_REQUEST")
+        )
+          await refresh(false);
+      }
     }
   }
   /** 只评估当前列表中的分支，选择改变立即清除旧关系。 */
@@ -131,8 +152,13 @@ export function createRemoteController(api: RemoteApi) {
         throw { code: "STALE_REQUEST" };
       update({ assessment, assessing: false });
     } catch (error: unknown) {
-      if (active && token === generation && request === assessmentRequest)
-        update({ assessing: false, error: normalizeOperationError(error) });
+      if (active && token === generation && request === assessmentRequest) {
+        const normalized = normalizeOperationError(error);
+        update({
+          assessing: false,
+          error: normalized.code === "REQUEST_CANCELLED" ? null : normalized,
+        });
+      }
     }
   }
   /** 重新启用订阅。 */

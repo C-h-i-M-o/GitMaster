@@ -91,7 +91,7 @@ impl RemoteRequest {
         })?;
         let result = cache.state();
         let mut s = shared.lock()?;
-        self.ctx.check(&s)?;
+        self.ctx.check_read(&s)?;
         if s.remotes_request != self.generation {
             return Err(OperationError::new("STALE_REQUEST"));
         }

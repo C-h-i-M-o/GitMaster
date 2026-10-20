@@ -1,6 +1,5 @@
 import type { Workbench } from "../hooks/useWorkbench";
 import { Icon } from "./Icon";
-import { formatFetchedAt } from "../ui/refreshResult";
 import { shortcutLabel } from "../ui/shortcuts";
 /** 项目菜单呈现持久化的最近记录，工具栏为已有业务入口。 */
 export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
@@ -86,25 +85,39 @@ export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
         )}
       </div>
       <div className="toolbar" aria-label="仓库操作">
-        <div className="sync-action">
+        <button
+          className="local-refresh"
+          data-tooltip="刷新本地状态"
+          aria-label="刷新本地状态"
+          onClick={w.refreshLocal}
+          disabled={
+            !repository ||
+            w.preview ||
+            w.repo.loading ||
+            w.operations.busy ||
+            Boolean(w.editor.savingPath) ||
+            w.manualRefresh.busy ||
+            w.syncRemote.busy ||
+            w.conflicts.dirty
+          }
+        >
+          <Icon name="refresh" />
+        </button>
+        <div
+          className="sync-action"
+          data-tooltip={w.syncReason() || "同步远程"}
+        >
           <button
-            title={w.syncReason() || "同步当前分支的远端更新"}
             aria-label="同步远程"
-            aria-describedby="sync-reason"
             onClick={w.syncRemote.run}
             disabled={Boolean(w.syncReason())}
           >
-            <Icon name="upload" />
-            <span>{w.syncRemote.phaseLabel}</span>
+            <Icon name="sync" />
           </button>
-          <small id="sync-reason" className="sync-hint">
-            {w.syncReason()}
-          </small>
         </div>
-        <div className="sync-action">
+        <div className="sync-action" data-tooltip="获取远端更新">
           <button
-            title="获取远端全部分支的更新并刷新，不合并本地分支"
-            aria-describedby="last-fetch-time"
+            aria-label="获取远端更新"
             onClick={w.manualRefresh.run}
             disabled={
               !repository ||
@@ -116,12 +129,8 @@ export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
               w.repo.loading
             }
           >
-            <Icon name="refresh" />
-            <span>{w.manualRefresh.busy ? "正在刷新…" : "刷新"}</span>
+            <Icon name="fetch" />
           </button>
-          <small id="last-fetch-time" className="sync-hint">
-            最近获取：{formatFetchedAt(w.remote.remote?.lastFetchedAt)}
-          </small>
         </div>
       </div>
       <button

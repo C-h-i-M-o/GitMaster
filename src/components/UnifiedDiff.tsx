@@ -55,7 +55,7 @@ export function UnifiedDiff({
         <p className="muted">
           {content
             ? "没有文本行变化（可能仅文件名或权限变化）。"
-            : "空文件或没有文本差异。"}
+            : "此文件已无文本差异。"}
         </p>
       )}
     </div>

@@ -1,4 +1,64 @@
 use super::*;
+
+/// 核实结果只消费一次；过期或跨仓库结果不能改变活动状态，HEAD 变化失效相关域。
+#[test]
+fn accept_operation_state_guards_identity_and_updates_domains() {
+    let f = Fixture::new();
+    let mut s = f.shared.lock().unwrap();
+    let original = s.active.as_ref().unwrap().1.clone();
+    let epoch = s.epoch;
+    let token = s.repository_request;
+    s.accepted_operations.push_back((
+        "accepted-test".into(),
+        epoch,
+        token,
+        super::super::RepositoryVersions::default(),
+    ));
+    for (bad_epoch, bad_token) in [(epoch + 1, token), (epoch, token + 1)] {
+        assert_eq!(
+            s.accept_operation_state(
+                &f.id,
+                "accepted-test",
+                original.clone(),
+                bad_epoch,
+                bad_token
+            )
+            .unwrap_err()
+            .code,
+            "STALE_REQUEST"
+        );
+        assert_eq!(
+            s.active.as_ref().unwrap().1.snapshot_id,
+            original.snapshot_id
+        );
+    }
+    let mut wrong = original.clone();
+    wrong.repository_id = "other-repository".into();
+    assert_eq!(
+        s.accept_operation_state(&f.id, "accepted-test", wrong, epoch, token)
+            .unwrap_err()
+            .code,
+        "STALE_REQUEST"
+    );
+    let before = s.versions;
+    let mut changed = original.clone();
+    changed.snapshot_id = "verified-new".into();
+    changed.head = HeadState::Unborn {
+        name: "different".into(),
+    };
+    let accepted = s
+        .accept_operation_state(&f.id, "accepted-test", changed.clone(), epoch, token)
+        .unwrap();
+    assert!(accepted.versions.history > before.history);
+    assert!(accepted.versions.files > before.files);
+    assert_eq!(s.active.as_ref().unwrap().1.snapshot_id, "verified-new");
+    assert_eq!(
+        s.accept_operation_state(&f.id, "accepted-test", changed, epoch, token)
+            .unwrap_err()
+            .code,
+        "STALE_REQUEST"
+    );
+}
 use std::{
     fs,
     path::PathBuf,

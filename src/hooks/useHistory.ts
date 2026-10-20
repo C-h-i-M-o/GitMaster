@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   isDesktop,
   readCommitDetail,
@@ -26,14 +26,28 @@ export function useHistory(
     controller.subscribe,
     controller.getSnapshot,
   );
+  const requested = useRef<RepositoryState | null>(null);
   useEffect(() => {
+    requested.current = enabled ? repository : null;
     controller.activate();
-    controller.setRepository(enabled ? repository : null);
+    controller.setRepository(requested.current);
     if (enabled && isDesktop()) void controller.refresh();
     return () => controller.deactivate();
-  }, [controller, repository, enabled]);
+  }, [
+    controller,
+    repository?.repositoryId,
+    repository?.versions?.history,
+    enabled,
+  ]);
   return {
     ...state,
+    // 新仓库版本的首轮渲染仍可能持有旧 page，不能提前放行依赖它的后台读取。
+    ready:
+      enabled &&
+      repository !== null &&
+      requested.current?.repositoryId === repository.repositoryId &&
+      requested.current?.versions?.history === repository.versions?.history &&
+      Boolean(state.page || state.error),
     refresh: controller.refresh,
     loadMore: controller.loadMore,
     selectCommit: controller.selectCommit,

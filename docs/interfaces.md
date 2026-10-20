@@ -97,7 +97,7 @@ M1 业务接口已实现，精确请求、DTO、错误码与限制以 [需求与
 
 `BranchSession::new/list` 返回带后端 branchId 的 BranchList；本地/远端同名也使用不同 ID，上游引用 ID 仅在本列表有效，remote symbolic HEAD 不进入可选分支。`prepare_create_branch` 接受当前快照及名称，不接受任意来源 OID；`prepare_switch_branch` 额外接受当前分支会话及其中的本地 branchId。两者返回 WritePreview 并交给协调器一次性执行，结果使用 branchName 与 refresh，不用成功动画推断实际 HEAD。
 
-`ProjectFilesSession::new/list/read` 绑定可信 RepositoryState，列表包含 tracked（包括被忽略和已删除条目）与非忽略 untracked，冲突多个 stage 去重。read 仅接受本会话 fileId，返回 FileDiff 内容视图；文件内容可在状态不变时读取最新字节，索引/状态变化要求刷新。已删除/特殊文件、目录与无法安全读取的路径拒绝；二进制/编码/截断沿用 M1 DTO。项目文件列表和内容读取已通过下方 command 暴露；创建/切换分支已由统一的本地写 command 暴露。
+`ProjectFilesSession::new/list/read` 绑定可信仓库身份，旧平面列表包含 tracked（包括被忽略和已删除条目）与非忽略 untracked，冲突多个 stage 去重；旧列表构造仍校验 Git 快照一致性。普通 read 只接受本会话 fileId，返回 FileDiff 内容视图，索引变化不再要求重新建立文件能力。真实文件树通过 `new_filesystem` 按层读取目录；内容读取继续检查常规文件、路径和目录身份，不触发 Git 查询。已删除/特殊文件、目录与无法安全读取的路径拒绝；二进制/编码/截断沿用 M1 DTO。
 
 ### 已注册的 M2 只读 command
 
@@ -143,7 +143,7 @@ M1 业务接口已实现，精确请求、DTO、错误码与限制以 [需求与
 
 桌面只执行当前已交付预览，绑定环境/仓库代次；重新准备或仓库刷新后旧计划拒绝。重复执行通过最近 17 项计划映射返回原任务句柄。read_operation(null) 查询当前或最近一项任务，未知 ID 返回 null；读取任务结果不会安装 refresh 或切换仓库。终态后显式刷新当前仓库，clone 成功由前端显式打开 clonePath。
 
-read_write_context 返回输入快照身份与十项入口能力，复核仓库状态并按需读取提交身份；完整配置、索引、路径及属性校验在 prepare/execute 中执行，入口 allowed 不构成写授权；活动 merge 只开放合并相关入口，其他进行中操作引导外部处理。网络入口不因无关工作区文件而禁用；目标、认证和内容条件仍由 prepare 检查。缺少真实暂存内容时提交返回 NOTHING_TO_COMMIT。
+read_write_context 返回输入快照身份与十项入口能力，绑定后端已捕获的仓库状态并按需读取提交身份，不重复扫描工作树；最新状态、完整配置、索引、路径及属性校验在 prepare/execute 中执行，入口 allowed 不构成写授权；活动 merge 只开放合并相关入口，其他进行中操作引导外部处理。网络入口不因无关工作区文件而禁用；目标、认证和内容条件仍由 prepare 检查。缺少真实暂存内容时提交返回 NOTHING_TO_COMMIT。
 
 CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elasticity, showLabels}`。设置保存为 version 2 的 `{gitPath, uiPreferences, logLevel?}`，兼容 version 1，默认 6/true；elasticity 必须为 1..10 整数。三类设置互相保留字段，同目录临时文件替换失败不覆盖旧配置。浏览器包装保持禁用真实 IPC。
 
@@ -216,3 +216,33 @@ CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elastic
 - 非空 `stageChangeIds` 绑定当前快照下所选文件身份和内容，执行中先暂存这些路径，再提交整个暂存区。包含既有暂存、重命名两端及所选 MM 文件的当前版本，不追加未勾选修改。暂存后提交失败返回 `COMMIT_FAILED_AFTER_STAGE`，保留真实暂存区，不自动回滚或重放。
 - 普通文件保存沿用 `prepare_file_save`/`execute_write` 的版本、编码和路径校验。800ms 自动保存与手动保存共用串行队列；返回仅确认提交时的正文版本，迟到结果不能清除后续修改。
 - 操作记录是前端内存摘要，只记录关键 Git 操作；准备阶段失败使用独立摘要 ID，不伪造后端操作句柄。文件/冲突正文保存不进入历史；执行失败、结果不明或状态核实失败生成界面通知。
+
+## 2026-10-16 本地交互性能 P0/P1
+
+- `open_repository`、`read_repository_state` 的桌面返回值在核心状态字段外增加 `versions: { history, files, documents }`。核心 `RepositoryState` 不依赖桌面监听或窗口。分支与远端配置沿用 history 域，引用、HEAD、Git config 变化使该域失效。
+- `read_repository_state(repositoryId, force?: boolean)` 默认 `force=true`；显式刷新保守重建各域，自动监视刷新传 `false`。监听不可靠时保守重建；可靠监听下正文只更新 documents，目录新增/删除/重命名更新 files，HEAD 同时更新三域。刷新开始后的事件留待下一次消费。
+- `ProjectFileList.snapshotId`、`ProjectTreePage.snapshotId` 表示独立文件会话身份。首次建树使用当前 Git snapshotId，之后目录、搜索、编辑、预览及分页均使用返回的文件 snapshotId。普通 Git 状态刷新不改这个文件身份。
+- `read_editable_file` 增加可选 `readId`；`cancel_project_read(repositoryId, readId)` 取消排队/迟到响应，乱序取消以有界标记保留。已进入编辑读取的请求还会在上下文核验、正文读取等阶段之间检查取消；取消不发布正文或新的文档保存能力，成功结果仍执行全部核验。前端同文件在途请求去重，切换文件和保存主动取消过时读取；编辑失败且需要二进制预览时才调用预览接口，大文件仍走分页阅读。
+- `RepositoryCoordinator::read_files` 最多允许四份文件读取并发，与 Git 只读查询独立；同公共 Git 目录的已排队写入阻止新文件读取，在途文件释放后才开始写入。写入和核实期间持有屏障。取消检查不持有仓库门闩，避免与桌面锁形成反向锁序。
+- 保存仍使用当前 Git snapshotId，经 `prepare_save_with_state` 在准备和执行时严格校验 Git 状态、文件身份与内容版本。独立文件会话不能放宽写入前提。SaveFile/Stage/Unstage 保留历史和目录能力，差异与写预览失效。
+- 诊断新增固定阶段 `file_queue_wait`、`file_read_io`；沿用请求关联 ID，不记录路径、文件正文或任意命令参数。验证及性能数据以 `docs/verification.md` 实测记录为准。
+- Windows 的 notify `ModifyKind::Any` 对应正文/属性修改，不使目录域失效；创建、删除、重命名仍更新目录域。自动重读须等待当前目录版本的文件能力安装，旧树只用于保持展示。
+
+## 2026-10-16 保存与工作区恢复
+
+### 即时保存契约（第 19 节，替代普通编辑器的准备/执行链路）
+
+- `save_editor_file(repositoryId, fileId, expectedVersion, content) -> EditableFile`。fileId 来自成功打开的完整编辑文档，其保存能力独立于目录 snapshotId；刷新目录不撤销，切换仓库或 Git 环境清除。后端最多保留 512 份最近使用的最小单文件映射，不保留正文或整个目录树；迟到重读不撤销旧草稿能力。返回值由原子替换后的复读生成，IPC 不等待 Git 扫描。Git 写操作仍使用原 prepare/execute 全量核验，不能拿此返回值作为 Git 写授权。
+- version 绑定仓库身份、相对路径、文件实体及原始字节、目录实体、HEAD/当前 loose 或 packed ref 与操作标记，不包含短寿命 fileId。刷新重签 ID 可沿用原版本，外部同内容替换仍拒绝；前端不能先重读新版本再替代原版本。写后不能确认时返回 WRITE_OUTCOME_UNKNOWN 并保留草稿。
+- 同仓库写屏障阻止实际 Git 写与保存交错。保存取消活动/排队的旧 Git 只读请求，并等待进程回收；真实写 FIFO 不变。REQUEST_CANCELLED 为内部调度结果，释放 loading 状态，当前有效读取可在写屏障后合并补读，真实失败不循环重试。
+- `open_diff_document` 的 contextLines 改为 u32，默认 1,000,000,000，仍受原正文预算限制；前端默认展开所有已加载上下文并虚拟化可见行。冻结正文的 `read_diff_page` 不进入 Git 队列。只读差异按已签发路径读取当前比较侧，不再扫描全仓库来否定无关文件变化；它不能绕过写入校验。
+- 本地刷新保留选中文件路径与比较侧，新快照安装后映射新 changeId 重读；保存期间草稿和提交版本独立，落盘成功只确认提交时文本。
+
+- `prepare_file_save` 的预览 `snapshotId/head` 来自当前写入状态，不再来自长期保留的文件会话。正文原编码/BOM/EOL 与原子替换校验不变。
+- `accept_operation_state(repositoryId, operationId)` 返回展平的 `RepositoryState + versions` 或 `null`。只接受当前 epoch/request 下已成功且核实就绪的任务，检查结果仓库 ID，一次性消费；按执行开始的监听版本发布读取域，执行之后的事件仍待后续核实。前端再核对原快照与在途刷新状态，拒绝迟到结果；不能接受时走真实刷新。它不执行文件写入或 Git 命令。
+- 完整文件保存事务同步阻塞自动刷新，包括原文件校验、替换和落盘复读；切页保留后台任务。保存期间选差异记录相对路径，结束后映射到新 changeId 再读取。`STALE_REQUEST` 差异取消不把整个仓库标记失效；一次本地核实失败仍显示真实错误，不自动无限重试。
+- `read_workspace_sessions()` 返回 `{version:1,lastRootPath:string|null,projects:WorkspaceSession[]}`。`write_workspace_session(session)` 原子保存活动项目并更新 lastRootPath。`WorkspaceSession` 为 `{rootPath,expandedPaths,documents:[{path,position}],activePath,activePage}`，page 为 files/changes/history；position 为 null 或 `{lineNumber,column,scrollTop,scrollLeft}`。
+- 存储位于 app_config_dir/workspace-sessions.json，上限 2,000,000 字节、20 项目、每项目 200 目录/50 文档；位置与路径有界，拒绝未知字段及父路径/绝对文档路径。写入规范化活动根路径，读取历史条目不要求项目仍存在。损坏记录不覆盖，错误不阻止编辑。正文、草稿与 fileId/treeId/snapshotId 均不持久化。
+- 超过 50 个打开文档时，持久化列表优先包含当前活动文档；activePath 必须属于这份有界列表，不能因简单截断导致整份记录被拒绝。
+- 启动先正常打开仓库，再按路径逐级读取目录页取得新能力，恢复标签与位置。树内折叠复用同会话页，刷新跨会话仅迁移路径；迟到页面不得安装。Windows 扩展长度路径与普通规范路径按同一项目匹配。
+- 参考 Git 官方 [gitattributes 文档](https://git-scm.com/docs/gitattributes) 处理内建 EOL 语义；参考 VS Code [编辑器视图状态接口](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/editorBrowser.ts) 使用 Monaco 模型及视图状态保留当前会话撤销/滚动，跨启动仅保存位置。

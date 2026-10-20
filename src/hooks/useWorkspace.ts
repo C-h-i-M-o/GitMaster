@@ -11,6 +11,7 @@ import {
   chooseRepositoryPath,
   openGitInstallPage,
   isDesktop,
+  acceptOperationState,
 } from "../services/git";
 import { normalizeOperationError } from "../services/gitErrors";
 import type {
@@ -25,14 +26,15 @@ export function useWorkspace() {
   const enabled = isDesktop() && git.environment?.status === "ready";
   const [remoteWorkflowActive, setRemoteWorkflowActive] = useState(false);
   // 仓库刷新期间停用旧历史会话，忽略后端返回的过期结果。
-  const history = useHistory(repo.repository, enabled && !repo.loading);
+  const history = useHistory(repo.repository, enabled);
   // 首屏历史优先占用仓库队列；失败时仍开放远端入口。
   const remote = useRemote(
     repo.repository,
-    enabled && !remoteWorkflowActive && Boolean(history.page || history.error),
+    enabled && !remoteWorkflowActive && history.ready,
   );
   const conflicts = useConflicts(repo.repository, enabled);
   const pendingSave = useRef<{ id: string; content: string } | null>(null);
+  const fileSaveActive = useRef(false);
   const [completion, setCompletion] = useState<{
     result: OperationResult;
     verified: boolean;
@@ -61,12 +63,41 @@ export function useWorkspace() {
       ) {
         await repo.open(result.clonePath);
       } else if (scope.repositoryId === repo.repository?.repositoryId) {
-        await repo.refresh();
+        if (
+          result.refresh.status === "ready" &&
+          (result.kind === "saveFile" ||
+            result.kind === "stage" ||
+            result.kind === "unstage")
+        ) {
+          try {
+            const expectedSnapshot = repo.getSnapshot().repository?.snapshotId;
+            const accepted = await acceptOperationState(
+              scope.repositoryId,
+              result.operationId,
+            );
+            if (
+              accepted &&
+              repo.consumeVerifiedState(accepted, expectedSnapshot)
+            )
+              return;
+          } catch {
+            // 核实接口失败时继续走真实刷新，不能吞掉成功操作的状态收敛。
+          }
+        }
+        await repo.refresh(
+          result.kind === "saveFile" ||
+            result.kind === "stage" ||
+            result.kind === "unstage"
+            ? false
+            : true,
+        );
       }
     },
     [
       repo.open,
       repo.refresh,
+      repo.consumeVerifiedState,
+      repo.getSnapshot,
       repo.repository?.repositoryId,
       conflicts.acknowledgeSave,
     ],
@@ -76,6 +107,7 @@ export function useWorkspace() {
     // 焦点变化不能中断正在读取的历史；显式刷新仍由独立入口处理。
     repo.setAutoRefreshBlocked(
       operations.busy ||
+        fileSaveActive.current ||
         remoteWorkflowActive ||
         conflicts.dirty ||
         history.loading ||
@@ -95,6 +127,34 @@ export function useWorkspace() {
     history.filesLoading,
     history.diffLoading,
   ]);
+  /** 保存前置读取到终态期间同步阻塞自动刷新，避免快照被抢先作废。 */
+  const setFileSaveActive = useCallback(
+    (active: boolean): void => {
+      fileSaveActive.current = active;
+      repo.setAutoRefreshBlocked(
+        active ||
+          operations.busy ||
+          remoteWorkflowActive ||
+          conflicts.dirty ||
+          history.loading ||
+          history.loadingMore ||
+          history.detailLoading ||
+          history.filesLoading ||
+          history.diffLoading,
+      );
+    },
+    [
+      repo.setAutoRefreshBlocked,
+      operations.busy,
+      remoteWorkflowActive,
+      conflicts.dirty,
+      history.loading,
+      history.loadingMore,
+      history.detailLoading,
+      history.filesLoading,
+      history.diffLoading,
+    ],
+  );
   /** 保存草稿和指纹一起进入确认，失败保留原编辑。 */
   const prepareConflict = useCallback(
     async (session: string, request: ConflictWriteRequest): Promise<void> => {
@@ -111,11 +171,12 @@ export function useWorkspace() {
   const refreshRepository = useCallback(async (): Promise<void> => {
     if (
       (operations.activity !== "idle" && operations.activity !== "preparing") ||
-      conflicts.dirty
+      conflicts.dirty ||
+      fileSaveActive.current
     )
       return;
     operations.discardPreview();
-    await repo.refresh();
+    await repo.refresh(true);
   }, [
     operations.activity,
     operations.discardPreview,
@@ -181,6 +242,7 @@ export function useWorkspace() {
   }, [operations.busy, conflicts.dirty, git.refresh]);
   return {
     setRemoteWorkflowActive,
+    setFileSaveActive,
     git: { ...git, refresh: refreshGit },
     repo: { ...repo, refresh: refreshRepository },
     operations: { ...operations, prepareConflict },

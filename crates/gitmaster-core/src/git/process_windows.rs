@@ -346,13 +346,15 @@ pub(super) fn run(
         return Err(OperationError::new("INVALID_INPUT"));
     }
     let deadline = Instant::now() + timeout;
-    let application = wide(command.get_program())?;
+    // Git 根据 argv[0] 推导安装配置位置；安全简化卷扩展路径，兼容直接调用实际程序。
+    let program = dunce::simplified(std::path::Path::new(command.get_program())).as_os_str();
+    let application = wide(program)?;
     let cwd = command
         .get_current_dir()
         .map(|path| wide(path.as_os_str()))
         .transpose()?;
     let mut line = Vec::new();
-    for arg in std::iter::once(command.get_program()).chain(command.get_args()) {
+    for arg in std::iter::once(program).chain(command.get_args()) {
         if !line.is_empty() {
             line.push(b' ' as u16);
         }
@@ -437,6 +439,7 @@ pub(super) fn run(
     let execution_started = Instant::now();
     let execution = (|| -> Result<(), OperationError> {
         loop {
+            crate::git::coordinator::check_read_cancelled()?;
             if Instant::now() >= deadline {
                 return Err(OperationError::new("TIMEOUT"));
             }

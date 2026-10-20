@@ -8,7 +8,7 @@ export function openDiffDocument(
   snapshotId: string,
   changeId: string,
   side: DiffSide,
-  contextLines = 3,
+  contextLines = 1_000_000_000,
 ): Promise<LocalDiff> {
   return invoke("open_diff_document", {
     repositoryId,

@@ -216,6 +216,8 @@ fn captured_checkout_matches_native_crlf_and_ident_conversion() {
 #[test]
 fn checkout_locks_block_native_ref_updates_and_release_after_switch() {
     let f = Fixture::new();
+    // 锁与引用行为独立于用户系统的换行设置。
+    f.command(&["config", "core.autocrlf", "false"]);
     f.write("file", b"base\n");
     f.command(&["add", "."]);
     f.command(&["commit", "-m", "base"]);
@@ -325,6 +327,8 @@ fn checkout_literal_attributes_match_native_for_special_paths() {
 #[test]
 fn checkout_supports_file_directory_transitions() {
     let f = Fixture::new();
+    // 固定被断言的 LF 字节，不继承机器级自动换行转换。
+    f.command(&["config", "core.autocrlf", "false"]);
     f.write("path", b"file\n");
     f.command(&["add", "."]);
     f.command(&["commit", "-m", "file"]);

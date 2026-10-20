@@ -2,6 +2,7 @@
 pub mod editor_text;
 mod filesystem;
 pub mod reader;
+mod save_context;
 pub mod tree;
 use super::{
     diff::preview,
@@ -38,6 +39,97 @@ pub struct ProjectFilesSession {
 }
 
 impl ProjectFilesSession {
+    /// 从已经签发的文件身份派生单文档能力，不保留目录树或全仓库变更清单。
+    pub fn editor_session(&self, file_id: &str) -> Result<Self, OperationError> {
+        let path = self.file_path(file_id)?;
+        Ok(Self {
+            git: self.git.clone(),
+            repository: self.repository.clone(),
+            state: RepositoryState {
+                repository_id: self.state.repository_id.clone(),
+                snapshot_id: self.state.snapshot_id.clone(),
+                root_path: self.state.root_path.clone(),
+                head: self.state.head.clone(),
+                operations: Vec::new(),
+                changes: Vec::new(),
+                index_identity: self.state.index_identity.clone(),
+            },
+            files: vec![(file_id.to_owned(), path, ProjectFileKind::Tracked)],
+            filesystem: None,
+            tree: std::sync::OnceLock::new(),
+            readers: std::sync::Mutex::new(BTreeMap::new()),
+        })
+    }
+    /// 在调用方已持有仓库写屏障时执行纯文件保存并返回落盘后的编辑文档。
+    pub fn save_editor_file(
+        &self,
+        file_id: &str,
+        expected_version: &str,
+        content: &str,
+    ) -> Result<EditableFile, OperationError> {
+        let validate_started = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let before = save_context::capture(&self.repository, deadline)?;
+        let path = self.file_path(file_id)?;
+        let original = super::conflicts::read_regular(
+            &self.repository.root,
+            &path,
+            editor_text::MAX_EDIT_BYTES,
+            deadline,
+        )
+        .map_err(editor_read_error)?;
+        if file_version(&self.repository.id, &before.0, &path, &original) != expected_version {
+            return Err(OperationError::new("FILE_CHANGED"));
+        }
+        let text = editor_text::decode(&original.bytes)?;
+        let bytes = editor_text::encode(&text, content)?;
+        if before != save_context::capture(&self.repository, deadline)? {
+            return Err(OperationError::new("FILE_CHANGED"));
+        }
+        crate::diagnostics::log_elapsed("file_save_validate", validate_started.elapsed());
+        let replace_started = Instant::now();
+        if bytes != original.bytes {
+            super::conflicts::replace_regular(
+                &self.repository.root,
+                &path,
+                &original,
+                &bytes,
+                editor_text::MAX_EDIT_BYTES,
+                deadline,
+            )
+            .map_err(editor_read_error)?;
+        }
+        crate::diagnostics::log_elapsed("file_save_replace", replace_started.elapsed());
+        let confirm_started = Instant::now();
+        // 已发生替换之后无法确认结果时，不宣称未写入，也不让前端清除草稿。
+        let saved = super::conflicts::read_regular(
+            &self.repository.root,
+            &path,
+            editor_text::MAX_EDIT_BYTES,
+            deadline,
+        )
+        .map_err(|_| OperationError::new("WRITE_OUTCOME_UNKNOWN"))?;
+        if before
+            != save_context::capture(&self.repository, deadline)
+                .map_err(|_| OperationError::new("WRITE_OUTCOME_UNKNOWN"))?
+            || saved.bytes != bytes
+        {
+            return Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"));
+        }
+        let document = EditableFile {
+            file_id: file_id.to_owned(),
+            path: path.clone(),
+            version: file_version(&self.repository.id, &before.0, &path, &saved),
+            text: editor_text::decode(&saved.bytes)
+                .map_err(|_| OperationError::new("WRITE_OUTCOME_UNKNOWN"))?,
+        };
+        crate::diagnostics::log_elapsed("file_save_confirm", confirm_started.elapsed());
+        Ok(document)
+    }
+    /// 返回文件会话绑定的快照身份，供桌面层隔离文件请求。
+    pub fn snapshot_id(&self) -> &str {
+        &self.state.snapshot_id
+    }
     /// 按工作树文件系统发现普通文件，保留隐藏文件并跳过 .git 与符号链接。
     /// 文件内容仍由既有安全读取原语重新校验；该入口不依赖 Git 索引或忽略开关。
     pub fn new_filesystem(
@@ -46,13 +138,6 @@ impl ProjectFilesSession {
         state: RepositoryState,
     ) -> Result<Self, OperationError> {
         if state.repository_id != repository.id {
-            return Err(OperationError::new("STALE_REQUEST"));
-        }
-        let fresh = read_repository_state(&git, &repository)?;
-        if fresh.head != state.head
-            || fresh.operations != state.operations
-            || fresh.changes != state.changes
-        {
             return Err(OperationError::new("STALE_REQUEST"));
         }
         let filesystem = filesystem::FilesystemTree::new(&repository.root)?;
@@ -92,15 +177,40 @@ impl ProjectFilesSession {
         expected_version: &str,
         content: &str,
     ) -> Result<super::WritePreview, OperationError> {
+        self.prepare_save_with_state(coordinator, &self.state, file_id, expected_version, content)
+    }
+
+    /// 使用调用方最新仓库状态准备保存，避免闭包继续依赖旧文件会话状态。
+    pub fn prepare_save_with_state(
+        self: &std::sync::Arc<Self>,
+        coordinator: &super::coordinator::RepositoryCoordinator,
+        current_state: &RepositoryState,
+        file_id: &str,
+        expected_version: &str,
+        content: &str,
+    ) -> Result<super::WritePreview, OperationError> {
+        if current_state.repository_id != self.repository.id {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
         let generation = coordinator.begin_prepare()?;
         let key = super::coordinator::CoordinationKey::repository(&self.repository)?;
         let deadline = Instant::now() + Duration::from_secs(120);
-        let document = coordinator.read_until(&key, deadline, || self.read_editable(file_id))?;
+        let document = coordinator.read_until(&key, deadline, || {
+            // 准备阶段必须绑定调用方提供的最新仓库快照。
+            super::write_guard::validate_snapshot(
+                &self.git,
+                &self.repository,
+                current_state,
+                Instant::now() + Duration::from_secs(120),
+            )?;
+            self.read_editable_with_state(current_state, file_id)
+        })?;
         if document.version != expected_version {
             return Err(OperationError::new("FILE_CHANGED"));
         }
         editor_text::encode(&document.text, content)?;
         let session = self.clone();
+        let bound_state = current_state.clone();
         let id = file_id.to_owned();
         let version = expected_version.to_owned();
         let draft = content.to_owned();
@@ -111,7 +221,7 @@ impl ProjectFilesSession {
             super::OperationKind::SaveFile,
             move |reporter| {
                 let deadline = reporter.deadline(Duration::from_secs(120));
-                let result = session.save_editable(&id, &version, &draft);
+                let result = session.save_editable_with_state(&bound_state, &id, &version, &draft);
                 super::write::operation_result(
                     reporter,
                     &session.git,
@@ -127,9 +237,9 @@ impl ProjectFilesSession {
         Ok(super::WritePreview {
             plan_id: plan.plan_id,
             repository_id: self.repository.id.clone(),
-            snapshot_id: self.state.snapshot_id.clone(),
+            snapshot_id: current_state.snapshot_id.clone(),
             kind: super::OperationKind::SaveFile,
-            head: self.state.head.clone(),
+            head: current_state.head.clone(),
             parent_oids: Vec::new(),
             paths: vec![document.path],
             author: None,
@@ -146,8 +256,27 @@ impl ProjectFilesSession {
         expected_version: &str,
         content: &str,
     ) -> Result<(), OperationError> {
+        self.save_editable_with_state(&self.state, file_id, expected_version, content)
+    }
+
+    /// 在实际写入前再次核验调用方绑定的仓库状态。
+    pub fn save_editable_with_state(
+        &self,
+        current_state: &RepositoryState,
+        file_id: &str,
+        expected_version: &str,
+        content: &str,
+    ) -> Result<(), OperationError> {
+        if current_state.repository_id != self.repository.id {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
         let deadline = Instant::now() + Duration::from_secs(120);
-        super::write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
+        super::write_guard::validate_snapshot(
+            &self.git,
+            &self.repository,
+            current_state,
+            deadline,
+        )?;
         let path = self.file_path(file_id)?;
         let original = super::conflicts::read_regular(
             &self.repository.root,
@@ -156,7 +285,8 @@ impl ProjectFilesSession {
             deadline,
         )
         .map_err(editor_read_error)?;
-        if file_version(&self.repository.id, file_id, &path, &original) != expected_version {
+        let context = save_context::capture(&self.repository, deadline)?;
+        if file_version(&self.repository.id, &context.0, &path, &original) != expected_version {
             return Err(OperationError::new("FILE_CHANGED"));
         }
         let document = editor_text::decode(&original.bytes)?;
@@ -176,8 +306,42 @@ impl ProjectFilesSession {
     }
     /// 复用经过符号链接和文件身份检查的有界读取，返回完整 UTF-8 编辑文档。
     pub fn read_editable(&self, file_id: &str) -> Result<EditableFile, OperationError> {
+        self.read_editable_with_state(&self.state, file_id)
+    }
+    /// 文档读取接受独立取消信号，取消结果不构成可保存的文档授权。
+    pub fn read_editable_cancellable(
+        &self,
+        file_id: &str,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<EditableFile, OperationError> {
+        self.read_editable_checked(&self.state, file_id, cancelled)
+    }
+    /// 读取编辑内容，只执行文件能力与身份校验，不执行全仓库状态扫描。
+    pub fn read_editable_with_state(
+        &self,
+        current_state: &RepositoryState,
+        file_id: &str,
+    ) -> Result<EditableFile, OperationError> {
+        self.read_editable_checked(current_state, file_id, || false)
+    }
+    /// 已取消的只读请求在文件系统步骤之间退出，成功返回仍经过全部身份核验。
+    fn read_editable_checked(
+        &self,
+        current_state: &RepositoryState,
+        file_id: &str,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<EditableFile, OperationError> {
+        if cancelled() {
+            return Err(OperationError::new("REQUEST_CANCELLED"));
+        }
+        if current_state.repository_id != self.repository.id {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
         let deadline = Instant::now() + Duration::from_secs(120);
-        super::write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
+        let context = save_context::capture(&self.repository, deadline)?;
+        if cancelled() {
+            return Err(OperationError::new("REQUEST_CANCELLED"));
+        }
         let path = self.file_path(file_id)?;
         let file = super::conflicts::read_regular(
             &self.repository.root,
@@ -186,11 +350,20 @@ impl ProjectFilesSession {
             deadline,
         )
         .map_err(editor_read_error)?;
+        if cancelled() {
+            return Err(OperationError::new("REQUEST_CANCELLED"));
+        }
         let text = editor_text::decode(&file.bytes)?;
+        if context != save_context::capture(&self.repository, deadline)? {
+            return Err(OperationError::new("FILE_CHANGED"));
+        }
+        if cancelled() {
+            return Err(OperationError::new("REQUEST_CANCELLED"));
+        }
         Ok(EditableFile {
             file_id: file_id.to_owned(),
             path: path.clone(),
-            version: file_version(&self.repository.id, file_id, &path, &file),
+            version: file_version(&self.repository.id, &context.0, &path, &file),
             text,
         })
     }
@@ -319,15 +492,8 @@ impl ProjectFilesSession {
         }
     }
 
-    /// 重新核对状态后，安全读取列表中的普通文件内容。
+    /// 用已签发文件能力读取普通内容；Git 快照校验仅用于写入。
     pub fn read(&self, file_id: &str) -> Result<FileDiff, OperationError> {
-        let fresh = read_repository_state(&self.git, &self.repository)?;
-        if fresh.head != self.state.head
-            || fresh.operations != self.state.operations
-            || fresh.changes != self.state.changes
-        {
-            return Err(OperationError::new("STALE_REQUEST"));
-        }
         let path = self.file_path(file_id)?;
         preview(&self.repository, &path)
     }
@@ -346,14 +512,14 @@ fn editor_read_error(error: OperationError) -> OperationError {
 /// 内容和目录项身份共同构成版本，替换为同字节文件也不沿用旧授权。
 fn file_version(
     repository_id: &str,
-    file_id: &str,
+    context: &str,
     path: &str,
     file: &super::conflicts::FileBytes,
 ) -> String {
     let mut digest = Sha256::new();
     for part in [
         repository_id.as_bytes(),
-        file_id.as_bytes(),
+        context.as_bytes(),
         path.as_bytes(),
         file.identity.as_bytes(),
         &file.bytes,
@@ -368,6 +534,151 @@ fn file_version(
 mod tests {
     use super::*;
     use crate::git::repository::{open_repository, tests::Fixture};
+
+    /// 已执行的重读在阶段间取消，不写文件、不发布版本，释放后仍能正常保存。
+    #[test]
+    fn editable_read_cancels_between_stages_and_releases_handles() {
+        let f = Fixture::new();
+        f.write("text", b"original\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = ProjectFilesSession::new_filesystem(f.git.clone(), repo, state).unwrap();
+        let id = session.tree_root().entries[0].id().to_owned();
+        for cancel_at in 1..=4 {
+            let calls = std::cell::Cell::new(0);
+            let error = session
+                .read_editable_cancellable(&id, || {
+                    calls.set(calls.get() + 1);
+                    calls.get() >= cancel_at
+                })
+                .unwrap_err();
+            assert_eq!(error.code, "REQUEST_CANCELLED");
+            assert_eq!(calls.get(), cancel_at);
+            assert_eq!(std::fs::read(f.root.join("text")).unwrap(), b"original\n");
+        }
+        let current = session.read_editable_cancellable(&id, || false).unwrap();
+        assert_eq!(current.version, session.read_editable(&id).unwrap().version);
+        session
+            .save_editor_file(&id, &current.version, "saved\n")
+            .unwrap();
+        assert_eq!(std::fs::read(f.root.join("text")).unwrap(), b"saved\n");
+    }
+
+    /// 已识别仓库的目录、预览、编辑和分页读取都不再依赖 Git 子进程。
+    #[test]
+    fn filesystem_reads_work_without_git_executable() {
+        let f = Fixture::new();
+        f.write("text", b"local text\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let mut unavailable = f.git.clone();
+        unavailable.path = f.root.join("missing-git.exe");
+        let session = ProjectFilesSession::new_filesystem(unavailable, repo, state).unwrap();
+        let root = session.tree_root();
+        let id = root.entries[0].id().to_owned();
+        assert!(
+            matches!(session.read(&id).unwrap(), FileDiff::Text { content, .. } if content == "local text\n")
+        );
+        assert_eq!(
+            session.read_editable(&id).unwrap().text.content,
+            "local text\n"
+        );
+        assert!(session.open_read_document(&id).is_ok());
+        let before = session.read_editable(&id).unwrap();
+        let saved = session
+            .save_editor_file(&id, &before.version, "saved\n")
+            .unwrap();
+        assert_eq!(saved.text.content, "saved\n");
+        assert_eq!(std::fs::read(f.root.join("text")).unwrap(), b"saved\n");
+        assert_eq!(
+            session
+                .save_editor_file(&id, &before.version, "stale\n")
+                .unwrap_err()
+                .code,
+            "FILE_CHANGED"
+        );
+        // 相同内容的新实体、当前 HEAD 变化都不能沿用旧编辑授权。
+        let copy = f.root.join("replacement");
+        std::fs::write(&copy, b"saved\n").unwrap();
+        std::fs::remove_file(f.root.join("text")).unwrap();
+        std::fs::rename(&copy, f.root.join("text")).unwrap();
+        assert_eq!(
+            session
+                .save_editor_file(&id, &saved.version, "overwrite\n")
+                .unwrap_err()
+                .code,
+            "FILE_CHANGED"
+        );
+        let current = session.read_editable(&id).unwrap();
+        let head = std::fs::read(f.root.join(".git/HEAD")).unwrap();
+        std::fs::write(f.root.join(".git/HEAD"), b"ref: refs/heads/another\n").unwrap();
+        assert_eq!(
+            session
+                .save_editor_file(&id, &current.version, "overwrite\n")
+                .unwrap_err()
+                .code,
+            "FILE_CHANGED"
+        );
+        std::fs::write(f.root.join(".git/HEAD"), head).unwrap();
+        let newer = ProjectFilesSession::new_filesystem(
+            session.git.clone(),
+            session.repository.clone(),
+            session.state.clone(),
+        )
+        .unwrap();
+        let new_id = newer.tree_root().entries[0].id().to_owned();
+        assert_ne!(id, new_id);
+        assert_eq!(
+            current.version,
+            newer.read_editable(&new_id).unwrap().version
+        );
+        // Windows 原始 BOM 和 CRLF 在少量编辑后保持，不变成整篇差异。
+        std::fs::write(f.root.join("text"), b"\xef\xbb\xbfline1\r\nline2\r\n").unwrap();
+        let crlf = newer.read_editable(&new_id).unwrap();
+        newer
+            .save_editor_file(&new_id, &crlf.version, "line1\r\nchanged\r\n")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(f.root.join("text")).unwrap(),
+            b"\xef\xbb\xbfline1\r\nchanged\r\n"
+        );
+    }
+
+    /// 旧文件能力可绑定最新 Git 快照保存，外部正文变化仍必须拒绝覆盖。
+    #[test]
+    fn old_file_session_uses_current_write_snapshot() {
+        let f = Fixture::new();
+        f.write("text", b"before\n");
+        let (repo, state) = open_repository(&f.git, &f.root).unwrap();
+        let session = std::sync::Arc::new(
+            ProjectFilesSession::new_filesystem(f.git.clone(), repo.clone(), state).unwrap(),
+        );
+        let root = session.tree_root();
+        let id = root.entries[0].id().to_owned();
+        let document = session.read_editable(&id).unwrap();
+        f.command(&["add", "text"]);
+        let current = read_repository_state(&f.git, &repo).unwrap();
+        assert_ne!(session.snapshot_id(), current.snapshot_id);
+        session
+            .save_editable_with_state(&current, &id, &document.version, "saved\n")
+            .unwrap();
+        assert_eq!(std::fs::read(f.root.join("text")).unwrap(), b"saved\n");
+        let latest = session.read_editable(&id).unwrap();
+        let current = read_repository_state(&f.git, &repo).unwrap();
+        let coordinator = super::super::coordinator::RepositoryCoordinator::new();
+        let preview = session
+            .prepare_save_with_state(&coordinator, &current, &id, &latest.version, "preview\n")
+            .unwrap();
+        assert_eq!(preview.snapshot_id, current.snapshot_id);
+        assert_eq!(preview.head, current.head);
+        f.write("text", b"external\n");
+        assert_eq!(
+            session
+                .prepare_save_with_state(&coordinator, &current, &id, &latest.version, "overwrite")
+                .unwrap_err()
+                .code,
+            "FILE_CHANGED"
+        );
+        assert_eq!(std::fs::read(f.root.join("text")).unwrap(), b"external\n");
+    }
 
     /// 根目录不夹带后代文件，分页稳定且搜索复用文件身份。
     #[test]
@@ -804,7 +1115,9 @@ mod tests {
             matches!(session.read(&id).unwrap(), FileDiff::Text { content, .. } if content == "latest content")
         );
         f.command(&["add", "bin"]);
-        assert_eq!(session.read(&id).unwrap_err().code, "STALE_REQUEST");
+        assert!(
+            matches!(session.read(&id).unwrap(), FileDiff::Text { content, .. } if content == "latest content")
+        );
     }
 
     /// 空仓库没有 tracked 输出时仍能列出非忽略 untracked 文件。

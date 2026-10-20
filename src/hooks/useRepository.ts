@@ -120,13 +120,14 @@ export function useRepository() {
     document.addEventListener("visibilitychange", onVisibility);
     const unlistenPromise =
       isDesktop() && repositoryId
-        ? listen<{ repositoryId: string; revision: number; reliable: boolean }>(
-            "repository-invalidated",
-            (event) => {
-              if (!disposed && event.payload.repositoryId === repositoryId)
-                applyWatch(event.payload);
-            },
-          ).catch(() => {
+        ? listen<{
+            repositoryId: string;
+            revision: number;
+            reliable: boolean;
+          }>("repository-invalidated", (event) => {
+            if (!disposed && event.payload.repositoryId === repositoryId)
+              applyWatch(event.payload);
+          }).catch(() => {
             listenerFailed = true;
             monitoringFailed();
             return () => undefined;
@@ -157,5 +158,6 @@ export function useRepository() {
     closeDiff: controller.closeDiff,
     clear: controller.clear,
     markDirty: controller.markDirty,
+    consumeVerifiedState: controller.consumeVerifiedState,
   };
 }

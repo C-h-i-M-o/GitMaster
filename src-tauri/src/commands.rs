@@ -30,11 +30,35 @@ use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+/// 仓库状态与各读取域的监听版本，供前端按域复用缓存。
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryVersions {
+    pub history: u64,
+    pub files: u64,
+    pub documents: u64,
+}
+
+/// 桌面层返回的仓库快照，兼容核心状态字段并补充变化域版本。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RepositorySnapshot {
+    #[serde(flatten)]
+    pub state: RepositoryState,
+    pub versions: RepositoryVersions,
+}
+
 /// 当前环境和工作树会话，不持久化仓库文件或凭据。
 #[derive(Default)]
 pub struct Session {
     environment_request: u64,
     repository_request: u64,
+    /// 只读能力生命周期；普通状态刷新不递增，避免无关读取失效。
+    readonly_request: u64,
+    /// 上一次已消费的监听域版本。
+    watch_seen: RepositoryVersions,
+    /// 对外签发的域版本。
+    versions: RepositoryVersions,
+    force_refresh: bool,
     epoch: u64,
     git: Option<GitExecutable>,
     active: Option<(RepositoryHandle, RepositoryState)>,
@@ -42,6 +66,8 @@ pub struct Session {
     history: Option<Arc<Mutex<readonly::HistoryCache>>>,
     branches: Option<Arc<git::branches::BranchSession>>,
     project_files: Option<Arc<git::files::ProjectFilesSession>>,
+    /// 编辑文档能力不依赖目录刷新，仅保留单文件映射及最近使用顺序。
+    editor_files: VecDeque<(String, Arc<git::files::ProjectFilesSession>)>,
     history_request: u64,
     branches_request: u64,
     project_files_request: u64,
@@ -51,6 +77,8 @@ pub struct Session {
     write_request: u64,
     preview: Option<operations::PreviewBinding>,
     executed: VecDeque<(String, OperationHandle)>,
+    /// 已执行写任务与其可消费的仓库代次，防止旧终态覆盖新状态。
+    accepted_operations: VecDeque<(String, u64, u64, RepositoryVersions)>,
     remotes: Option<Arc<git::remote::RemoteSession>>,
     previous_remotes: Option<Arc<git::remote::RemoteSession>>,
     conflicts: Option<Arc<git::conflicts::ConflictSession>>,
@@ -95,6 +123,7 @@ impl Session {
             self.epoch += 1;
             self.repository_request += 1;
             self.active = None;
+            self.editor_files.clear();
             self.monitor = None;
             self.clear_readonly();
             self.previous_remotes = None;
@@ -106,6 +135,11 @@ impl Session {
     }
     /// 环境或仓库刷新使全部模块缓存与在途初始化失效。
     fn clear_readonly(&mut self) {
+        self.clear_readonly_full(true);
+    }
+    /// 清理全部只读槽；发布强制刷新时可跳过重复的对外版本递增。
+    fn clear_readonly_full(&mut self, bump_versions: bool) {
+        self.readonly_request += 1;
         self.diff_request += 1;
         self.diff = None;
         self.history_request += 1;
@@ -122,12 +156,24 @@ impl Session {
         self.conflicts = None;
         self.write_request += 1;
         self.preview = None;
+        if bump_versions {
+            self.versions.history += 1;
+            self.versions.files += 1;
+            self.versions.documents += 1;
+        }
     }
     /// 开始打开或刷新仓库；活动写任务期间不能作废正在使用的会话。
     fn begin_repository_request(&mut self) -> Result<u64, OperationError> {
+        self.begin_repository_request_with(true)
+    }
+    /// 开始仓库请求；强制请求才清理历史、文件和差异等只读能力。
+    fn begin_repository_request_with(&mut self, force: bool) -> Result<u64, OperationError> {
         self.coordinator.invalidate()?;
         self.repository_request += 1;
-        self.clear_readonly();
+        if force {
+            self.clear_readonly();
+        }
+        self.force_refresh = force;
         Ok(self.repository_request)
     }
     /// 发布完整仓库状态，同时拒绝刷新期间捕获旧快照的后台结果。
@@ -139,10 +185,85 @@ impl Session {
         snapshot: RepositoryState,
     ) -> Result<(), OperationError> {
         self.check_repository(epoch, token)?;
+        self.editor_files.clear();
+        if self.force_refresh {
+            self.clear_readonly_full(false);
+            self.force_refresh = false;
+        }
         self.repository_request += 1;
-        self.clear_readonly();
         self.active = Some((handle, snapshot));
         Ok(())
+    }
+    /// 发布普通刷新结果，并按监听版本只清理已发生变化的读取域。
+    fn publish_repository_with_domains(
+        &mut self,
+        epoch: u64,
+        token: u64,
+        handle: RepositoryHandle,
+        snapshot: RepositoryState,
+        start: RepositoryVersions,
+    ) -> Result<(), OperationError> {
+        self.check_repository(epoch, token)?;
+        if self.force_refresh {
+            self.clear_readonly_full(false);
+            self.force_refresh = false;
+            self.watch_seen = start;
+        }
+        let history = start.history != self.watch_seen.history;
+        let files = start.files != self.watch_seen.files;
+        let documents = start.documents != self.watch_seen.documents;
+        let head_changed = self
+            .active
+            .as_ref()
+            .is_some_and(|(_, previous)| previous.head != snapshot.head);
+        let state_changed = self.active.as_ref().is_some_and(|(_, previous)| {
+            previous.operations != snapshot.operations || previous.changes != snapshot.changes
+        });
+        self.watch_seen = start;
+        if history || files || documents || head_changed || state_changed {
+            self.clear_readonly_domains(
+                history || head_changed,
+                files || head_changed,
+                documents || head_changed || state_changed,
+            );
+        }
+        self.repository_request += 1;
+        self.active = Some((handle, snapshot));
+        Ok(())
+    }
+    /// 按变化域失效缓存；文档变化同时清理差异等依赖正文的能力。
+    fn clear_readonly_domains(&mut self, history: bool, files: bool, documents: bool) {
+        if history {
+            self.history_request += 1;
+            self.branches_request += 1;
+            self.remotes_request += 1;
+            self.history = None;
+            self.branches = None;
+            if let Some(remote) = self.remotes.take() {
+                self.previous_remotes = Some(remote);
+            }
+        }
+        if files {
+            self.project_files_request += 1;
+            self.project_files = None;
+        }
+        if documents {
+            self.diff_request += 1;
+            self.diff = None;
+            self.conflicts_request += 1;
+            self.conflicts = None;
+            self.write_request += 1;
+            self.preview = None;
+        }
+        if history {
+            self.versions.history += 1;
+        }
+        if files {
+            self.versions.files += 1;
+        }
+        if documents {
+            self.versions.documents += 1;
+        }
     }
     /// 仅接受当前环境下最后一次仓库读取的结果。
     fn check_repository(&self, epoch: u64, token: u64) -> Result<(), OperationError> {
@@ -151,6 +272,52 @@ impl Session {
         } else {
             Ok(())
         }
+    }
+
+    /// 安装写任务返回的核实快照，并同步推进桌面仓库代次。
+    fn accept_operation_state(
+        &mut self,
+        repository_id: &str,
+        operation_id: &str,
+        snapshot: RepositoryState,
+        epoch: u64,
+        token: u64,
+    ) -> Result<RepositorySnapshot, OperationError> {
+        if self.epoch != epoch
+            || self.repository_request != token
+            || self
+                .active
+                .as_ref()
+                .is_none_or(|(handle, _)| handle.id != repository_id)
+            || snapshot.repository_id != repository_id
+        {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
+        let Some((_, _, _, start_versions)) = self
+            .accepted_operations
+            .iter()
+            .find(|(id, e, t, _)| id == operation_id && *e == epoch && *t == token)
+            .cloned()
+        else {
+            return Err(OperationError::new("STALE_REQUEST"));
+        };
+        self.accepted_operations
+            .retain(|(id, _, _, _)| id != operation_id);
+        let (handle, _) = self
+            .active
+            .clone()
+            .ok_or_else(|| OperationError::new("STALE_REQUEST"))?;
+        self.publish_repository_with_domains(
+            epoch,
+            token,
+            handle,
+            snapshot.clone(),
+            start_versions,
+        )?;
+        Ok(RepositorySnapshot {
+            state: snapshot,
+            versions: self.versions,
+        })
     }
 }
 
@@ -248,7 +415,7 @@ pub async fn open_repository(
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     path: String,
-) -> Result<RepositoryState, OperationError> {
+) -> Result<RepositorySnapshot, OperationError> {
     let shared = state.inner().clone();
     let (git, epoch, token) = {
         let mut s = shared.lock()?;
@@ -262,17 +429,23 @@ pub async fn open_repository(
     blocking("open_repository", move || {
         let handle = git::repository::identify_repository(&git, Path::new(&path))?;
         let monitor = monitoring::RepositoryMonitor::new(&handle, app.clone());
+        let watch_seen = monitor.versions();
         let snapshot = git::repository::read_repository_state(&git, &handle)?;
         let mut s = shared.lock()?;
         s.publish_repository(epoch, token, handle, snapshot.clone())?;
         s.monitor = Some(monitor);
+        s.watch_seen = watch_seen;
+        let versions = s.versions;
         drop(s);
         if let Err(error) =
             crate::recent_projects::record_opened_project(&app, Path::new(&snapshot.root_path))
         {
             crate::recent_projects::remember_error(Path::new(&snapshot.root_path), error);
         }
-        Ok(snapshot)
+        Ok(RepositorySnapshot {
+            state: snapshot,
+            versions,
+        })
     })
     .await
 }
@@ -282,9 +455,10 @@ pub async fn open_repository(
 pub async fn read_repository_state(
     state: State<'_, DesktopState>,
     repository_id: String,
-) -> Result<RepositoryState, OperationError> {
+    force: Option<bool>,
+) -> Result<RepositorySnapshot, OperationError> {
     let shared = state.inner().clone();
-    let (git, handle, epoch, token) = {
+    let (git, handle, epoch, token, start_versions) = {
         let mut s = shared.lock()?;
         let git = s
             .git
@@ -296,8 +470,14 @@ pub async fn read_repository_state(
             .filter(|(h, _)| h.id == repository_id)
             .map(|(h, _)| h.clone())
             .ok_or_else(|| OperationError::new("STALE_REQUEST"))?;
-        s.begin_repository_request()?;
-        (git, handle, s.epoch, s.repository_request)
+        let reliable = s.monitor.as_ref().is_some_and(|monitor| monitor.reliable());
+        s.begin_repository_request_with(force.unwrap_or(true) || !reliable)?;
+        let versions = s
+            .monitor
+            .as_ref()
+            .map(|monitor| monitor.versions())
+            .unwrap_or_default();
+        (git, handle, s.epoch, s.repository_request, versions)
     };
     blocking("read_repository_state", move || {
         let coordinator = {
@@ -309,8 +489,12 @@ pub async fn read_repository_state(
             git::repository::read_repository_state(&git, &handle)
         })?;
         let mut s = shared.lock()?;
-        s.publish_repository(epoch, token, handle, snapshot.clone())?;
-        Ok(snapshot)
+        s.publish_repository_with_domains(epoch, token, handle, snapshot.clone(), start_versions)?;
+        let versions = s.versions;
+        Ok(RepositorySnapshot {
+            state: snapshot,
+            versions,
+        })
     })
     .await
 }
@@ -355,7 +539,7 @@ pub async fn read_file_diff(
                 &snapshot,
                 &change_id,
                 side,
-                context_lines.unwrap_or(3),
+                u32::from(context_lines.unwrap_or(3)),
             )
         })?;
         shared.lock()?.check_repository(epoch, token)?;

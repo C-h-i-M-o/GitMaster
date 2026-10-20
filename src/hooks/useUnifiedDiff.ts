@@ -8,24 +8,33 @@ export function useUnifiedDiff(content: string, untracked: boolean) {
     () => parseUnifiedDiff(content, untracked),
     [content, untracked],
   );
+  const defaultExpanded = useMemo(
+    () =>
+      new Set(
+        foldDiffContext(diff.lines, new Set()).flatMap((row) =>
+          row.kind === "fold" ? [row.id] : [],
+        ),
+      ),
+    [diff],
+  );
   const [state, setState] = useState<{
     source: typeof diff;
     expanded: ReadonlySet<string>;
-  }>({ source: diff, expanded: new Set() });
+  }>({ source: diff, expanded: defaultExpanded });
   const rows = useMemo(
     () =>
       foldDiffContext(
         diff.lines,
-        state.source === diff ? state.expanded : new Set(),
+        state.source === diff ? state.expanded : defaultExpanded,
       ),
-    [diff, state],
+    [diff, state, defaultExpanded],
   );
-  /** 切换当前片段，变化后重新进入默认折叠状态。 */
+  /** 用户主动收起片段，切换文件后仍默认展示完整上下文。 */
   function toggle(id: string): () => void {
     return () =>
       setState((current) => {
         const expanded = new Set(
-          current.source === diff ? current.expanded : [],
+          current.source === diff ? current.expanded : defaultExpanded,
         );
         if (expanded.has(id)) expanded.delete(id);
         else expanded.add(id);

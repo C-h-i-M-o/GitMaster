@@ -339,8 +339,6 @@ fn read_error(error: OperationError) -> OperationError {
 impl super::ProjectFilesSession {
     /// 只有当前清单签发的普通文件才能建立只读文档，每个会话最多八份。
     pub fn open_read_document(&self, file_id: &str) -> Result<ReadDocument, OperationError> {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        write_guard::validate_snapshot(&self.git, &self.repository, &self.state, deadline)?;
         let path = self.file_path(file_id)?;
         if self
             .readers

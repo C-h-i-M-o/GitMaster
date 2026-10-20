@@ -9,6 +9,8 @@ export type IconName =
   | "download"
   | "upload"
   | "refresh"
+  | "sync"
+  | "fetch"
   | "chevron"
   | "close"
   | "settings"
@@ -53,6 +55,12 @@ const iconPaths: Record<IconName, ReactNode> = {
   refresh: (
     <path d="M20 11a8 8 0 0 0-14.7-4L3 10m0-5v5h5M4 13a8 8 0 0 0 14.7 4L21 14m0 5v-5h-5" />
   ),
+  sync: (
+    <>
+      <path d="M7 7h10l-3-3m3 3-3 3M17 17H7l3 3m-3-3 3-3" />
+    </>
+  ),
+  fetch: <path d="M12 4v10m-4-4 4 4 4-4M5 19h14" />,
   chevron: <path d="m8 10 4 4 4-4" />,
   close: <path d="m6 6 12 12M6 18 18 6" />,
   settings: (

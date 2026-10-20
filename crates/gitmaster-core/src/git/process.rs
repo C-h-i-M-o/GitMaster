@@ -199,29 +199,10 @@ fn run_git_until(
     // status/diff 的工作区转换也可能运行 clean/filter，逐项覆盖而不执行它们。
     if policy == ExecutionPolicy::Read && args.iter().any(|arg| arg == "status" || arg == "diff") {
         let mut config = command(git, cwd);
-        config.args([
-            "config",
-            "--null",
-            "--name-only",
-            "--get-regexp",
-            "^filter\\..*\\.(clean|smudge|process|required)$",
-        ]);
-        let keys = run_command(config, 65536, false, remaining(deadline, TIMEOUT)?)?;
-        if !keys.success && keys.exit_code != Some(1) {
-            return Err(OperationError::new("GIT_EXECUTION_FAILED"));
-        }
-        for key in keys.stdout.split(|b| *b == 0).filter(|key| !key.is_empty()) {
-            let key = std::str::from_utf8(key).map_err(|_| OperationError::new("PARSE_FAILED"))?;
-            cmd.arg("-c").arg(format!(
-                "{key}={}",
-                if key.ends_with(".required") {
-                    "false"
-                } else {
-                    ""
-                }
-            ));
-        }
+        config.env("GIT_CONFIG_NOSYSTEM", "0");
+        apply_read_configuration(&mut cmd, config, deadline)?;
     }
+
     if policy == ExecutionPolicy::Network {
         cmd.env("GIT_ALLOW_PROTOCOL", "https:ssh");
     }
@@ -234,6 +215,52 @@ fn run_git_until(
         remaining(deadline, policy.timeout())?,
         policy == ExecutionPolicy::Network,
     )
+}
+
+/// 单次探测有效配置，只注入内建转换值并覆盖全部外部过滤器。
+fn apply_read_configuration(
+    cmd: &mut Command,
+    mut config: Command,
+    deadline: Instant,
+) -> Result<(), OperationError> {
+    config.args([
+        "config",
+        "--includes",
+        "--null",
+        "--get-regexp",
+        "^(filter\\..*\\.(clean|smudge|process|required)|core\\.(autocrlf|eol|safecrlf))$",
+    ]);
+    let output = run_command(config, 65536, false, remaining(deadline, TIMEOUT)?)?;
+    if !output.success && output.exit_code != Some(1) {
+        return Err(OperationError::new("GIT_EXECUTION_FAILED"));
+    }
+    for record in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let record =
+            std::str::from_utf8(record).map_err(|_| OperationError::new("PARSE_FAILED"))?;
+        let (key, value) = record.split_once('\n').unwrap_or((record, ""));
+        if key.starts_with("filter.") {
+            cmd.arg("-c").arg(format!(
+                "{key}={}",
+                if key.ends_with(".required") {
+                    "false"
+                } else {
+                    ""
+                }
+            ));
+        } else if matches!(key, "core.autocrlf" | "core.eol" | "core.safecrlf") {
+            // 保留配置读取顺序，后面的全局/仓库覆盖系统值；不执行配置中的程序。
+            cmd.arg("-c").arg(if record.contains('\n') {
+                format!("{key}={value}")
+            } else {
+                key.to_owned()
+            });
+        }
+    }
+    Ok(())
 }
 
 /// 冲突读取只解析已捕获的私有索引副本，不重新打开变化中的真实索引。
@@ -609,6 +636,7 @@ fn run_command_with_progress(
     on_progress: &mut dyn FnMut(u64, u64),
 ) -> Result<ProcessOutput, OperationError> {
     crate::diagnostics::measure("git_process", || {
+        super::coordinator::check_read_cancelled()?;
         let result = run_platform_with_progress(
             command,
             stdin,
@@ -689,6 +717,7 @@ fn run_platform_with_progress(
         nonblocking(&stdout)?;
         nonblocking(&stderr)?;
         loop {
+            super::coordinator::check_read_cancelled()?;
             if Instant::now() >= deadline {
                 return Err(OperationError::new("TIMEOUT"));
             }
@@ -1029,7 +1058,85 @@ fn read_limited(
 
 #[cfg(test)]
 mod tests {
+    /// Windows 的规范 Git 程序路径与安全简化程序路径必须读到相同配置。
+    #[cfg(windows)]
+    #[test]
+    fn windows_canonical_git_program_reads_configuration() {
+        let fixture = crate::git::repository::tests::Fixture::new();
+        let root = fixture.root.canonicalize().unwrap();
+        let mut simple_git = fixture.git.clone();
+        simple_git.path = dunce::simplified(&fixture.git.path).to_path_buf();
+        let plain = super::inspect_local_config(
+            &simple_git,
+            &root,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        let canonical = super::inspect_local_config(
+            &fixture.git,
+            &root,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(canonical, plain);
+        let config = crate::git::write_guard::parse_config(&canonical).unwrap();
+        assert_eq!(config.get("user.name").map(String::as_str), Some("测试"));
+    }
     use super::*;
+
+    /// 使用独立系统/全局配置探测真实换行转换，禁止过滤器和 textconv 执行。
+    #[test]
+    fn read_configuration_preserves_eol_precedence_without_external_filters() {
+        let f = crate::git::repository::tests::Fixture::new();
+        f.write("file.txt", b"one\ntwo\nthree\n");
+        f.command(&["add", "file.txt"]);
+        f.write("file.txt", b"one\r\nchanged\r\nthree\r\n");
+        f.write(".git/system-config", b"[core]\n autocrlf = true\n[filter \"probe\"]\n clean = touch FILTER_EXECUTED\n smudge = touch FILTER_EXECUTED\n process = touch FILTER_EXECUTED\n required = true\n");
+        f.write(".git/global-config", b"[core]\n autocrlf = false\n");
+        f.write(".gitattributes", b"file.txt filter=probe diff=probe\n");
+        f.command(&["config", "diff.probe.textconv", "touch TEXTCONV_EXECUTED"]);
+        let original = std::fs::read(f.root.join("file.txt")).unwrap();
+        // 系统值生效，然后全局覆盖，最后本地覆盖，整个过程不改真实用户配置。
+        for (global, local, expected) in [
+            (false, false, "1\t1\tfile.txt\n"),
+            (true, false, "3\t3\tfile.txt\n"),
+            (true, true, "1\t1\tfile.txt\n"),
+        ] {
+            if local {
+                f.command(&["config", "core.autocrlf", "true"]);
+            }
+            let mut config = command(&f.git, &f.root);
+            config
+                .env("GIT_CONFIG_NOSYSTEM", "0")
+                .env("GIT_CONFIG_SYSTEM", f.root.join(".git/system-config"));
+            config.env(
+                "GIT_CONFIG_GLOBAL",
+                if global {
+                    f.root.join(".git/global-config")
+                } else {
+                    std::path::PathBuf::from(null_device())
+                },
+            );
+            let mut cmd = command(&f.git, &f.root);
+            cmd.env("GIT_CONFIG_GLOBAL", null_device());
+            apply_read_configuration(&mut cmd, config, Instant::now() + Duration::from_secs(60))
+                .unwrap();
+            cmd.args([
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--numstat",
+                "--",
+                "file.txt",
+            ]);
+            let output = run_command(cmd, 4096, false, Duration::from_secs(30)).unwrap();
+            assert!(output.success);
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            assert!(!f.root.join("FILTER_EXECUTED").exists());
+            assert!(!f.root.join("TEXTCONV_EXECUTED").exists());
+            assert_eq!(std::fs::read(f.root.join("file.txt")).unwrap(), original);
+        }
+    }
     use std::io::Write;
 
     /// Windows 规范化路径必须能经过实际 Git 执行入口完成切换并保持工作区干净。
@@ -1213,6 +1320,14 @@ mod tests {
                     .write_all(b"Receiving objects: 100% (2/2)\n")
                     .unwrap();
             }
+            Ok("cancel-ready") => {
+                std::fs::write(
+                    std::env::var_os("GITMASTER_CANCEL_READY").unwrap(),
+                    b"ready",
+                )
+                .unwrap();
+                thread::sleep(Duration::from_secs(5));
+            }
             Ok("timeout") => thread::sleep(Duration::from_secs(5)),
             Ok("stdin") => {
                 let mut bytes = Vec::new();
@@ -1278,6 +1393,54 @@ mod tests {
             "TIMEOUT"
         );
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    /// 保存中止真实只读子进程并回收，写屏障期间仍禁止切仓库和准备 Git 写任务。
+    #[test]
+    fn file_save_cancels_running_read_and_preserves_write_gate() {
+        use crate::git::coordinator::{CoordinationKey, RepositoryCoordinator};
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let key = CoordinationKey::clone_target(directory.path(), "queue").unwrap();
+        let coordinator = RepositoryCoordinator::new();
+        let reader = coordinator.clone();
+        let read_key = key.clone();
+        let mut child = fixture("cancel-ready");
+        child.env("GITMASTER_CANCEL_READY", &ready);
+        let worker = thread::spawn(move || {
+            reader.read(&read_key, || {
+                run_command(child, 4096, false, Duration::from_secs(10))
+            })
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "只读夹具未启动");
+            thread::sleep(Duration::from_millis(5));
+        }
+        let started = Instant::now();
+        coordinator
+            .write_file(&key, || {
+                assert_eq!(
+                    coordinator.invalidate().unwrap_err().code,
+                    "OPERATION_IN_PROGRESS"
+                );
+                assert_eq!(
+                    coordinator.begin_prepare().unwrap_err().code,
+                    "OPERATION_IN_PROGRESS"
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().code,
+            "REQUEST_CANCELLED"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(coordinator.invalidate().is_ok());
+        let failure: Result<(), OperationError> =
+            coordinator.write_file(&key, || Err(OperationError::new("FILE_CHANGED")));
+        assert!(failure.is_err());
+        assert!(coordinator.begin_prepare().is_ok());
     }
 
     /// 双管道洪泛不死锁，任一管道超限迅速结束。

@@ -45,6 +45,7 @@ export interface RepositoryState {
   head: HeadState;
   operations: Array<"merge" | "rebase" | "cherryPick" | "revert" | "bisect">;
   changes: FileChange[];
+  versions?: { history: number; files: number; documents: number };
 }
 export type DiffSide = "staged" | "unstaged" | "untracked";
 export type FileDiff =

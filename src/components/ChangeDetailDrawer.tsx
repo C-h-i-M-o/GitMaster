@@ -3,6 +3,7 @@ import { UnifiedDiff } from "./UnifiedDiff";
 import { PagedDiff } from "./PagedDiff";
 import { ContentPreview } from "./ContentPreview";
 import { Icon } from "./Icon";
+import { describeGitError } from "../ui/gitPresentation";
 
 /** 二级差异面板保留原文件列表与勾选状态，并明确展示比较侧。 */
 export function ChangeDetailDrawer({ workbench: w }: { workbench: Workbench }) {
@@ -39,32 +40,29 @@ export function ChangeDetailDrawer({ workbench: w }: { workbench: Workbench }) {
       </header>
       <div className="change-detail-path" title={change?.path}>
         {change?.originalPath && <span>{change.originalPath} → </span>}
-        {change?.path}
+        {change?.path ?? w.repo.selected.path}
       </div>
       <div className="change-detail-body">
+        {w.repo.error ? (
+          <div className="content-preview change-error" role="alert">
+            <p>{describeGitError(w.repo.error)}</p>
+            <button className="secondary" onClick={w.refreshLocal}>
+              重试刷新
+            </button>
+          </div>
+        ) : null}
         {w.repo.selected.side !== "untracked" &&
-          (w.repo.diff?.kind === "text" || w.repo.diff?.kind === "paged") && (
-            <div className="button-row">
-              <button
-                className="secondary"
-                onClick={w.expandChangeContext}
-                disabled={
-                  w.repo.diffLoading ||
-                  w.repo.diff.truncated ||
-                  (w.repo.selected.contextLines ?? 3) >= 2000
-                }
-              >
-                加载更多上下文
-              </button>
-              <small className="muted">
-                每处变化前后最多 {w.repo.selected.contextLines ?? 3}{" "}
-                行；受内容加载上限限制
-              </small>
-            </div>
+          ((w.repo.diff?.kind === "text" && w.repo.diff.content) ||
+            w.repo.diff?.kind === "paged") && (
+            <p className="diff-context-note">
+              {w.repo.diff.truncated
+                ? "内容受安全上限限制，已截断。"
+                : "已展示完整差异上下文。"}
+            </p>
           )}
-        {!w.repo.diffLoading &&
-        w.repo.diff?.kind === "paged" &&
-        w.repo.repository ? (
+        {w.repo.error ? null : !w.repo.diffLoading &&
+          w.repo.diff?.kind === "paged" &&
+          w.repo.repository ? (
           <PagedDiff
             key={w.repo.diff.documentId}
             document={w.repo.diff}

@@ -3,15 +3,22 @@ import type { ProjectTreePage } from "../types/git";
 import type { FileTreeNode } from "../ui/fileTree";
 import { normalizeOperationError } from "../services/gitErrors";
 import { describeGitError } from "../ui/gitPresentation";
+import { restoreTreePaths } from "../ui/restoreTreePaths";
+const emptyPaths: readonly string[] = [];
 
 /** 目录展开按需获取页面，折叠保留缓存；搜索与目录请求互不覆盖。 */
 export function useFileTree(
   root: ProjectTreePage | null,
   load: (id: string, offset: number) => Promise<ProjectTreePage>,
   search: (query: string, offset: number) => Promise<ProjectTreePage>,
+  restoredPaths: readonly string[] = emptyPaths,
+  onExpandedPaths?: (paths: string[]) => void,
 ) {
-  const current = useRef({ root, load, search });
-  current.current = { root, load, search };
+  const current = useRef({ root, load, search, onExpandedPaths });
+  current.current = { root, load, search, onExpandedPaths };
+  const expanded = useRef<readonly string[]>(restoredPaths);
+  const seed = useRef(restoredPaths);
+  const owner = useRef(root?.repositoryId);
   const [query, setQuery] = useState("");
   const [revealPath, setRevealPath] = useState<string | null>(null);
   const [revealVersion, setRevealVersion] = useState(0);
@@ -29,18 +36,56 @@ export function useFileTree(
   const pending = useRef(new Set<string>());
   const searchSequence = useRef(0);
   useEffect(() => {
+    const changedProject = owner.current !== root?.repositoryId;
+    owner.current = root?.repositoryId;
+    const paths =
+      changedProject || seed.current !== restoredPaths
+        ? restoredPaths
+        : expanded.current;
+    seed.current = restoredPaths;
+    expanded.current = paths;
     setPages(root ? { [root.directoryId]: root } : {});
-    setOpened(new Set());
+    setOpened(new Set(paths));
     setRevealPath(null);
     setSearchPage(null);
     setSearching(false);
     setError(null);
     setBusy(new Set());
     pending.current.clear();
+    let cancelled = false;
+    if (root && paths.length)
+      void restoreTreePaths(
+        root,
+        paths,
+        current.current.load,
+        () => !cancelled && current.current.root?.treeId === root.treeId,
+      )
+        .then((pages) => {
+          if (cancelled) return;
+          const available = new Set(
+            Object.values(pages).flatMap((page) =>
+              page.entries
+                .filter((entry) => entry.kind === "directory")
+                .map((entry) => entry.path),
+            ),
+          );
+          const remaining = expanded.current.filter(
+            (path) => !paths.includes(path) || available.has(path),
+          );
+          expanded.current = remaining;
+          setOpened(new Set(remaining));
+          setPages((old) => ({ ...old, ...pages }));
+          current.current.onExpandedPaths?.(remaining);
+        })
+        .catch((cause: unknown) => {
+          if (!cancelled && current.current.root?.treeId === root.treeId)
+            setError(describeGitError(normalizeOperationError(cause)));
+        });
     return () => {
+      cancelled = true;
       searchSequence.current++;
     };
-  }, [root]);
+  }, [root, restoredPaths]);
   /** 读取一页并保留先前页；迟到树响应不进入当前视图。 */
   async function loadPage(id: string, offset: number): Promise<void> {
     const treeId = current.current.root?.treeId;
@@ -175,6 +220,8 @@ export function useFileTree(
         const next = new Set(old);
         if (next.has(path)) next.delete(path);
         else next.add(path);
+        expanded.current = [...next];
+        queueMicrotask(() => current.current.onExpandedPaths?.([...next]));
         return next;
       });
       if (!pages[id]) void loadPage(id, 0);
@@ -215,6 +262,8 @@ export function useFileTree(
     setQuery("");
     setRevealPath(null);
     if (!path) {
+      expanded.current = [];
+      current.current.onExpandedPaths?.([]);
       setOpened(new Set());
       setRevealPath("");
       setRevealVersion((value) => value + 1);
@@ -250,7 +299,12 @@ export function useFileTree(
       }
       if (current.current.root?.treeId !== root.treeId) return;
       setPages((old) => ({ ...old, ...additions }));
-      setOpened((old) => new Set([...old, ...ancestors]));
+      setOpened((old) => {
+        const next = new Set([...old, ...ancestors]);
+        expanded.current = [...next];
+        queueMicrotask(() => current.current.onExpandedPaths?.([...next]));
+        return next;
+      });
       setRevealPath(path);
       setRevealVersion((value) => value + 1);
     } catch (cause: unknown) {

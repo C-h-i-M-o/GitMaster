@@ -65,7 +65,8 @@ fn finish(
     let handle = coordinator
         .execute(Some(&repo.id), &preview.plan_id)
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // 等待同一操作完成其生产预算，避免测试提前销毁仍在使用的仓库。
+    let deadline = Instant::now() + BUDGET + Duration::from_secs(5);
     loop {
         if let Some(record) = coordinator
             .read_operation(Some(&handle.operation_id))

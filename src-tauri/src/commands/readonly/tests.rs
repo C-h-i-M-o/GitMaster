@@ -13,6 +13,152 @@ use std::{
 /// 为并行测试夹具补充进程内唯一序号，避免时间戳精度不足导致目录碰撞。
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// 保存能力跨目录重签与强制刷新，仍拒绝外部修改及跨仓库访问。
+#[test]
+fn editor_save_survives_readonly_refresh_and_preserves_version() {
+    let f = Fixture::new();
+    let list = f.files();
+    let id = &list.files[0].file_id;
+    let access = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id).unwrap();
+    let document = access
+        .run_with(&f.shared, |cache| cache.read_editable(id))
+        .unwrap();
+    register_editor_document(&f.shared, &access, &document).unwrap();
+    f.shared.lock().unwrap().clear_readonly();
+    assert!(f.shared.lock().unwrap().project_files.is_none());
+    let saved = save_open_document(
+        &f.shared,
+        &f.repository_id,
+        id,
+        &document.version,
+        "first\n",
+    )
+    .unwrap();
+    f.shared
+        .lock()
+        .unwrap()
+        .clear_readonly_domains(false, true, true);
+    let saved =
+        save_open_document(&f.shared, &f.repository_id, id, &saved.version, "second\n").unwrap();
+    assert_eq!(saved.text.content, "second\n");
+    assert_eq!(
+        save_open_document(&f.shared, &f.repository_id, id, &document.version, "old\n")
+            .unwrap_err()
+            .code,
+        "FILE_CHANGED"
+    );
+    assert!(save_open_document(&f.shared, "other", id, &saved.version, "wrong\n").is_err());
+    let root = f
+        .shared
+        .lock()
+        .unwrap()
+        .active
+        .as_ref()
+        .unwrap()
+        .0
+        .root
+        .clone();
+    fs::write(root.join(&saved.path), b"external\n").unwrap();
+    assert_eq!(
+        save_open_document(
+            &f.shared,
+            &f.repository_id,
+            id,
+            &saved.version,
+            "overwrite\n"
+        )
+        .unwrap_err()
+        .code,
+        "FILE_CHANGED"
+    );
+    assert_eq!(fs::read(root.join(saved.path)).unwrap(), b"external\n");
+}
+
+/// 普通状态刷新不应销毁独立的历史图和项目文件能力。
+#[test]
+fn unchanged_refresh_preserves_read_domains() {
+    let f = Fixture::new();
+    f.history();
+    let list = f.files();
+    let access = ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id).unwrap();
+    let mut desktop = f.shared.lock().unwrap();
+    let history = desktop.history.clone().unwrap();
+    let files = desktop.project_files.clone().unwrap();
+    let (repo, state) = desktop.active.clone().unwrap();
+    let epoch = desktop.epoch;
+    let versions = desktop.versions;
+    let token = desktop.begin_repository_request_with(false).unwrap();
+    desktop
+        .publish_repository_with_domains(
+            epoch,
+            token,
+            repo.clone(),
+            state.clone(),
+            Default::default(),
+        )
+        .unwrap();
+    assert!(desktop
+        .history
+        .as_ref()
+        .is_some_and(|value| Arc::ptr_eq(value, &history)));
+    assert!(desktop
+        .project_files
+        .as_ref()
+        .is_some_and(|value| Arc::ptr_eq(value, &files)));
+    assert_eq!(desktop.versions.history, versions.history);
+    assert_eq!(desktop.versions.files, versions.files);
+    let token = desktop.begin_repository_request_with(false).unwrap();
+    let mut fresh = state.clone();
+    fresh.snapshot_id = "new-git-snapshot".into();
+    let start = super::super::RepositoryVersions {
+        documents: 1,
+        ..Default::default()
+    };
+    desktop
+        .publish_repository_with_domains(epoch, token, repo.clone(), fresh.clone(), start)
+        .unwrap();
+    assert!(Arc::ptr_eq(desktop.history.as_ref().unwrap(), &history));
+    assert!(Arc::ptr_eq(desktop.project_files.as_ref().unwrap(), &files));
+    assert_eq!(desktop.versions.documents, versions.documents + 1);
+    drop(desktop);
+    assert_eq!(
+        access
+            .run_with(&f.shared, |cache| cache
+                .read_editable(&list.files[0].file_id))
+            .unwrap()
+            .text
+            .content,
+        "base\n"
+    );
+    // 后续捕获也继续接受文件会话快照，拒绝用新 Git 快照冒充文件能力。
+    assert!(ProjectFileAccess::capture(&f.shared, &f.repository_id, &f.snapshot_id).is_ok());
+    assert!(ProjectFileAccess::capture(&f.shared, &f.repository_id, "new-git-snapshot").is_err());
+    let mut desktop = f.shared.lock().unwrap();
+    let token = desktop.begin_repository_request_with(false).unwrap();
+    desktop
+        .publish_repository_with_domains(epoch, token, repo.clone(), fresh.clone(), start)
+        .unwrap();
+    assert_eq!(desktop.versions.documents, versions.documents + 1);
+    // 刷新开始后出现的新事件留待下次消费，不会因先前相同起始版本被吞掉。
+    let token = desktop.begin_repository_request_with(false).unwrap();
+    desktop
+        .publish_repository_with_domains(
+            epoch,
+            token,
+            repo,
+            fresh,
+            super::super::RepositoryVersions {
+                history: 1,
+                documents: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(desktop.history.is_none());
+    assert!(Arc::ptr_eq(desktop.project_files.as_ref().unwrap(), &files));
+    assert_eq!(desktop.versions.documents, versions.documents + 2);
+}
+
 /// 差异新请求使旧文档与迟到打开失效，旧关闭不得清除新槽。
 #[test]
 fn paged_diff_lifecycle_rejects_stale_requests() {

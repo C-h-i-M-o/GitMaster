@@ -8,6 +8,12 @@ import type {
 } from "../types/git.ts";
 import { normalizeOperationError } from "../services/gitErrors.ts";
 
+/** 保存主动取消只读查询时释放加载态，不将内部调度显示为用户错误。 */
+function readError(error: unknown): OperationError | null {
+  const normalized = normalizeOperationError(error);
+  return normalized.code === "REQUEST_CANCELLED" ? null : normalized;
+}
+
 export interface HistoryApi {
   readCommitHistory: (
     repositoryId: string,
@@ -96,6 +102,7 @@ export function createHistoryController(api: HistoryApi) {
     const key = `${owner}:${id}:${cursor ?? "root"}`;
     if (historyRequests.has(key)) return;
     historyRequests.add(key);
+    let cancelled = false;
     update(
       cursor === null
         ? { loading: true, error: null }
@@ -130,14 +137,18 @@ export function createHistoryController(api: HistoryApi) {
           }),
         });
     } catch (error: unknown) {
+      const normalized = normalizeOperationError(error);
+      cancelled = normalized.code === "REQUEST_CANCELLED";
       if (active && owner === generation)
         update(
           cursor === null
-            ? { loading: false, error: normalizeOperationError(error) }
-            : { loadingMore: false, error: normalizeOperationError(error) },
+            ? { loading: false, error: cancelled ? null : normalized }
+            : { loadingMore: false, error: cancelled ? null : normalized },
         );
     } finally {
       if (owner === generation) historyRequests.delete(key);
+      // 写入取消的查询在同一代次合并重试，排队时会等待写屏障释放。
+      if (cancelled && active && owner === generation) void load(cursor);
     }
   }
   /** 选择已加载提交，详情成功后读取默认父文件列表。 */
@@ -176,7 +187,7 @@ export function createHistoryController(api: HistoryApi) {
       }
     } catch (error: unknown) {
       if (active && owner === generation && selection === selectionGeneration)
-        update({ detailLoading: false, error: normalizeOperationError(error) });
+        update({ detailLoading: false, error: readError(error) });
     }
   }
   /** 读取指定父提交或根提交默认差异。 */
@@ -231,7 +242,7 @@ export function createHistoryController(api: HistoryApi) {
         selection === selectionGeneration &&
         request === filesGeneration
       )
-        update({ filesLoading: false, error: normalizeOperationError(error) });
+        update({ filesLoading: false, error: readError(error) });
     }
   }
   /** 读取文件差异并阻止旧选择覆盖新选择。 */
@@ -272,8 +283,13 @@ export function createHistoryController(api: HistoryApi) {
         owner === generation &&
         selection === selectionGeneration &&
         request === diffGeneration
-      )
-        update({ diffLoading: false, error: normalizeOperationError(error) });
+      ) {
+        const normalized = normalizeOperationError(error);
+        update({
+          diffLoading: false,
+          error: normalized.code === "REQUEST_CANCELLED" ? null : normalized,
+        });
+      }
     }
   }
   return {
@@ -302,7 +318,7 @@ export function createHistoryController(api: HistoryApi) {
     setRepository: (next: RepositoryState | null): void => {
       if (
         repository?.repositoryId === next?.repositoryId &&
-        repository?.snapshotId === next?.snapshotId
+        repository?.versions?.history === next?.versions?.history
       )
         return;
       repository = next;

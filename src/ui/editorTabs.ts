@@ -71,11 +71,17 @@ export function closeEditorTab(
 export function acknowledgeEditorSave(
   tabs: readonly EditorTab[],
   path: string,
+  document: EditableFile,
   submitted: string,
 ): EditorTab[] {
   return tabs.map((tab) =>
     tab.document.path === path
-      ? { ...tab, baseline: submitted, needsReload: true }
+      ? {
+          ...tab,
+          document,
+          baseline: submitted,
+          needsReload: tab.draft !== submitted,
+        }
       : tab,
   );
 }

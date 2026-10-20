@@ -5,6 +5,7 @@ mod m2_contract_tests;
 mod recent_projects;
 mod settings;
 mod terminal;
+mod workspace_sessions;
 use gitmaster_core::AppInfo;
 use tauri::Manager;
 
@@ -81,6 +82,8 @@ pub fn run() {
             commands::apply_app_settings,
             commands::apply_settings_patch,
             recent_projects::read_recent_projects,
+            workspace_sessions::read_workspace_sessions,
+            workspace_sessions::write_workspace_session,
             commands::choose_terminal_path,
             commands::create_terminal,
             commands::read_terminal,
@@ -110,6 +113,8 @@ pub fn run() {
             commands::search_project_files,
             commands::read_project_file,
             commands::read_editable_file,
+            commands::save_editor_file,
+            commands::cancel_project_read,
             commands::open_read_document,
             commands::read_document_page,
             commands::close_read_document,
@@ -128,6 +133,7 @@ pub fn run() {
             commands::prepare_clone,
             commands::execute_clone,
             commands::read_operation,
+            commands::accept_operation_state,
             commands::read_remotes,
             commands::read_sync_target,
             commands::assess_remote,

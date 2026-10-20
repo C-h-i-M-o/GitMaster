@@ -10,6 +10,84 @@ pub struct RepositoryWatcher {
     _watcher: RecommendedWatcher,
 }
 
+/// 事件只携带变化域；上层使用单调版本合并，不把工作区路径发送给前端。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryChange {
+    pub reliable: bool,
+    pub history: bool,
+    pub files: bool,
+    pub documents: bool,
+}
+
+/// 未知事件保守覆盖全部读取域，普通正文修改不污染历史和目录版本。
+fn classify_change(event: &Event, git_dir: &Path, common_dir: &Path) -> Option<RepositoryChange> {
+    let reliable = classify_event(event)?;
+    if !reliable || matches!(event.kind, EventKind::Any | EventKind::Other) {
+        return Some(RepositoryChange {
+            reliable: false,
+            history: true,
+            files: true,
+            documents: true,
+        });
+    }
+    let mut change = RepositoryChange {
+        reliable: true,
+        ..Default::default()
+    };
+    let mut relevant = false;
+    for path in &event.paths {
+        let path = dunce::simplified(path);
+        if let Some(relative) = path
+            .strip_prefix(dunce::simplified(git_dir))
+            .ok()
+            .or_else(|| path.strip_prefix(dunce::simplified(common_dir)).ok())
+        {
+            // 锁文件与对象写入本身不改变展示；实际引用和索引事件负责通知。
+            let name = relative.to_string_lossy().replace('\\', "/");
+            if name.ends_with(".lock") || name.starts_with("objects/") || name.starts_with("logs/")
+            {
+                continue;
+            }
+            relevant = true;
+            if name == "HEAD"
+                || name == "packed-refs"
+                || name.starts_with("refs/")
+                || name.starts_with("worktrees/")
+                || name == "config"
+                || name == "config.worktree"
+                || name == "shallow"
+            {
+                change.history = true;
+            }
+            // HEAD 变化可能切换工作树，保守使目录和正文版本前进。
+            if name == "HEAD" {
+                change.files = true;
+                change.documents = true;
+            }
+        } else {
+            relevant = true;
+            change.documents = true;
+            change.files |= matches!(
+                event.kind,
+                EventKind::Create(_)
+                    | EventKind::Remove(_)
+                    | EventKind::Modify(notify::event::ModifyKind::Name(_))
+            );
+            // Windows 将正文/属性修改统一报为 Any；名称变化另有独立事件。
+            change.files |= !cfg!(windows)
+                && matches!(
+                    event.kind,
+                    EventKind::Modify(notify::event::ModifyKind::Any)
+                );
+            if path.file_name().is_some_and(|name| name == ".git") {
+                change.history = true;
+                change.files = true;
+            }
+        }
+    }
+    relevant.then_some(change)
+}
+
 /// 将 notify 事件归类为可靠变更、需要完整核实或可忽略事件。
 fn classify_event(event: &Event) -> Option<bool> {
     if event.need_rescan() {
@@ -32,14 +110,38 @@ impl RepositoryWatcher {
     where
         F: Fn(bool) + Send + Sync + 'static,
     {
-        let callback: Arc<dyn Fn(bool) + Send + Sync> = Arc::new(callback);
+        Self::new_scoped(root, git_dir, common_dir, move |change| {
+            callback(change.reliable)
+        })
+    }
+
+    /// 按变化域监听同一组真实目录，保持旧可靠性接口的兼容性。
+    pub fn new_scoped<F>(
+        root: &Path,
+        git_dir: &Path,
+        common_dir: &Path,
+        callback: F,
+    ) -> Result<Self, OperationError>
+    where
+        F: Fn(RepositoryChange) + Send + Sync + 'static,
+    {
+        let callback: Arc<dyn Fn(RepositoryChange) + Send + Sync> = Arc::new(callback);
         let event_callback = Arc::clone(&callback);
+        let event_git =
+            std::fs::canonicalize(git_dir).map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
+        let event_common = std::fs::canonicalize(common_dir)
+            .map_err(|_| OperationError::new("FILE_UNAVAILABLE"))?;
         let mut watcher =
             notify::recommended_watcher(move |result: notify::Result<Event>| match result {
-                Err(_) => event_callback(false),
+                Err(_) => event_callback(RepositoryChange {
+                    reliable: false,
+                    history: true,
+                    files: true,
+                    documents: true,
+                }),
                 Ok(event) => {
-                    if let Some(reliable) = classify_event(&event) {
-                        event_callback(reliable);
+                    if let Some(change) = classify_change(&event, &event_git, &event_common) {
+                        event_callback(change);
                     }
                 }
             })
@@ -74,6 +176,43 @@ impl std::fmt::Debug for RepositoryWatcher {
 mod tests {
     use super::*;
     use std::{sync::mpsc, time::Duration};
+
+    /// 正文变化只影响文档，引用与目录拓扑使用独立版本。
+    #[test]
+    fn content_changes_preserve_history_and_directory_domains() {
+        let root = Path::new("repo");
+        let git = root.join(".git");
+        let event = Event::new(EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Content,
+        )))
+        .add_path(root.join("file.txt"));
+        let change = classify_change(&event, &git, &git).unwrap();
+        assert!(change.documents && change.reliable);
+        assert!(!change.history && !change.files);
+        let modified = Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
+            .add_path(root.join("file.txt"));
+        let changed = classify_change(&modified, &git, &git).unwrap();
+        assert!(changed.documents && !changed.history);
+        assert_eq!(changed.files, !cfg!(windows));
+        let created = Event::new(EventKind::Create(notify::event::CreateKind::File))
+            .add_path(root.join("new.txt"));
+        assert!(classify_change(&created, &git, &git).unwrap().files);
+        let head = Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
+            .add_path(git.join("HEAD"));
+        assert!(classify_change(&head, &git, &git).unwrap().history);
+        let index = Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
+            .add_path(git.join("index"));
+        assert_eq!(
+            classify_change(&index, &git, &git),
+            Some(RepositoryChange {
+                reliable: true,
+                ..Default::default()
+            })
+        );
+        let lock = Event::new(EventKind::Create(notify::event::CreateKind::File))
+            .add_path(git.join("index.lock"));
+        assert_eq!(classify_change(&lock, &git, &git), None);
+    }
 
     /// 工作树文件变化应触发可靠变更通知。
     #[test]

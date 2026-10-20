@@ -20,6 +20,7 @@ import "monaco-editor/languages/definitions/shell/register.js";
 import type { EditorTab } from "../ui/editorTabs";
 import type { EditorPreferences } from "../types/settings";
 import { editorModelText, editorDiskText } from "../ui/editorModelText";
+import type { DocumentPosition } from "../types/workspaceSession";
 
 (
   globalThis as typeof globalThis & { MonacoEnvironment: monaco.Environment }
@@ -37,6 +38,8 @@ export interface MonacoEditorProps {
   save(path: string): void;
   compositionStart(): void;
   compositionEnd(): void;
+  readPosition?(path: string): DocumentPosition | null;
+  recordPosition?(path: string, position: DocumentPosition): void;
 }
 interface ModelEntry {
   model: monaco.editor.ITextModel;
@@ -89,6 +92,18 @@ export function useMonacoEditor(props: MonacoEditorProps) {
       wordWrap: current.current.preferences.wordWrap,
     });
     editor.current = view;
+    /** 只记录行列及滚动数值，不向工作区缓存写入正文。 */
+    function recordPosition(): void {
+      const position = view.getPosition();
+      if (!active.current || !position || replacing.current) return;
+      current.current.recordPosition?.(active.current, {
+        ...position,
+        scrollTop: view.getScrollTop(),
+        scrollLeft: view.getScrollLeft(),
+      });
+    }
+    const scroll = view.onDidScrollChange(recordPosition);
+    const cursor = view.onDidChangeCursorPosition(recordPosition);
     const compositionStart = view.onDidCompositionStart(() =>
       current.current.compositionStart(),
     );
@@ -99,6 +114,9 @@ export function useMonacoEditor(props: MonacoEditorProps) {
       if (active.current) current.current.save(active.current);
     });
     return () => {
+      recordPosition();
+      scroll.dispose();
+      cursor.dispose();
       compositionStart.dispose();
       compositionEnd.dispose();
       view.dispose();
@@ -170,6 +188,19 @@ export function useMonacoEditor(props: MonacoEditorProps) {
         : null;
       view.setModel(next?.model ?? null);
       if (next?.view) view.restoreViewState(next.view);
+      else if (props.activePath) {
+        const position = current.current.readPosition?.(props.activePath);
+        if (position) {
+          view.setPosition({
+            lineNumber: position.lineNumber,
+            column: position.column,
+          });
+          view.setScrollPosition({
+            scrollTop: position.scrollTop,
+            scrollLeft: position.scrollLeft,
+          });
+        }
+      }
       active.current = props.activePath;
     }
     for (const [path, entry] of models.current) {

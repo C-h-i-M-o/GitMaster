@@ -12,11 +12,19 @@ export interface RepositoryViewState {
   error: OperationError | null;
   diff: LocalDiff | null;
   diffLoading: boolean;
-  selected: { changeId: string; side: DiffSide; contextLines?: number } | null;
+  selected: {
+    changeId: string;
+    side: DiffSide;
+    contextLines?: number;
+    path?: string;
+  } | null;
 }
 export interface RepositoryApi {
   openRepository: (path: string) => Promise<RepositoryState>;
-  readRepositoryState: (id: string) => Promise<RepositoryState>;
+  readRepositoryState: (
+    id: string,
+    force?: boolean,
+  ) => Promise<RepositoryState>;
   readFileDiff: (
     id: string,
     snapshot: string,
@@ -46,6 +54,7 @@ export function createRepositoryController(api: RepositoryApi) {
   let active = true;
   let pending = false;
   let queued = false;
+  let queuedForce = false;
   let autoRefreshBlocked = false;
   let automaticVisible = true;
   let automaticFailure = false;
@@ -74,7 +83,24 @@ export function createRepositoryController(api: RepositoryApi) {
     update({ diff: null, diffLoading: false, selected: null });
   }
   /** 开始读取仓库并丢弃旧差异，不让差异请求使仓库请求失效。 */
-  async function load(task: () => Promise<RepositoryState>): Promise<void> {
+  async function load(
+    task: () => Promise<RepositoryState>,
+    preserveDiff = false,
+  ): Promise<void> {
+    const previousSelection =
+      preserveDiff && state.repository && state.selected
+        ? {
+            changeId: state.selected.changeId,
+            path:
+              state.repository.changes.find(
+                (item) => item.changeId === state.selected!.changeId,
+              )?.path ??
+              state.selected.path ??
+              null,
+            side: state.selected.side,
+            contextLines: state.selected.contextLines,
+          }
+        : null;
     release();
     const token = ++repositoryRequest;
     diffRequest += 1;
@@ -85,32 +111,85 @@ export function createRepositoryController(api: RepositoryApi) {
     update({
       loading: true,
       error: null,
-      diff: null,
-      diffLoading: false,
-      selected: null,
+      ...(preserveDiff
+        ? { diff: null, diffLoading: true }
+        : { diff: null, diffLoading: false, selected: null }),
     });
     try {
       const repository = await task();
-      if (active && token === repositoryRequest)
-        update({ repository, loading: false, stale: false });
+      if (active && token === repositoryRequest) {
+        const replacement = previousSelection?.path
+          ? repository.changes.find(
+              (item) => item.path === previousSelection.path,
+            )
+          : null;
+        update({
+          repository,
+          loading: false,
+          stale: false,
+          diffLoading: false,
+          diff:
+            !replacement && previousSelection?.path
+              ? { kind: "text", content: "", truncated: false }
+              : null,
+          selected: replacement
+            ? {
+                changeId: replacement.changeId,
+                side: previousSelection!.side,
+                path: replacement.path,
+                ...(previousSelection!.contextLines === undefined
+                  ? {}
+                  : { contextLines: previousSelection!.contextLines }),
+              }
+            : previousSelection?.path
+              ? {
+                  changeId: previousSelection.changeId,
+                  side: previousSelection.side,
+                  path: previousSelection.path,
+                }
+              : null,
+        });
+        // 新快照已经安装，解除在途门禁后才能启动其差异读取。
+        pending = false;
+        if (replacement)
+          void selectDiff(
+            replacement.changeId,
+            previousSelection!.side,
+            previousSelection!.contextLines ?? 1_000_000_000,
+          );
+      }
       if (active && token === repositoryRequest) succeeded = true;
     } catch (error: unknown) {
       if (active && token === repositoryRequest) {
         dirty = true;
         automaticFailure = true;
       }
-      if (active && token === repositoryRequest)
-        update({
-          loading: false,
-          stale: state.repository !== null,
-          error: normalizeOperationError(error),
-        });
+      if (active && token === repositoryRequest) {
+        const normalized = normalizeOperationError(error);
+        if (normalized.code === "REQUEST_CANCELLED") {
+          dirty = true;
+          automaticFailure = false;
+          update({
+            loading: false,
+            stale: state.repository !== null,
+            diffLoading: false,
+          });
+        } else
+          update({
+            loading: false,
+            stale: state.repository !== null,
+            error: normalized,
+            diffLoading: false,
+          });
+      }
     } finally {
       if (active && token === repositoryRequest) {
         pending = false;
         if (queued) {
           queued = false;
-          void refresh();
+          const force = queuedForce;
+          queuedForce = false;
+          void refresh(force);
         } else if (succeeded && dirty && !autoRefreshBlocked) {
           void refreshAutomatic();
         }
@@ -120,18 +199,48 @@ export function createRepositoryController(api: RepositoryApi) {
   /** 打开新目录使之前刷新和差异失效。 */
   function open(path: string): Promise<void> {
     queued = false;
+    queuedForce = false;
     dirty = false;
     return load(() => api.openRepository(path));
   }
   /** 在途刷新合并为至多一次后续刷新。 */
-  function refresh(): Promise<void> {
+  function refresh(force = true): Promise<void> {
     if (!active || !state.repository) return Promise.resolve();
     if (pending) {
       queued = true;
+      queuedForce ||= force;
       return Promise.resolve();
     }
     const id = state.repository.repositoryId;
-    return load(() => api.readRepositoryState(id));
+    return load(() => api.readRepositoryState(id, force), true);
+  }
+  /** 消费桌面端同代次核实快照，拒绝迟到结果并保留刷新降级路径。 */
+  function consumeVerifiedState(
+    repository: RepositoryState,
+    expectedSnapshotId = state.repository?.snapshotId,
+  ): boolean {
+    if (
+      !active ||
+      !state.repository ||
+      pending ||
+      state.repository.snapshotId !== expectedSnapshotId ||
+      state.repository.repositoryId !== repository.repositoryId
+    )
+      return false;
+    repositoryRequest += 1;
+    diffRequest += 1;
+    release();
+    update({
+      repository,
+      loading: false,
+      stale: false,
+      error: null,
+      diff: null,
+      diffLoading: false,
+      selected: null,
+    });
+    automaticFailure = false;
+    return true;
   }
   /** 标记当前仓库可能发生变化，供文件监视事件驱动自动刷新。 */
   function markDirty(): void {
@@ -147,13 +256,9 @@ export function createRepositoryController(api: RepositoryApi) {
   }
   /** 自动刷新遵守界面门禁，显式终态刷新仍使用 refresh。 */
   function refreshAutomatic(): Promise<void> {
-    return automaticFailure ||
-      !automaticVisible ||
-      autoRefreshBlocked ||
-      pending ||
-      !dirty
+    return automaticFailure || !automaticVisible || autoRefreshBlocked || !dirty
       ? Promise.resolve()
-      : refresh();
+      : refresh(false);
   }
   /** 后台窗口保留 dirty，但不启动自动 Git 查询。 */
   function setAutomaticVisible(visible: boolean): void {
@@ -163,7 +268,7 @@ export function createRepositoryController(api: RepositoryApi) {
   async function selectDiff(
     changeId: string,
     side: DiffSide,
-    contextLines = 3,
+    contextLines = 1_000_000_000,
   ): Promise<void> {
     const repository = state.repository;
     if (!repository || pending || !active) return;
@@ -176,7 +281,14 @@ export function createRepositoryController(api: RepositoryApi) {
       selected: {
         changeId,
         side,
-        ...(contextLines === 3 ? {} : { contextLines }),
+        ...(repository.changes.find((item) => item.changeId === changeId)?.path
+          ? {
+              path: repository.changes.find(
+                (item) => item.changeId === changeId,
+              )!.path,
+            }
+          : {}),
+        ...(contextLines === 1_000_000_000 ? {} : { contextLines }),
       },
       error: null,
     });
@@ -194,10 +306,23 @@ export function createRepositoryController(api: RepositoryApi) {
     } catch (error: unknown) {
       if (active && token === diffRequest && owner === repositoryRequest) {
         const normalized = normalizeOperationError(error);
+        if (normalized.code === "REQUEST_CANCELLED") {
+          dirty = true;
+          automaticFailure = false;
+          update({ diffLoading: false, error: null });
+          return;
+        }
+        if (normalized.code === "STALE_REQUEST") {
+          dirty = true;
+          automaticFailure = false;
+          update({ diffLoading: false, error: null });
+          void refreshAutomatic();
+          return;
+        }
         update({
           diffLoading: false,
           error: normalized,
-          stale: state.stale || normalized.code === "STALE_REQUEST",
+          stale: state.stale,
         });
       }
     }
@@ -209,6 +334,7 @@ export function createRepositoryController(api: RepositoryApi) {
     diffRequest += 1;
     pending = false;
     queued = false;
+    queuedForce = false;
     dirty = false;
     update({
       repository: null,
@@ -228,6 +354,7 @@ export function createRepositoryController(api: RepositoryApi) {
     diffRequest += 1;
     pending = false;
     queued = false;
+    queuedForce = false;
     dirty = false;
   }
   /** 激活订阅生命周期。 */
@@ -248,6 +375,7 @@ export function createRepositoryController(api: RepositoryApi) {
   return {
     open,
     refresh,
+    consumeVerifiedState,
     refreshAutomatic,
     setAutomaticVisible,
     setAutoRefreshBlocked,

@@ -203,7 +203,9 @@ impl WritePreparation {
         let r = &self.ctx.repository;
         let s = &self.ctx.state;
         let preview = match &self.input {
-            Input::File(id, version, content, cache) => cache.prepare_save(c, id, version, content),
+            Input::File(id, version, content, cache) => {
+                cache.prepare_save_with_state(c, s, id, version, content)
+            }
             Input::Local(request, branches) => match request {
                 LocalWriteRequest::Stage { change_ids } => {
                     git::write::prepare_index_change(c, g, r, s, change_ids, true)
@@ -319,9 +321,32 @@ fn execute(
                 && p.token == s.repository_request
         })
         .ok_or_else(|| OperationError::new("STALE_WRITE_PLAN"))?;
+    let epoch = s.epoch;
     let handle = s.coordinator.execute(repository_id, &preview.plan_id)?;
+    let kind = s
+        .coordinator
+        .read_operation(Some(&handle.operation_id))?
+        .map(|record| record.progress.kind);
     s.repository_request += 1;
-    s.clear_readonly();
+    let accepted_token = s.repository_request;
+    let start_versions = s.monitor.as_ref().map(|m| m.versions()).unwrap_or_default();
+    s.accepted_operations.push_back((
+        handle.operation_id.clone(),
+        epoch,
+        accepted_token,
+        start_versions,
+    ));
+    while s.accepted_operations.len() > 17 {
+        s.accepted_operations.pop_front();
+    }
+    if matches!(
+        kind,
+        Some(OperationKind::SaveFile | OperationKind::Stage | OperationKind::Unstage)
+    ) {
+        s.clear_readonly_domains(false, false, true);
+    } else {
+        s.clear_readonly();
+    }
     s.executed.push_back((plan_id.to_owned(), handle.clone()));
     while s.executed.len() > 17 {
         s.executed.pop_front();
@@ -426,6 +451,39 @@ pub fn read_operation(
         .lock()?
         .coordinator
         .read_operation(operation_id.as_deref())
+}
+
+/// 消费写任务已核实的仓库快照；代次变化或重复消费均安全降级为刷新。
+#[tauri::command]
+pub fn accept_operation_state(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    operation_id: String,
+) -> Result<Option<super::RepositorySnapshot>, OperationError> {
+    let mut s = state.lock()?;
+    let record = s.coordinator.read_operation(Some(&operation_id))?;
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    let Some(gitmaster_core::git::types::OperationResult::Succeeded {
+        refresh: gitmaster_core::git::types::WriteRefresh::Ready { state: snapshot },
+        ..
+    }) = record.result
+    else {
+        return Ok(None);
+    };
+    let Some((epoch, token)) = s
+        .accepted_operations
+        .iter()
+        .find(|(id, _, _, _)| id == &operation_id)
+        .map(|(_, epoch, token, _)| (*epoch, *token))
+    else {
+        return Ok(None);
+    };
+    match s.accept_operation_state(&repository_id, &operation_id, snapshot, epoch, token) {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// clone 准备仅持有原生选择器保存的父目录能力。

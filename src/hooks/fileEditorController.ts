@@ -1,7 +1,6 @@
 import type {
   EditableFile,
   OperationError,
-  OperationResult,
   ProjectFileList,
   RepositoryState,
 } from "../types/git.ts";
@@ -18,12 +17,17 @@ export interface FileEditorApi {
   repository(): RepositoryState | null;
   files(): ProjectFileList | null;
   blocked(): boolean;
-  read(repository: RepositoryState, fileId: string): Promise<EditableFile>;
+  onSavingChange?(active: boolean): void;
+  read(
+    repository: RepositoryState,
+    fileId: string,
+    signal?: AbortSignal,
+  ): Promise<EditableFile>;
   save(
     repository: RepositoryState,
     document: EditableFile,
     content: string,
-  ): Promise<OperationResult>;
+  ): Promise<EditableFile>;
 }
 export interface FileEditorState {
   repositoryId: string | null;
@@ -50,10 +54,18 @@ export function createFileEditorController(api: FileEditorApi) {
   };
   let epoch = 0;
   let readSequence = 0;
+  let activeRead: {
+    path: string;
+    controller: AbortController;
+    promise: Promise<EditableFile>;
+  } | null = null;
   const listeners = new Set<() => void>();
   /** 发布稳定状态供 React 订阅。 */
   function update(patch: Partial<FileEditorState>): void {
+    const savingBefore = Boolean(state.savingPath);
     state = { ...state, ...patch };
+    if (savingBefore !== Boolean(state.savingPath))
+      api.onSavingChange?.(Boolean(state.savingPath));
     for (const listener of listeners) listener();
   }
   /** 所有已打开文档参与未保存保护。 */
@@ -65,6 +77,8 @@ export function createFileEditorController(api: FileEditorApi) {
     if (state.repositoryId === id) return true;
     if (state.savingPath || (dirty() && !discard)) return false;
     epoch++;
+    activeRead?.controller.abort();
+    activeRead = null;
     readSequence++;
     update({
       repositoryId: id,
@@ -88,7 +102,7 @@ export function createFileEditorController(api: FileEditorApi) {
       !repository ||
       repository.repositoryId !== state.repositoryId ||
       files?.repositoryId !== repository.repositoryId ||
-      files.snapshotId !== repository.snapshotId
+      !files.snapshotId
     )
       throw { code: "STALE_REQUEST" };
     const file = files.files.find((item) => item.path === path);
@@ -96,30 +110,52 @@ export function createFileEditorController(api: FileEditorApi) {
     return { repository, fileId: file.fileId };
   }
   /** 异步结果不能跨仓库或跨快照安装。 */
-  function verify(token: number, repository: RepositoryState): void {
+  function verify(
+    token: number,
+    repository: RepositoryState,
+    filesSnapshot?: string,
+  ): void {
     const latest = api.repository();
     if (
       epoch !== token ||
       state.repositoryId !== repository.repositoryId ||
       latest?.repositoryId !== repository.repositoryId ||
-      latest.snapshotId !== repository.snapshotId
+      !latest ||
+      (filesSnapshot !== undefined && api.files()?.snapshotId !== filesSnapshot)
     )
       throw { code: "STALE_REQUEST" };
   }
   /** 打开已存在标签只切换焦点，新文件按需读取完整文档。 */
   async function open(path: string): Promise<void> {
-    const sequence = ++readSequence;
+    const existing = activeRead;
+    if (existing && existing.path !== path) {
+      existing.controller.abort();
+      activeRead = null;
+      readSequence++;
+    }
     if (state.tabs.some((tab) => tab.document.path === path)) {
       update({ activePath: path, loading: false });
       return;
     }
+    if (existing?.path === path)
+      return existing.promise.then(
+        () => undefined,
+        () => undefined,
+      );
+    existing?.controller.abort();
+    const sequence = ++readSequence;
     const token = epoch;
+    let requestPromise: Promise<EditableFile> | null = null;
     update({ loading: true, error: null, notice: null });
     try {
       const { repository, fileId } = binding(path);
-      const document = await api.read(repository, fileId);
+      const filesSnapshot = api.files()?.snapshotId;
+      const controller = new AbortController();
+      requestPromise = api.read(repository, fileId, controller.signal);
+      activeRead = { path, controller, promise: requestPromise };
+      const document = await requestPromise;
       if (sequence !== readSequence) return;
-      verify(token, repository);
+      verify(token, repository, filesSnapshot);
       if (document.path !== path || document.fileId !== fileId)
         throw { code: "STALE_REQUEST" };
       update({
@@ -130,6 +166,8 @@ export function createFileEditorController(api: FileEditorApi) {
       if (token === epoch && sequence === readSequence)
         update({ error: normalizeOperationError(error) });
     } finally {
+      if (requestPromise && activeRead?.promise === requestPromise)
+        activeRead = null;
       if (token === epoch && sequence === readSequence)
         update({ loading: false });
     }
@@ -149,13 +187,20 @@ export function createFileEditorController(api: FileEditorApi) {
     )
       return false;
     const token = epoch;
+    activeRead?.controller.abort();
+    activeRead = null;
     const sequence = ++readSequence;
+    let requestPromise: Promise<EditableFile> | null = null;
     update({ loading: true, error: null, notice: null });
     try {
       const { repository, fileId } = binding(path);
-      const document = await api.read(repository, fileId);
+      const filesSnapshot = api.files()?.snapshotId;
+      const controller = new AbortController();
+      requestPromise = api.read(repository, fileId, controller.signal);
+      activeRead = { path, controller, promise: requestPromise };
+      const document = await requestPromise;
       if (sequence !== readSequence) return false;
-      verify(token, repository);
+      verify(token, repository, filesSnapshot);
       if (document.path !== path || document.fileId !== fileId)
         throw { code: "STALE_REQUEST" };
       if (state.tabs.find((item) => item.document.path === path) !== tab)
@@ -174,50 +219,45 @@ export function createFileEditorController(api: FileEditorApi) {
         update({ error: normalizeOperationError(error) });
       return false;
     } finally {
+      if (requestPromise && activeRead?.promise === requestPromise)
+        activeRead = null;
       if (token === epoch && sequence === readSequence)
         update({ loading: false });
     }
   }
-  /** 保存前重读并核对基线，外部变化拒绝覆盖；未知结果不清除脏状态。 */
+  /** 使用当前标签版本保存，返回后端落盘复读结果并保留保存期间的新输入。 */
   async function save(path: string): Promise<boolean> {
     const tab = state.tabs.find((item) => item.document.path === path);
     if (!tab || state.savingPath || api.blocked()) return false;
     if (tab.draft === tab.baseline) return true;
     const submitted = tab.draft;
     const token = epoch;
+    // 保存已经使读取结果过时，同时取消其排队，避免无效重读占用文件屏障。
+    activeRead?.controller.abort();
+    activeRead = null;
     ++readSequence;
     update({ savingPath: path, loading: false, error: null, notice: null });
     try {
-      const { repository, fileId } = binding(path);
-      const document = await api.read(repository, fileId);
-      verify(token, repository);
-      if (document.path !== path || document.fileId !== fileId)
+      const repository = api.repository();
+      if (!repository || repository.repositoryId !== state.repositoryId)
         throw { code: "STALE_REQUEST" };
-      update({ tabs: openEditorDocument(state.tabs, document) });
-      if (
-        document.text.content !== tab.baseline ||
-        document.text.bom !== tab.document.text.bom
-      )
-        throw { code: "FILE_CHANGED" };
-      if (api.blocked()) throw { code: "OPERATION_IN_PROGRESS" };
-      const result = await api.save(repository, document, submitted);
+      // 已打开文档的保存能力独立于目录列表；始终保留原文件版本。
+      const result = await api.save(repository, tab.document, submitted);
       if (
         token !== epoch ||
         api.repository()?.repositoryId !== state.repositoryId
       )
         return false;
-      if (result.outcome === "failed" || result.outcome === "unknown")
-        throw result.error;
-      if (result.outcome !== "succeeded") throw { code: "CONFLICT_PRESENT" };
-      if (result.kind !== "saveFile") throw { code: "WRITE_OUTCOME_UNKNOWN" };
+      if (
+        result.path !== path ||
+        result.fileId !== tab.document.fileId ||
+        result.text.content !== submitted
+      )
+        throw { code: "STALE_REQUEST" };
       update({
-        tabs: acknowledgeEditorSave(state.tabs, path, submitted),
+        tabs: acknowledgeEditorSave(state.tabs, path, result, submitted),
         notice: "文件已保存。",
       });
-      if (result.refresh.status === "failed") {
-        update({ notice: "文件已保存，但项目状态刷新失败，请刷新后继续。" });
-        throw result.refresh.error;
-      }
       return true;
     } catch (error: unknown) {
       if (token === epoch) update({ error: normalizeOperationError(error) });
@@ -236,6 +276,10 @@ export function createFileEditorController(api: FileEditorApi) {
       return;
     }
     readSequence++;
+    if (activeRead?.path === path) {
+      activeRead.controller.abort();
+      activeRead = null;
+    }
     update({
       tabs,
       activePath:
@@ -249,6 +293,10 @@ export function createFileEditorController(api: FileEditorApi) {
   /** 取消关闭保留全部草稿。 */
   function cancelClose(): void {
     update({ pendingClose: null });
+  }
+  /** 外部文件版本变化时提示脏草稿，避免静默覆盖用户输入。 */
+  function markExternalChange(): void {
+    if (dirty()) update({ notice: "文件在外部发生变化，当前草稿仍保留。" });
   }
   /** 保存并关闭须确认保存期间没有新的输入，失败保持确认与草稿。 */
   async function saveAndClose(): Promise<void> {
@@ -277,6 +325,7 @@ export function createFileEditorController(api: FileEditorApi) {
     save,
     close,
     cancelClose,
+    markExternalChange,
     saveAndClose,
   };
 }

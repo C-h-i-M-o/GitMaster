@@ -5,11 +5,40 @@ use super::{
     OperationProgress, OperationRecord, OperationResult, RepositoryHandle, WriteRefresh,
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque},
     path::{Component, Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+thread_local! {
+    static READ_CANCELLATION: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// 仅只读队列安装取消上下文，真实写任务不会继承此令牌。
+pub(crate) fn check_read_cancelled() -> Result<(), OperationError> {
+    if READ_CANCELLATION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    }) {
+        Err(OperationError::new("REQUEST_CANCELLED"))
+    } else {
+        Ok(())
+    }
+}
+
+/// 无论返回错误还是异常展开，都恢复调用线程之前的只读取消上下文。
+struct ReadScope(Option<Arc<AtomicBool>>);
+impl Drop for ReadScope {
+    fn drop(&mut self) {
+        READ_CANCELLATION.with(|slot| *slot.borrow_mut() = self.0.take());
+    }
+}
 
 /// 只由后端路径构造的串行键，不接受前端传入的任意字符串。
 #[derive(Debug, Clone)]
@@ -67,6 +96,10 @@ struct GateState {
     next_ticket: u64,
     active: Option<u64>,
     waiting: VecDeque<u64>,
+    writers: HashSet<u64>,
+    file_active: usize,
+    file_waiting: usize,
+    reads: HashMap<u64, Arc<AtomicBool>>,
 }
 
 /// 锁内不运行业务代码；毒化时恢复内部状态用于结束及查询任务。
@@ -77,33 +110,118 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl RepositoryQueues {
-    /// 按调用先后预留位置；一个活动项之外最多允许十六个等待项。
-    fn reserve(&self, key: &CoordinationKey) -> Result<QueueReservation, OperationError> {
-        let gate = {
-            let mut gates = lock(&self.gates);
-            gates.retain(|_, gate| gate.strong_count() > 0);
-            match gates.get(&key.0).and_then(Weak::upgrade) {
-                Some(gate) => gate,
-                None => {
-                    let gate = Arc::new(Gate::default());
-                    gates.insert(key.0.clone(), Arc::downgrade(&gate));
-                    gate
-                }
+    /// 文件读取在共享屏障后执行；取消时及时释放排队位置。
+    fn read_cancelled<T>(
+        &self,
+        key: &CoordinationKey,
+        cancelled: impl Fn() -> bool,
+        read: impl FnOnce() -> Result<T, OperationError>,
+    ) -> Result<T, OperationError> {
+        let queued_at = Instant::now();
+        let gate = self.gate(key);
+        {
+            let mut state = lock(&gate.state);
+            if state.file_waiting >= 16 {
+                return Err(OperationError::new("QUEUE_FULL"));
             }
+            state.file_waiting += 1;
+        }
+        let mut reservation = FileReservation {
+            gate,
+            entered: false,
         };
+        loop {
+            // 取消回调可能读取桌面会话；不得在门闩内调用而形成反向锁序。
+            if cancelled() {
+                return Err(OperationError::new("STALE_REQUEST"));
+            }
+            let mut state = lock(&reservation.gate.state);
+            if state.writers.is_empty() && state.file_active < 4 {
+                state.file_waiting -= 1;
+                state.file_active += 1;
+                reservation.entered = true;
+                break;
+            }
+            let waited = reservation
+                .gate
+                .changed
+                .wait_timeout(state, Duration::from_millis(10))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop(waited);
+        }
+        crate::diagnostics::log_elapsed("file_queue_wait", queued_at.elapsed());
+        if cancelled() {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
+        let started = Instant::now();
+        let result = read();
+        crate::diagnostics::log_elapsed("file_read_io", started.elapsed());
+        result
+    }
+    /// 获取共享门闩，文件和 Git 通道均保持强引用直到本次读取结束。
+    fn gate(&self, key: &CoordinationKey) -> Arc<Gate> {
+        let mut gates = lock(&self.gates);
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        match gates.get(&key.0).and_then(Weak::upgrade) {
+            Some(gate) => gate,
+            None => {
+                let gate = Arc::new(Gate::default());
+                gates.insert(key.0.clone(), Arc::downgrade(&gate));
+                gate
+            }
+        }
+    }
+    /// 按调用先后预留普通查询位置；一个活动项之外最多十六个等待项。
+    fn reserve(&self, key: &CoordinationKey) -> Result<QueueReservation, OperationError> {
+        self.reserve_kind(key, false)
+    }
+    /// 写入从预留时阻止新文件读取，防止排队中的写入被连续读取饿死。
+    fn reserve_write(&self, key: &CoordinationKey) -> Result<QueueReservation, OperationError> {
+        self.reserve_kind(key, true)
+    }
+    /// Git 查询仍遵循 FIFO，写入额外等待所有已进入的文件读取释放。
+    fn reserve_kind(
+        &self,
+        key: &CoordinationKey,
+        writer: bool,
+    ) -> Result<QueueReservation, OperationError> {
+        let gate = self.gate(key);
         let mut state = lock(&gate.state);
         if state.active.is_some() && state.waiting.len() >= 16 {
             return Err(OperationError::new("QUEUE_FULL"));
         }
         let ticket = state.next_ticket;
         state.next_ticket += 1;
+        if writer {
+            state.writers.insert(ticket);
+            // 写请求使已开始和等待中的旧查询过期，调用方可在写入后合并重读。
+            for flag in state.reads.values() {
+                flag.store(true, Ordering::Release);
+            }
+        } else {
+            state.reads.insert(ticket, Arc::new(AtomicBool::new(false)));
+        }
         if state.active.is_none() {
             state.active = Some(ticket);
+        } else if writer {
+            let position = state
+                .waiting
+                .iter()
+                .rposition(|value| state.writers.contains(value))
+                .map_or(0, |index| index + 1);
+            state.waiting.insert(position, ticket);
         } else {
             state.waiting.push_back(ticket);
         }
+        let cancellation = state.reads.get(&ticket).cloned();
+        gate.changed.notify_all();
         drop(state);
-        Ok(QueueReservation { gate, ticket })
+        Ok(QueueReservation {
+            gate,
+            ticket,
+            writer,
+            cancellation,
+        })
     }
 
     /// 写业务准备的排队时间也计入整项预算。
@@ -117,8 +235,8 @@ impl RepositoryQueues {
         let reservation = self.reserve(key)?;
         let entered = reservation.enter_until(deadline);
         crate::diagnostics::log_elapsed("repository_queue_wait", queued_at.elapsed());
-        let _guard = entered?;
-        read()
+        let guard = entered?;
+        guard.run_read(read)
     }
 
     /// 读取与写入使用同一门闩，避免读取本应用写操作的中间状态。
@@ -127,8 +245,12 @@ impl RepositoryQueues {
         key: &CoordinationKey,
         read: impl FnOnce() -> Result<T, OperationError>,
     ) -> Result<T, OperationError> {
-        let _guard = self.reserve(key)?.enter();
-        read()
+        let queued_at = Instant::now();
+        let guard = self
+            .reserve(key)?
+            .enter_until(Instant::now() + Duration::from_secs(120))?;
+        crate::diagnostics::log_elapsed("repository_queue_wait", queued_at.elapsed());
+        guard.run_read(read)
     }
 }
 
@@ -136,18 +258,59 @@ impl RepositoryQueues {
 struct QueueReservation {
     gate: Arc<Gate>,
     ticket: u64,
+    writer: bool,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
+/// 文件槽在取消、失败和异常展开时均自动释放。
+struct FileReservation {
+    gate: Arc<Gate>,
+    entered: bool,
+}
+
+impl Drop for FileReservation {
+    /// 最后一份文件读取结束后唤醒排队写入；等待取消不占并发槽。
+    fn drop(&mut self) {
+        let mut state = lock(&self.gate.state);
+        if self.entered {
+            state.file_active -= 1;
+        } else {
+            state.file_waiting -= 1;
+        }
+        self.gate.changed.notify_all();
+    }
 }
 
 impl QueueReservation {
+    /// 只读调用前后检查取消，并将令牌传递到同线程 Git 子进程执行器。
+    fn run_read<T>(
+        &self,
+        read: impl FnOnce() -> Result<T, OperationError>,
+    ) -> Result<T, OperationError> {
+        let previous = READ_CANCELLATION.with(|slot| slot.replace(self.cancellation.clone()));
+        let _scope = ReadScope(previous);
+        check_read_cancelled()?;
+        let result = read();
+        check_read_cancelled()?;
+        result
+    }
     /// 只等到业务期限，超时通过析构取消预留，后续请求仍可前进。
     fn enter_until(self, deadline: Instant) -> Result<Self, OperationError> {
         let mut state = lock(&self.gate.state);
         loop {
+            if self
+                .cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                drop(state);
+                return Err(OperationError::new("REQUEST_CANCELLED"));
+            }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 drop(state);
                 return Err(OperationError::new("TIMEOUT"));
             };
-            if state.active == Some(self.ticket) {
+            if state.active == Some(self.ticket) && (!self.writer || state.file_active == 0) {
                 drop(state);
                 return Ok(self);
             }
@@ -163,7 +326,7 @@ impl QueueReservation {
     /// 阻塞至本预留项位于队首；持有返回对象期间拥有仓库执行权。
     fn enter(self) -> Self {
         let mut state = lock(&self.gate.state);
-        while state.active != Some(self.ticket) {
+        while state.active != Some(self.ticket) || (self.writer && state.file_active != 0) {
             state = self
                 .gate
                 .changed
@@ -179,6 +342,8 @@ impl Drop for QueueReservation {
     /// 活动任务结束时唤醒下一项，取消等待项时仅移除自身。
     fn drop(&mut self) {
         let mut state = lock(&self.gate.state);
+        state.writers.remove(&self.ticket);
+        state.reads.remove(&self.ticket);
         if state.active == Some(self.ticket) {
             state.active = state.waiting.pop_front();
         } else {
@@ -225,6 +390,7 @@ struct Session {
     pending: Option<PendingPlan>,
     current: Option<(String, OperationRecord)>,
     completed: VecDeque<CompletedOperation>,
+    file_write: bool,
 }
 
 /// 与界面生命周期独立的会话协调器；同仓库队列由整个进程共享。
@@ -242,6 +408,28 @@ impl Default for RepositoryCoordinator {
 }
 
 impl RepositoryCoordinator {
+    /// 普通文件保存与 Git 写共享排他队列，但不创建需要 Git 核实的计划。
+    pub fn write_file<T>(
+        &self,
+        key: &CoordinationKey,
+        write: impl FnOnce() -> Result<T, OperationError>,
+    ) -> Result<T, OperationError> {
+        {
+            let mut session = lock(&self.session);
+            ensure_idle(&session)?;
+            session.file_write = true;
+            session.generation += 1;
+            session.pending = None;
+        }
+        let _session_guard = FileWriteSession(self.session.clone());
+        let started = Instant::now();
+        let _reservation = self
+            .queues
+            .reserve_write(key)?
+            .enter_until(Instant::now() + Duration::from_secs(120))?;
+        crate::diagnostics::log_elapsed("file_save_queue_wait", started.elapsed());
+        write()
+    }
     /// 创建不依赖 Tauri、窗口或前端组件的仓库操作会话。
     pub fn new() -> Self {
         Self {
@@ -326,7 +514,7 @@ impl RepositoryCoordinator {
             return Err(OperationError::new("STALE_WRITE_PLAN"));
         }
         // 预留在启动线程前完成，因此高频点击不能改变 FIFO 顺序。
-        let reservation = self.queues.reserve(&pending.key)?;
+        let reservation = self.queues.reserve_write(&pending.key)?;
         let queued_at = Instant::now();
         let pending = session.pending.take().expect("已验证一次性计划");
         let handle = OperationHandle {
@@ -438,14 +626,32 @@ impl RepositoryCoordinator {
     ) -> Result<T, OperationError> {
         self.queues.read(key, read)
     }
+
+    /// 文件读取入口，支持取消并与同仓库写入共享屏障。
+    pub fn read_files<T>(
+        &self,
+        key: &CoordinationKey,
+        cancelled: impl Fn() -> bool,
+        read: impl FnOnce() -> Result<T, OperationError>,
+    ) -> Result<T, OperationError> {
+        self.queues.read_cancelled(key, cancelled, read)
+    }
 }
 
 /// 活动任务存在时阻止会话变更；读取任务进度不受此限制。
 fn ensure_idle(session: &Session) -> Result<(), OperationError> {
-    if session.current.is_some() {
+    if session.current.is_some() || session.file_write {
         Err(OperationError::new("OPERATION_IN_PROGRESS"))
     } else {
         Ok(())
+    }
+}
+
+/// 文件保存所有退出路径都释放会话门禁；仓库屏障由独立预留项释放。
+struct FileWriteSession(Arc<Mutex<Session>>);
+impl Drop for FileWriteSession {
+    fn drop(&mut self) {
+        lock(&self.0).file_write = false;
     }
 }
 
@@ -599,8 +805,149 @@ impl OperationReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 文件通道绕过普通 Git 读取，同时最多允许四份并发读取。
+    #[test]
+    fn files_bypass_git_reads_with_bounded_concurrency() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = CoordinationKey(directory.path().to_path_buf());
+        let queues = RepositoryQueues::default();
+        let git_read = queues.reserve(&key).unwrap().enter();
+        let (started, received) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut workers = Vec::new();
+        for _ in 0..5 {
+            let (queues, key, started, release) = (
+                queues.clone(),
+                key.clone(),
+                started.clone(),
+                release.clone(),
+            );
+            workers.push(std::thread::spawn(move || {
+                queues.read_cancelled(
+                    &key,
+                    || false,
+                    || {
+                        started.send(()).unwrap();
+                        let (ready, changed) = &*release;
+                        let mut ready = lock(ready);
+                        while !*ready {
+                            ready = changed.wait(ready).unwrap();
+                        }
+                        Ok(())
+                    },
+                )
+            }));
+        }
+        for _ in 0..4 {
+            received.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        assert!(received.recv_timeout(Duration::from_millis(40)).is_err());
+        *lock(&release.0) = true;
+        release.1.notify_all();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        drop(git_read);
+    }
+
+    /// 已排队写入阻止新文件读取；在途文件完成后才允许写入进入。
+    #[test]
+    fn queued_writer_is_a_fair_file_barrier() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = CoordinationKey(directory.path().to_path_buf());
+        let queues = RepositoryQueues::default();
+        let (file_started, file_ready) = std::sync::mpsc::channel();
+        let (release_file, file_released) = std::sync::mpsc::channel();
+        let q = queues.clone();
+        let k = key.clone();
+        let first = std::thread::spawn(move || {
+            q.read_cancelled(
+                &k,
+                || false,
+                || {
+                    file_started.send(()).unwrap();
+                    file_released.recv().unwrap();
+                    Ok(())
+                },
+            )
+        });
+        file_ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let write = queues.reserve_write(&key).unwrap();
+        let (entered, events) = std::sync::mpsc::channel();
+        let (release_write, write_released) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let _write = write.enter();
+            entered.send("write").unwrap();
+            write_released.recv().unwrap();
+        });
+        assert!(events.recv_timeout(Duration::from_millis(40)).is_err());
+        let (late_started, late_ready) = std::sync::mpsc::channel();
+        let later = std::thread::spawn(move || {
+            queues.read_cancelled(
+                &key,
+                || false,
+                || {
+                    late_started.send(()).unwrap();
+                    Ok(())
+                },
+            )
+        });
+        assert!(late_ready.recv_timeout(Duration::from_millis(40)).is_err());
+        release_file.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "write"
+        );
+        assert!(late_ready.recv_timeout(Duration::from_millis(40)).is_err());
+        release_write.send(()).unwrap();
+        writer.join().unwrap();
+        late_ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        later.join().unwrap().unwrap();
+    }
+
+    /// 取消等待中的文件读取释放预留；取消检查不得持有仓库门闩。
+    #[test]
+    fn cancelled_file_wait_does_not_block_following_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = CoordinationKey(directory.path().to_path_buf());
+        let queues = RepositoryQueues::default();
+        let write = queues.reserve_write(&key).unwrap().enter();
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let error = queues
+            .read_cancelled(
+                &key,
+                || cancelled.load(std::sync::atomic::Ordering::SeqCst),
+                || Ok(()),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "STALE_REQUEST");
+        drop(write);
+        queues.read_cancelled(&key, || false, || Ok(())).unwrap();
+    }
     use crate::git::repository::{open_repository, tests::Fixture};
     use std::sync::mpsc;
+
+    /// 保存优先于等待中的后台读，但两项真实写入保持到达顺序。
+    #[test]
+    fn writes_precede_queued_reads_without_reordering_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = CoordinationKey(directory.path().to_path_buf());
+        let queues = RepositoryQueues::default();
+        let active = queues.reserve(&key).unwrap().enter();
+        let background = queues.reserve(&key).unwrap();
+        let first = queues.reserve_write(&key).unwrap();
+        let second = queues.reserve_write(&key).unwrap();
+        drop(active);
+        let first = first.enter_until(Instant::now() + Duration::from_millis(100));
+        assert!(first.is_ok(), "后台读不应排在已请求的保存之前");
+        drop(first);
+        let second = second.enter_until(Instant::now() + Duration::from_millis(100));
+        assert!(second.is_ok(), "真实写入必须保持先后顺序");
+        drop(second);
+        drop(background);
+        queues.read(&key, || Ok(())).unwrap();
+    }
 
     /// 确认丢失响应后可查询当前任务，重复 execute 不产生第二次写入。
     #[test]

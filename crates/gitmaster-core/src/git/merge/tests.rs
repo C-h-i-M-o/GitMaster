@@ -39,7 +39,8 @@ fn finish(
     let handle = coordinator
         .execute(Some(&repo.id), &preview.plan_id)
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // 等待同一操作完成其生产预算，避免测试提前销毁仍在使用的仓库。
+    let deadline = Instant::now() + BUDGET + Duration::from_secs(5);
     loop {
         if let Some(record) = coordinator
             .read_operation(Some(&handle.operation_id))
@@ -315,6 +316,8 @@ fn merge_attribute_changes_match_native_checkout() {
 #[test]
 fn captured_merge_environment_keeps_global_rules_and_ignores_late_driver() {
     let f = Fixture::new();
+    // 此例验证属性与驱动隔离，换行字节由本仓库明确固定。
+    f.command(&["config", "core.autocrlf", "false"]);
     commit(&f, "file", b"base\n");
     f.command(&["branch", "incoming"]);
     commit(&f, "file", b"local\n");

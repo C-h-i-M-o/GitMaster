@@ -4,6 +4,9 @@ use super::{blocking, DesktopState, OperationError, Session};
 use gitmaster_core::git::{self, coordinator::CoordinationKey, *};
 use std::sync::{Arc, Mutex};
 use tauri::State;
+mod cancellation;
+use std::sync::OnceLock;
+static READ_REGISTRY: OnceLock<cancellation::Registry> = OnceLock::new();
 
 /// 完成第一页读取后才发布的历史图，不存在可见的半初始化缓存。
 pub(super) struct HistoryCache {
@@ -18,6 +21,7 @@ pub(super) struct Context {
     pub(super) state: RepositoryState,
     pub(super) epoch: u64,
     pub(super) token: u64,
+    readonly_token: u64,
     pub(super) coordinator: git::coordinator::RepositoryCoordinator,
 }
 
@@ -40,13 +44,33 @@ impl Context {
             state: snapshot.clone(),
             epoch: session.epoch,
             token: session.repository_request,
+            readonly_token: session.readonly_request,
             coordinator: session.coordinator.clone(),
         })
     }
 
     /// 后台发布和缓存安装均在持有主锁时核对环境及仓库代次。
     pub(super) fn check(&self, session: &Session) -> Result<(), OperationError> {
-        session.check_repository(self.epoch, self.token)
+        if session.epoch != self.epoch || session.repository_request != self.token {
+            Err(OperationError::new("STALE_REQUEST"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 文件与冻结历史只因强制失效或切换仓库中断，普通状态刷新不使读取过期。
+    pub(super) fn check_read(&self, session: &Session) -> Result<(), OperationError> {
+        if session.epoch != self.epoch
+            || session.readonly_request != self.readonly_token
+            || !session
+                .active
+                .as_ref()
+                .is_some_and(|(repo, _)| repo.id == self.repository.id)
+        {
+            Err(OperationError::new("STALE_REQUEST"))
+        } else {
+            Ok(())
+        }
     }
 
     /// 文件接口另外核对当前快照，不让旧列表混入刷新后的状态。
@@ -95,7 +119,7 @@ impl HistoryRequest {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
         let (cache, page) = self.ctx.coordinator.read(&key, || {
             let desktop = shared.lock()?;
-            self.ctx.check(&desktop)?;
+            self.ctx.check_read(&desktop)?;
             if desktop.history_request != self.generation {
                 return Err(OperationError::new("STALE_GRAPH"));
             }
@@ -124,7 +148,7 @@ impl HistoryRequest {
             }
         })?;
         let mut desktop = shared.lock()?;
-        self.ctx.check(&desktop)?;
+        self.ctx.check_read(&desktop)?;
         if desktop.history_request != self.generation {
             return Err(OperationError::new("STALE_GRAPH"));
         }
@@ -181,7 +205,7 @@ impl HistoryAccess {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
         let result = self.ctx.coordinator.read(&key, || {
             let desktop = shared.lock()?;
-            self.ctx.check(&desktop)?;
+            self.ctx.check_read(&desktop)?;
             check_history_slot(&desktop, &self.cache)?;
             drop(desktop);
             let mut history = self
@@ -194,7 +218,7 @@ impl HistoryAccess {
             read(&mut history.session)
         })?;
         let desktop = shared.lock()?;
-        self.ctx.check(&desktop)?;
+        self.ctx.check_read(&desktop)?;
         check_history_slot(&desktop, &self.cache)?;
         Ok(result)
     }
@@ -292,7 +316,7 @@ impl BranchRequest {
         })?;
         let list = cache.list();
         let mut desktop = shared.lock()?;
-        self.ctx.check(&desktop)?;
+        self.ctx.check_read(&desktop)?;
         if desktop.branches_request != self.generation {
             return Err(OperationError::new("STALE_REQUEST"));
         }
@@ -360,7 +384,7 @@ impl ProjectFilesRequest {
         })?;
         let list = project(&cache);
         let mut desktop = shared.lock()?;
-        self.ctx.check(&desktop)?;
+        self.ctx.check_read(&desktop)?;
         if desktop.project_files_request != self.generation {
             return Err(OperationError::new("STALE_REQUEST"));
         }
@@ -374,16 +398,23 @@ impl ProjectFilesRequest {
         project: impl FnOnce(&git::files::ProjectFilesSession) -> T,
     ) -> Result<T, OperationError> {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
-        let cache = self.ctx.coordinator.read(&key, || {
-            git::files::ProjectFilesSession::new_filesystem(
+        let cancelled = || {
+            shared.lock().map_or(true, |desktop| {
+                self.ctx.check_read(&desktop).is_err()
+                    || desktop.project_files_request != self.generation
+            })
+        };
+        let (cache, result) = self.ctx.coordinator.read_files(&key, cancelled, || {
+            let cache = git::files::ProjectFilesSession::new_filesystem(
                 self.ctx.git.clone(),
                 self.ctx.repository.clone(),
                 self.ctx.state.clone(),
-            )
+            )?;
+            let result = project(&cache);
+            Ok((cache, result))
         })?;
-        let result = project(&cache);
         let mut desktop = shared.lock()?;
-        self.ctx.check(&desktop)?;
+        self.ctx.check_read(&desktop)?;
         if desktop.project_files_request != self.generation {
             return Err(OperationError::new("STALE_REQUEST"));
         }
@@ -406,14 +437,14 @@ impl ProjectFileAccess {
     ) -> Result<Self, OperationError> {
         let desktop = shared.lock()?;
         let ctx = Context::capture(&desktop, repository_id)?;
-        ctx.check_snapshot(snapshot_id)?;
-        Ok(Self {
-            ctx,
-            cache: desktop
-                .project_files
-                .clone()
-                .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?,
-        })
+        let cache = desktop
+            .project_files
+            .clone()
+            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        if cache.snapshot_id() != snapshot_id {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
+        Ok(Self { ctx, cache })
     }
     /// 读取只使用核心目录能力；完成后核对缓存仍然有效。
     fn run(self, shared: &DesktopState, file_id: &str) -> Result<FileDiff, OperationError> {
@@ -421,14 +452,51 @@ impl ProjectFileAccess {
     }
     /// 预览和完整编辑文档共用队列与结果发布校验。
     fn run_with<T>(
-        self,
+        &self,
         shared: &DesktopState,
         read: impl FnOnce(&git::files::ProjectFilesSession) -> Result<T, OperationError>,
     ) -> Result<T, OperationError> {
+        self.run_cancelled(shared, || false, read)
+    }
+    /// 取消和能力替换在排队中生效；普通文件读取遵守写屏障而不等待 Git 查询。
+    fn run_cancelled<T>(
+        &self,
+        shared: &DesktopState,
+        cancelled: impl Fn() -> bool,
+        read: impl FnOnce(&git::files::ProjectFilesSession) -> Result<T, OperationError>,
+    ) -> Result<T, OperationError> {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
-        let result = self.ctx.coordinator.read(&key, || read(&self.cache))?;
+        // 已失效的文件能力保持原错误契约；排队期间失效则由取消检查及时退出。
+        {
+            let desktop = shared.lock()?;
+            self.ctx.check_read(&desktop)?;
+            if !desktop
+                .project_files
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.cache))
+            {
+                return Err(OperationError::new("FILE_UNAVAILABLE"));
+            }
+        }
+        let invalid = || {
+            cancelled()
+                || shared.lock().map_or(true, |desktop| {
+                    self.ctx.check_read(&desktop).is_err()
+                        || !desktop
+                            .project_files
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &self.cache))
+                })
+        };
+        let result = self
+            .ctx
+            .coordinator
+            .read_files(&key, invalid, || read(&self.cache))?;
+        if cancelled() {
+            return Err(OperationError::new("STALE_REQUEST"));
+        }
         let desktop = shared.lock()?;
-        self.ctx.check(&desktop)?;
+        self.ctx.check_read(&desktop)?;
         if !desktop
             .project_files
             .as_ref()
@@ -531,13 +599,134 @@ pub async fn read_editable_file(
     repository_id: String,
     snapshot_id: String,
     file_id: String,
+    read_id: Option<String>,
 ) -> Result<git::files::EditableFile, OperationError> {
     let shared = state.inner().clone();
     let request = ProjectFileAccess::capture(&shared, &repository_id, &snapshot_id)?;
+    let registration = read_id
+        .map(|id| {
+            READ_REGISTRY
+                .get_or_init(Default::default)
+                .register(repository_id.clone(), id)
+        })
+        .transpose()?;
     blocking("read_editable_file", move || {
-        request.run_with(&shared, |cache| cache.read_editable(&file_id))
+        let document = if let Some(registration) = registration.as_ref() {
+            request.run_cancelled(
+                &shared,
+                || registration.cancelled(),
+                |cache| cache.read_editable_cancellable(&file_id, || registration.cancelled()),
+            )
+        } else {
+            request.run_with(&shared, |cache| cache.read_editable(&file_id))
+        }?;
+        register_editor_document(&shared, &request, &document)?;
+        Ok(document)
     })
     .await
+}
+
+/// 成功打开文档才登记最小保存能力；重读不撤销尚有草稿的旧能力，数量有界。
+fn register_editor_document(
+    shared: &DesktopState,
+    request: &ProjectFileAccess,
+    document: &git::files::EditableFile,
+) -> Result<(), OperationError> {
+    let editor = Arc::new(request.cache.editor_session(&document.file_id)?);
+    let mut desktop = shared.lock()?;
+    request.ctx.check_read(&desktop)?;
+    desktop
+        .editor_files
+        .retain(|(id, _)| id != &document.file_id);
+    desktop
+        .editor_files
+        .push_back((document.file_id.clone(), editor));
+    while desktop.editor_files.len() > 512 {
+        desktop.editor_files.pop_front();
+    }
+    Ok(())
+}
+
+/// 文档能力跨目录刷新有效，真实保存仍核实工作区身份、原版本并持有写屏障。
+fn save_open_document(
+    shared: &DesktopState,
+    repository_id: &str,
+    file_id: &str,
+    expected_version: &str,
+    content: &str,
+) -> Result<git::files::EditableFile, OperationError> {
+    let (ctx, cache) = {
+        let mut desktop = shared.lock()?;
+        let ctx = Context::capture(&desktop, repository_id)?;
+        let index = desktop
+            .editor_files
+            .iter()
+            .position(|(id, _)| id == file_id)
+            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let entry = desktop
+            .editor_files
+            .remove(index)
+            .ok_or_else(|| OperationError::new("FILE_UNAVAILABLE"))?;
+        let cache = entry.1.clone();
+        desktop.editor_files.push_back(entry);
+        (ctx, cache)
+    };
+    let key = CoordinationKey::repository(&ctx.repository)?;
+    ctx.coordinator.write_file(&key, || {
+        {
+            let desktop = shared.lock()?;
+            if desktop.epoch != ctx.epoch
+                || !desktop
+                    .active
+                    .as_ref()
+                    .is_some_and(|(repo, _)| repo.id == ctx.repository.id)
+            {
+                return Err(OperationError::new("STALE_REQUEST"));
+            }
+        }
+        cache.save_editor_file(file_id, expected_version, content)
+    })
+}
+
+/// 独立文件落盘入口：持有写屏障并复读成功后立即返回，Git 刷新由监听器处理。
+#[tauri::command]
+pub async fn save_editor_file(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    file_id: String,
+    expected_version: String,
+    content: String,
+) -> Result<git::files::EditableFile, OperationError> {
+    let shared = state.inner().clone();
+    blocking("save_editor_file", move || {
+        save_open_document(
+            &shared,
+            &repository_id,
+            &file_id,
+            &expected_version,
+            &content,
+        )
+    })
+    .await
+}
+
+/// 取消指定仓库中的文件读取；读取尚未注册时保留一次有界 tombstone。
+#[tauri::command]
+pub async fn cancel_project_read(
+    repository_id: String,
+    read_id: String,
+) -> Result<(), OperationError> {
+    if repository_id.is_empty()
+        || repository_id.len() > 128
+        || read_id.is_empty()
+        || read_id.len() > 128
+    {
+        return Err(OperationError::new("INVALID_INPUT"));
+    }
+    READ_REGISTRY
+        .get_or_init(Default::default)
+        .cancel(&repository_id, &read_id);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ pub fn read_write_context(
     state: &RepositoryState,
 ) -> Result<WriteContext, OperationError> {
     let deadline = Instant::now() + BUDGET;
-    guard::validate_snapshot(git, repo, state, deadline)?;
+    require(state.repository_id == repo.id, "STALE_REQUEST")?;
     let platform = require(cfg!(any(unix, windows)), "UNSUPPORTED_WRITE_CONFIGURATION");
     let idle = require(state.operations.is_empty(), "REPOSITORY_OPERATION_ACTIVE");
     let headed = require(
@@ -99,7 +99,6 @@ pub fn read_write_context(
             ),
         },
     };
-    guard::validate_snapshot(git, repo, state, deadline)?;
     Ok(result)
 }
 
@@ -161,16 +160,28 @@ mod tests {
             WriteCapability::Allowed
         ));
     }
-    /// 工作树变化后拒绝旧快照。
+    /// 入口返回捕获快照的能力，真正写准备仍拒绝之后发生的工作树变化。
     #[test]
-    fn stale_snapshot() {
+    fn captured_capability_keeps_snapshot_but_prepare_rejects_late_change() {
         let f = Fixture::new();
         let (repo, state) = crate::git::repository::open_repository(&f.git, &f.root).unwrap();
         f.write("stale", b"x");
+        let context = read_write_context(&f.git, &repo, &state).unwrap();
+        assert_eq!(context.snapshot_id, state.snapshot_id);
         assert_eq!(
-            read_write_context(&f.git, &repo, &state).unwrap_err().code,
+            branches::prepare_create_branch(
+                &RepositoryCoordinator::new(),
+                &f.git,
+                &repo,
+                &state,
+                "candidate",
+            )
+            .unwrap_err()
+            .code,
             "STALE_REQUEST"
         );
+        assert_eq!(std::fs::read(f.root.join("stale")).unwrap(), b"x");
+        assert!(!repo.git_dir.join("refs/heads/candidate").exists());
     }
     /// unborn 仓库没有 HEAD 但允许暂存入口。
     #[test]

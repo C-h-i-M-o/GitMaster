@@ -9,7 +9,7 @@ export function ContentPreview({
   loading: boolean;
 }) {
   return (
-    <div className="content-preview">
+    <div className="content-preview" role="status">
       {loading ? (
         <p role="status">正在读取内容…</p>
       ) : value?.kind === "text" ? (

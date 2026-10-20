@@ -36,7 +36,7 @@ pub(super) struct DiffRequest {
     generation: u64,
     change_id: String,
     side: DiffSide,
-    context_lines: u16,
+    context_lines: u32,
 }
 impl DiffRequest {
     /// 先验证仓库快照及参数，再为有效打开分配代次。
@@ -46,12 +46,14 @@ impl DiffRequest {
         snapshot_id: &str,
         change_id: String,
         side: DiffSide,
-        context_lines: u16,
+        context_lines: u32,
     ) -> Result<Self, OperationError> {
         let mut desktop = shared.lock()?;
         let ctx = Context::capture(&desktop, repository_id)?;
         ctx.check_snapshot(snapshot_id)?;
-        if context_lines > 2000 || !ctx.state.changes.iter().any(|c| c.change_id == change_id) {
+        if context_lines > 1_000_000_000
+            || !ctx.state.changes.iter().any(|c| c.change_id == change_id)
+        {
             return Err(OperationError::new("INVALID_INPUT"));
         }
         desktop.diff_request += 1;
@@ -82,7 +84,7 @@ impl DiffRequest {
     pub(super) fn run_with(
         self,
         shared: &DesktopState,
-        read: impl FnOnce(&Context, &str, DiffSide, u16) -> Result<DiffDocumentResult, OperationError>,
+        read: impl FnOnce(&Context, &str, DiffSide, u32) -> Result<DiffDocumentResult, OperationError>,
     ) -> Result<OpenedDiff, OperationError> {
         let key = CoordinationKey::repository(&self.ctx.repository)?;
         let result = self.ctx.coordinator.read(&key, || {
@@ -153,11 +155,9 @@ impl DiffAccess {
         count: usize,
         byte_offset: usize,
     ) -> Result<DiffPage, OperationError> {
-        let key = CoordinationKey::repository(&self.ctx.repository)?;
-        let page = self.ctx.coordinator.read(&key, || {
-            self.check(&*shared.lock()?)?;
-            self.cache.document.page(start_row, count, byte_offset)
-        })?;
+        // 已冻结的有界正文分页只复制内存，不进入 Git 队列。
+        self.check(&*shared.lock()?)?;
+        let page = self.cache.document.page(start_row, count, byte_offset)?;
         self.check(&*shared.lock()?)?;
         Ok(page)
     }
@@ -204,7 +204,7 @@ pub async fn open_diff_document(
     snapshot_id: String,
     change_id: String,
     side: DiffSide,
-    context_lines: Option<u16>,
+    context_lines: Option<u32>,
 ) -> Result<OpenedDiff, OperationError> {
     let shared = state.inner().clone();
     let request = DiffRequest::begin(
@@ -213,7 +213,7 @@ pub async fn open_diff_document(
         &snapshot_id,
         change_id,
         side,
-        context_lines.unwrap_or(3),
+        context_lines.unwrap_or(1_000_000_000),
     )?;
     blocking("open_diff_document", move || request.run(&shared)).await
 }
