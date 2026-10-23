@@ -6,8 +6,11 @@ import { VirtualChanges } from "./VirtualChanges";
 import { Icon } from "./Icon";
 import { ContentPreview } from "./ContentPreview";
 import { describeGitError } from "../ui/gitPresentation";
+import { commitFeedback } from "../ui/operationFeedback";
+import { OperationFeedback } from "./OperationFeedback";
 /** 文件勾选与差异查看分开，提交范围始终是整个已暂存索引。 */
 function Changes({ w }: { w: Workbench }) {
+  const feedback = commitFeedback(w);
   return (
     <>
       <div className="changes-content">
@@ -35,6 +38,11 @@ function Changes({ w }: { w: Workbench }) {
           {w.repo.error && <p role="alert">{describeGitError(w.repo.error)}</p>}
         </div>
         <div className="drawer-bottom">
+          {feedback && (
+            <div className="commit-feedback-slot">
+              <OperationFeedback model={feedback} />
+            </div>
+          )}
           {w.writeReason("commit") && (
             <p className="muted small">{w.writeReason("commit")}</p>
           )}

@@ -1,3 +1,4 @@
+import { readBranchesWithRetry } from "../../src/hooks/branchRead.ts";
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {updateOperationHistory} from '../../src/ui/operationHistory.ts';
@@ -9,3 +10,38 @@ test('跨仓库及倒序事件不覆盖原任务，重复序号不重复追加�
 test('终态最多200条但保留活跃任务，终态不会被迟到进度撤销',()=>{let history:OperationHistoryEntry[]=[];history=updateOperationHistory(history,record('active',0),'项目',0);for(let i=0;i<205;i++)history=updateOperationHistory(history,record(`done${i}`,1,true),'项目',i+1);assert.equal(history.length,201);assert.ok(history.some(x=>x.id==='active'));assert.ok(!history.some(x=>x.id==='done0'));assert.ok(history.some(x=>x.id==='done204'));history=updateOperationHistory(history,record('done204',2),'项目',999);assert.equal(history.find(x=>x.id==='done204')?.outcome,'succeeded');});
 test('单任务仅保留最近100条事件且结束时间稳定',()=>{let history:OperationHistoryEntry[]=[];for(let i=0;i<120;i++)history=updateOperationHistory(history,record('a',i),'项目',i);assert.equal(history[0]?.events.length,100);assert.equal(history[0]?.events[0]?.sequence,20);history=updateOperationHistory(history,record('a',120,true),'项目',120);history=updateOperationHistory(history,record('a',120,true),'项目',130);assert.equal(history[0]?.finishedAt,120);assert.equal(history[0]?.events.length,100);});
 test('失败原因、本地刷新失败及克隆残留路径独立保留',()=>{const value=record('a',2);value.result={outcome:'unknown',operationId:'a',kind:'fetch',error:{code:'WRITE_OUTCOME_UNKNOWN',retryable:false},cloneRecovery:{path:'/fixture/recovery',stage:'download'},refresh:{status:'failed',error:{code:'ACCESS_DENIED',retryable:false}}};const entry=updateOperationHistory([],value,'项目',2)[0];assert.equal(entry?.error?.code,'WRITE_OUTCOME_UNKNOWN');assert.equal(entry?.refreshError?.code,'ACCESS_DENIED');assert.equal(entry?.recoveryPath,'/fixture/recovery');assert.equal(entry?.outcome,'unknown');assert.equal(Object.hasOwn(entry??{},'result'),false);});
+
+test("分支读取被写屏障取消后有界恢复，真实错误不重试", async () => {
+  let calls = 0;
+  const branches = { repositoryId: "repo", branches: [] };
+  const signal = new AbortController().signal;
+  assert.deepEqual(await readBranchesWithRetry(async () => {
+    if (++calls === 1) throw { code: "REQUEST_CANCELLED" };
+    return branches;
+  }, signal), branches);
+  assert.equal(calls, 2);
+  calls = 0;
+  await assert.rejects(readBranchesWithRetry(async () => {
+    calls++; throw { code: "ACCESS_DENIED" };
+  }, signal), { code: "ACCESS_DENIED" });
+  assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(readBranchesWithRetry(async () => {
+    calls++; throw { code: "REQUEST_CANCELLED" };
+  }, signal), { code: "REQUEST_CANCELLED" });
+  assert.equal(calls, 3);
+});
+
+test("切换项目或写入门禁中止分支重试及迟到响应", async () => {
+  const abort = new AbortController(); let calls = 0;
+  const task = readBranchesWithRetry(async () => {
+    calls++; throw { code: "REQUEST_CANCELLED" };
+  }, abort.signal);
+  await Promise.resolve(); abort.abort();
+  await assert.rejects(task, { code: "REQUEST_CANCELLED" });
+  assert.equal(calls, 1);
+  const late = new AbortController();
+  await assert.rejects(readBranchesWithRetry(async () => {
+    late.abort(); return { repositoryId: "old", branches: [] };
+  }, late.signal), { code: "REQUEST_CANCELLED" });
+});

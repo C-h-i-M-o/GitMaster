@@ -41,13 +41,16 @@ export function useHistory(
   ]);
   return {
     ...state,
+    // 仓库切换后的首帧也不展示另一个项目的旧图。
+    page:
+      state.page?.repositoryId === repository?.repositoryId ? state.page : null,
     // 新仓库版本的首轮渲染仍可能持有旧 page，不能提前放行依赖它的后台读取。
     ready:
       enabled &&
       repository !== null &&
       requested.current?.repositoryId === repository.repositoryId &&
       requested.current?.versions?.history === repository.versions?.history &&
-      Boolean(state.page || state.error),
+      Boolean((state.page && !state.stale) || state.error),
     refresh: controller.refresh,
     loadMore: controller.loadMore,
     selectCommit: controller.selectCommit,

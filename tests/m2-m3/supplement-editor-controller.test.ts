@@ -2,6 +2,74 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createFileEditorController } from "../../src/hooks/fileEditorController.ts";
 import type { EditableFile, RepositoryState } from "../../src/types/git.ts";
+import { createRepositoryController } from "../../src/hooks/repositoryController.ts";
+
+/** 生成可手动完成的读取，稳定复现用户操作与后台重读交错。 */
+function delayedRead<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+test("切项目期间冻结旧草稿，失败释放门禁且普通刷新仍可编辑", async () => {
+  const original: RepositoryState = { repositoryId: "a", snapshotId: "s", rootPath: "/a", head: { kind: "unborn", name: "main" }, operations: [], changes: [] };
+  let next = delayedRead<RepositoryState>();
+  const repo = createRepositoryController({ openRepository: () => next.promise, readRepositoryState: () => next.promise, readFileDiff: async () => ({ kind: "binary" }), closeFileDiff: async () => {} });
+  const opening = repo.open("/a"); next.resolve(original); await opening;
+  const editor = createFileEditorController({
+    repository: () => repo.getSnapshot().repository,
+    files: () => ({ repositoryId: "a", snapshotId: "s", files: [{ fileId: "f", path: "a", kind: "tracked" }] }),
+    blocked: () => repo.getSnapshot().loading && repo.getSnapshot().openingPath !== null,
+    read: async () => ({ fileId: "f", path: "a", version: "v", text: { content: "旧文本", bom: false, lineEnding: "none", contentVersion: "v" } }),
+    save: async (_r, d, content) => ({ ...d, text: { ...d.text, content } }),
+  });
+  editor.setRepository("a"); await editor.open("a");
+  next = delayedRead(); const switching = repo.open("/b");
+  editor.edit("a", "切换时不应接受"); assert.equal(editor.dirty(), false);
+  next.resolve({ ...original, repositoryId: "b", rootPath: "/b" }); await switching;
+  editor.edit("a", "切换返回与 effect 安装之间也不能输入"); assert.equal(editor.dirty(), false);
+  assert.equal(editor.setRepository("b"), true);
+  next = delayedRead(); const returning = repo.open("/a"); next.resolve(original); await returning;
+  editor.setRepository("a"); await editor.open("a");
+  next = delayedRead(); const failing = repo.open("/failed");
+  next.reject({ code: "ACCESS_DENIED" }); await failing;
+  editor.edit("a", "打开失败后能继续编辑"); assert.equal(editor.dirty(), true);
+  assert.equal(await editor.save("a"), true);
+  next = delayedRead(); const refresh = repo.refresh();
+  editor.edit("a", "刷新仍能编辑"); assert.equal(editor.dirty(), true);
+  next.resolve(original); await refresh; assert.equal(await editor.save("a"), true);
+});
+
+test("后台逐份重读不取消用户新开的 C 文档", async () => {
+  const repository: RepositoryState = { repositoryId: "r", snapshotId: "s", rootPath: "/test", head: { kind: "unborn", name: "main" }, operations: [], changes: [] };
+  const reads: string[] = [];
+  const pending = new Map<string, ReturnType<typeof delayedRead<EditableFile>>>();
+  let delayed = false;
+  /** 为路径生成带版本的完整正文。 */
+  const document = (path: string): EditableFile => ({ fileId: path, path, version: "v", text: { content: path, bom: false, lineEnding: "none", contentVersion: "v" } });
+  const editor = createFileEditorController({
+    repository: () => repository,
+    files: () => ({ repositoryId: "r", snapshotId: "s", files: ["a", "b", "c"].map(path => ({ fileId: path, path, kind: "tracked" as const })) }),
+    blocked: () => false,
+    read: async (_r, path, signal) => {
+      reads.push(path); if (!delayed) return document(path);
+      const task = delayedRead<EditableFile>(); pending.set(path, task);
+      // 故意让取消响应延后返回，验证代次检查而非只依赖 AbortSignal。
+      return task.promise;
+    },
+    save: async (_r, d, content) => ({ ...d, text: { ...d.text, content } }),
+  });
+  editor.setRepository("r"); await editor.open("a"); await editor.open("b"); delayed = true;
+  const background = editor.reloadCleanDocuments();
+  const opening = editor.open("c"); pending.get("a")!.resolve(document("a"));
+  assert.equal(await background, false);
+  assert.deepEqual(reads, ["a", "b", "a", "c"]);
+  pending.get("c")!.resolve(document("c")); await opening;
+  assert.equal(editor.getSnapshot().activePath, "c");
+  assert.equal(editor.getSnapshot().tabs.length, 3);
+  assert.equal(editor.getSnapshot().error, null);
+});
 
 test("保存取消过时的文档重读，迟到正文不能覆盖已保存结果", async () => {
   const repository: RepositoryState = { repositoryId: "r", snapshotId: "s", rootPath: "/test", head: { kind: "unborn", name: "main" }, operations: [], changes: [] };

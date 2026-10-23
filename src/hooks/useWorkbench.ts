@@ -5,6 +5,7 @@ import { useLogSettings } from "./useLogSettings";
 import { useManualRefresh } from "./useManualRefresh";
 import { useRemoteSync } from "./useRemoteSync";
 import { useFileEditor } from "./useFileEditor";
+import { readBranchesWithRetry } from "./branchRead";
 import { useRecentProjects } from "./useRecentProjects";
 import { useWorkspaceSession } from "./useWorkspaceSession";
 import { restoreTreePaths } from "../ui/restoreTreePaths";
@@ -178,6 +179,7 @@ export function useWorkbench() {
   const [settingsCategory, setSettingsCategory] =
     useState<SettingsCategory>("general");
   const [branches, setBranches] = useState<BranchList | null>(null);
+  const loadedBranchesKey = useRef<string | null>(null);
   const [context, setContext] = useState<WriteContext | null>(null);
   const [resourceErrors, setResourceErrors] = useState<
     Partial<
@@ -219,7 +221,10 @@ export function useWorkbench() {
       files: () => fileList.current,
       onSavingChange: workspace.setFileSaveActive,
       blocked: () =>
-        workspace.preview || operations.getSnapshot().busy || syncRemote.busy,
+        workspace.preview ||
+        operations.getSnapshot().busy ||
+        syncRemote.busy ||
+        (repo.getSnapshot().loading && repo.getSnapshot().openingPath !== null),
       read: (state, id, signal) =>
         api.readEditableFile(
           state.repositoryId,
@@ -264,14 +269,10 @@ export function useWorkbench() {
       return;
     editor.controller.markExternalChange();
     let cancelled = false;
-    // 控制器使用单读取代次，逐份重读，避免并行请求令前面的干净文档过期。
+    // 低优先级批次遇到用户打开、关闭或保存时停止，不能取消新的前台读取。
     void (async () => {
-      for (const tab of editor.controller.getSnapshot().tabs) {
-        if (cancelled) return;
-        if (tab.draft === tab.baseline)
-          await editor.controller.reload(tab.document.path);
-      }
-      if (!cancelled) previousDocumentsVersion.current = documentsVersion;
+      if (await editor.controller.reloadCleanDocuments(() => !cancelled))
+        previousDocumentsVersion.current = documentsVersion;
     })();
     return () => {
       cancelled = true;
@@ -537,6 +538,7 @@ export function useWorkbench() {
     resourceGeneration.current += 1;
     fileGeneration.current += 1;
     setBranches(null);
+    loadedBranchesKey.current = null;
     setContext(null);
     setProjectFiles(null);
     setProjectTree(null);
@@ -551,12 +553,28 @@ export function useWorkbench() {
     };
   }, [repository?.repositoryId, workspace.preview]);
   const historyReady = workspace.history.ready;
+  const branchesBlocked =
+    repo.loading ||
+    operations.busy ||
+    Boolean(editor.savingPath) ||
+    syncRemote.busy ||
+    manualRefresh.busy;
   useEffect(() => {
-    if (!repository || workspace.preview || !historyReady) return;
+    if (!repository || workspace.preview || !historyReady || branchesBlocked)
+      return;
+    const key = JSON.stringify([
+      repository.repositoryId,
+      repository.versions?.history ?? repository.snapshotId,
+    ]);
+    // 文件保存不改变历史：已经加载的分支无需每次保存后重复查询。
+    if (loadedBranchesKey.current === key) return;
     const generation = resourceGeneration.current;
     let active = true;
-    void api
-      .readBranches(repository.repositoryId)
+    const abort = new AbortController();
+    void readBranchesWithRetry(
+      () => api.readBranches(repository.repositoryId),
+      abort.signal,
+    )
       .then((value) => {
         if (
           !active ||
@@ -565,6 +583,7 @@ export function useWorkbench() {
         )
           return;
         if (value.repositoryId === repository.repositoryId) {
+          loadedBranchesKey.current = key;
           setBranches(value);
           setResourceError(null, "branches");
         }
@@ -573,19 +592,25 @@ export function useWorkbench() {
         if (
           active &&
           alive.current &&
-          generation === resourceGeneration.current &&
-          normalizeOperationError(error).code !== "REQUEST_CANCELLED"
+          generation === resourceGeneration.current
         )
-          setResourceError(normalizeOperationError(error), "branches");
+          // 连续取消已耗尽有限重试，保留明确错误，允许用户手动刷新恢复。
+          setResourceErrors((previous) => ({
+            ...previous,
+            branches: normalizeOperationError(error),
+          }));
       });
     return () => {
       active = false;
+      abort.abort();
     };
   }, [
     repository?.repositoryId,
     repository?.versions?.history,
+    repository?.snapshotId,
     workspace.preview,
     historyReady,
+    branchesBlocked,
   ]);
   const needsWriteContext =
     !operations.busy &&

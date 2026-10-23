@@ -1,0 +1,1379 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gitMaster · 分支汇流加载动画预览</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #233b3c;
+        --muted: #6b7d76;
+        --green: #2f7468;
+        --blue: #466f96;
+        --gold: #8c602a;
+        --line: #dbe4df;
+        --paper: #f7f9f5;
+        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+        color: var(--ink);
+        background: #eef2ec;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 32px 36px 26px;
+        background:
+          radial-gradient(ellipse at 85% 0, #dcece5 0, transparent 48%),
+          radial-gradient(ellipse at 4% 90%, #f4eadd 0, transparent 50%);
+        min-height: 100vh;
+      }
+      button,
+      select {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:focus-visible,
+      select:focus-visible {
+        outline: 3px solid #466f9670;
+        outline-offset: 4px;
+      }
+      button {
+        border: 1px solid var(--line);
+        background: #ffffffa6;
+        border-radius: 10px;
+        padding: 9px 14px;
+      }
+      button:hover {
+        background: #eaf3ef;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      main {
+        max-width: 1240px;
+        margin: auto;
+      }
+      .intro {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 24px;
+        gap: 24px;
+      }
+      .eyebrow {
+        font-size: 10px;
+        letter-spacing: 2.3px;
+        color: var(--green);
+        font-weight: 600;
+      }
+      .intro h1 {
+        font-size: 28px;
+        letter-spacing: 2px;
+        font-weight: 550;
+        margin: 10px 0 8px;
+      }
+      .intro p {
+        font-size: 13px;
+        color: var(--muted);
+        margin: 0;
+        line-height: 1.7;
+      }
+      .review {
+        font-size: 11px;
+        white-space: nowrap;
+        color: #765d39;
+        background: #f5eee1;
+        border: 1px solid #dfcfb4;
+        border-radius: 99px;
+        padding: 8px 13px;
+      }
+      .controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      .scenes {
+        display: flex;
+        gap: 4px;
+        background: #e5ece5;
+        padding: 4px;
+        border-radius: 12px;
+      }
+      .scenes button {
+        border: 0;
+        background: transparent;
+        font-size: 12px;
+        padding: 9px 16px;
+      }
+      .scenes button[aria-pressed="true"] {
+        background: #fff;
+        box-shadow: 0 2px 6px #233b3c0a;
+        color: var(--green);
+        font-weight: 600;
+      }
+      .tools {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 11px;
+      }
+      .tools select {
+        padding: 8px 25px 8px 11px;
+        border: 1px solid #cbd9ce;
+        border-radius: 8px;
+        background: #fbfcf8;
+      }
+      .tools button {
+        font-size: 11px;
+        padding: 8px 11px;
+      }
+      .window {
+        border: 1px solid #ffffffed;
+        border-radius: 20px;
+        background: #f9fbf6b3;
+        box-shadow:
+          0 18px 60px #324e440c,
+          0 1px 2px #fff inset;
+        overflow: hidden;
+      }
+      .window-top {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+        height: 73px;
+        padding: 0 25px;
+        border-bottom: 1px solid #ffffffd9;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 23px;
+        letter-spacing: -1px;
+      }
+      .brand strong {
+        font-weight: 650;
+      }
+      .brand svg {
+        width: 34px;
+        height: 34px;
+        background: #2b766c;
+        border-radius: 11px;
+        padding: 7px;
+        color: #fff;
+        box-shadow: 0 4px 12px #2f746821;
+      }
+      .project {
+        padding: 9px 15px;
+        border: 1px solid #fff;
+        border-radius: 12px;
+        background: #fff6;
+        font-size: 11px;
+        line-height: 1.65;
+        width: 190px;
+      }
+      .project b {
+        display: block;
+        font-size: 12px;
+      }
+      .project span {
+        color: var(--muted);
+      }
+      .local {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .local i {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #70a58f;
+      }
+      .workspace {
+        display: flex;
+        min-height: 445px;
+      }
+      .sidebar {
+        width: 182px;
+        flex: none;
+        border-right: 1px solid var(--line);
+        padding: 29px 16px;
+        background: #fff3;
+      }
+      .sidebar .eyebrow {
+        font-size: 9px;
+        letter-spacing: 1.6px;
+        color: var(--muted);
+        padding: 0 13px;
+      }
+      .sidebar h2 {
+        font-size: 15px;
+        margin: 10px 13px 26px;
+      }
+      .nav-item {
+        font-size: 12px;
+        padding: 12px 13px;
+        border-radius: 9px;
+        margin-bottom: 7px;
+        color: #74877d;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .nav-item.active {
+        color: var(--green);
+        background: #e2ede4;
+      }
+      .nav-item svg {
+        width: 16px;
+        height: 16px;
+      }
+      .branch {
+        margin: 32px 13px 0;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .branch p {
+        margin-top: 20px;
+        color: var(--green);
+      }
+      .branch p::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        background: #6a9c88;
+        border-radius: 50%;
+        margin-right: 9px;
+      }
+      .stage {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        min-height: 445px;
+        background-image: radial-gradient(#bdcec34d 0.8px, transparent 0.8px);
+        background-size: 22px 22px;
+        overflow: hidden;
+      }
+      .stage-heading {
+        position: absolute;
+        top: 27px;
+        left: 30px;
+        font-size: 10px;
+        letter-spacing: 1.6px;
+        color: #7c8e84;
+      }
+      .surface {
+        display: none;
+        position: absolute;
+        inset: 82px 30px 30px;
+      }
+      .history-lines {
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+      .history-lines text {
+        font:
+          12px "Segoe UI",
+          "Microsoft YaHei",
+          sans-serif;
+        fill: #526a5e;
+      }
+      .history-lines .meta {
+        font-size: 10px;
+        fill: #8a9b91;
+      }
+      .history-lines .badge {
+        font-size: 10px;
+        fill: var(--green);
+      }
+      .loading-card {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -46%);
+        width: 360px;
+        max-width: calc(100% - 36px);
+        text-align: center;
+        padding: 10px 22px 20px;
+      }
+      .art {
+        height: 158px;
+        position: relative;
+        display: grid;
+        place-items: center;
+        margin-bottom: 10px;
+      }
+      .art::before {
+        content: "";
+        position: absolute;
+        width: 150px;
+        height: 100px;
+        border-radius: 50%;
+        background: #d5e8dd66;
+        filter: blur(22px);
+      }
+      .flow {
+        width: 224px;
+        height: 156px;
+        overflow: visible;
+        position: relative;
+      }
+      .rail {
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        opacity: 0.24;
+      }
+      .teal {
+        stroke: var(--green);
+      }
+      .blue {
+        stroke: var(--blue);
+      }
+      .gold {
+        stroke: var(--gold);
+      }
+      .pulse-line {
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        stroke-dasharray: 20 180;
+        animation: trace 3.6s linear infinite;
+      }
+      .pulse-line.blue {
+        animation-delay: -1.2s;
+      }
+      .pulse-line.gold {
+        animation-delay: -2.4s;
+      }
+      .node {
+        stroke-width: 1.6;
+        fill: #f7f9f5;
+      }
+      .node-ring {
+        fill: none;
+        stroke: var(--green);
+        stroke-width: 1;
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: ripple 3.6s ease-out infinite;
+      }
+      .core {
+        fill: var(--green);
+        animation: breath 3.6s ease-in-out infinite;
+      }
+      .glint {
+        fill: white;
+        opacity: 0.9;
+      }
+      .traveler {
+        fill: var(--green);
+        offset-path: path("M 112 135 L 112 28");
+        animation: travel 3.6s linear infinite;
+      }
+      .traveler.blue-dot {
+        fill: var(--blue);
+        offset-path: path("M 44 112 L 44 90 C 44 62 112 70 112 28");
+        animation-delay: -1.2s;
+      }
+      .traveler.gold-dot {
+        fill: var(--gold);
+        offset-path: path("M 180 112 L 180 90 C 180 62 112 70 112 28");
+        animation-delay: -2.4s;
+      }
+      .loading-title {
+        font-size: 20px;
+        font-weight: 550;
+        letter-spacing: 0.4px;
+        margin: 0 0 10px;
+      }
+      .loading-desc {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.8;
+        margin: 0;
+        min-height: 42px;
+      }
+      .wait-info {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 15px;
+        font:
+          10px Consolas,
+          monospace;
+        color: #71877b;
+        letter-spacing: 0.4px;
+      }
+      .status-dot {
+        height: 5px;
+        width: 5px;
+        background: #7fa997;
+        border-radius: 50%;
+        animation: breath 1.8s ease-in-out infinite;
+      }
+      .duration {
+        font-variant-numeric: tabular-nums;
+      }
+      .long-tip {
+        display: none;
+        color: #806540;
+        font-size: 11px;
+        line-height: 1.7;
+        margin: 12px 0 0;
+      }
+      .status-action {
+        display: none;
+        margin-top: 15px;
+        color: var(--green);
+        font-size: 12px;
+        background: #eef5ee;
+      }
+      .result-icon {
+        display: none;
+        position: relative;
+        width: 68px;
+        height: 68px;
+        border: 1px solid #a7c8b7;
+        border-radius: 50%;
+        background: #e9f3ec;
+        place-items: center;
+        color: var(--green);
+      }
+      .result-icon svg {
+        width: 29px;
+        height: 29px;
+      }
+      .frame-footer {
+        height: 36px;
+        border-top: 1px solid #e2e9df;
+        font-size: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        color: #83968a;
+        background: #fff3;
+      }
+      .footer-left {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .footer-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #6c9d89;
+      }
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 30px;
+        padding: 22px 4px 0;
+      }
+      .note-label {
+        font-size: 11px;
+        font-weight: 600;
+        display: flex;
+        gap: 9px;
+        align-items: center;
+      }
+      .note-label span {
+        font:
+          10px Consolas,
+          monospace;
+        color: #90a096;
+      }
+      .notes p {
+        font-size: 11px;
+        line-height: 1.8;
+        color: var(--muted);
+        margin: 8px 0 0;
+        padding-left: 23px;
+      }
+      .tiny {
+        margin-top: 21px;
+        font-size: 10px;
+        color: #8a988e;
+        line-height: 1.8;
+      }
+      .commit-content {
+        max-width: 520px;
+        background: #fcfdf9;
+        border: 1px solid #dce5d9;
+        border-radius: 12px;
+        padding: 20px;
+        font-size: 12px;
+      }
+      .commit-content h3 {
+        font-size: 15px;
+        margin: 0 0 8px;
+        font-weight: 550;
+      }
+      .commit-content p {
+        font-size: 11px;
+        color: var(--muted);
+        margin: 0 0 20px;
+      }
+      .file-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 11px 0;
+        border-top: 1px solid #e8ede4;
+      }
+      .file-row span {
+        color: var(--green);
+        font-size: 10px;
+      }
+      .fake-input {
+        background: #f3f6ef;
+        border: 1px solid #dee7da;
+        border-radius: 7px;
+        padding: 12px;
+        margin-top: 13px;
+        color: #627869;
+      }
+      .scene-history .surface.history,
+      .scene-commit .surface.commit {
+        display: block;
+      }
+      .scene-history .loading-card,
+      .scene-commit .loading-card {
+        width: 460px;
+        max-width: calc(100% - 40px);
+        top: auto;
+        bottom: 22px;
+        left: auto;
+        right: 22px;
+        transform: none;
+        display: grid;
+        grid-template-columns: 84px minmax(0, 1fr);
+        text-align: left;
+        column-gap: 28px;
+        background: #fbfcf8f5;
+        border: 1px solid #d8e4d9;
+        border-radius: 13px;
+        padding: 22px 24px;
+        box-shadow: 0 8px 28px #234b3d09;
+      }
+      .scene-history .loading-card > :not(.art),
+      .scene-commit .loading-card > :not(.art) {
+        grid-column: 2;
+        min-width: 0;
+      }
+      .scene-history .art,
+      .scene-commit .art {
+        grid-column: 1;
+        grid-row: 1 / 5;
+        width: 84px;
+        height: 76px;
+        margin: 0;
+        align-self: start;
+      }
+      .scene-history .flow,
+      .scene-commit .flow {
+        width: 100%;
+        height: auto;
+        overflow: hidden;
+      }
+      .scene-history .art::before,
+      .scene-commit .art::before {
+        width: 55px;
+        height: 45px;
+        filter: blur(10px);
+      }
+      .scene-history .loading-title,
+      .scene-commit .loading-title {
+        font-size: 14px;
+        margin: 0 0 5px;
+      }
+      .scene-history .loading-desc,
+      .scene-commit .loading-desc {
+        font-size: 11px;
+        min-height: 0;
+      }
+      .scene-history .wait-info,
+      .scene-commit .wait-info {
+        justify-content: flex-start;
+        margin-top: 9px;
+      }
+      .scene-history .long-tip,
+      .scene-commit .long-tip,
+      .scene-history .status-action,
+      .scene-commit .status-action {
+        grid-column: 2;
+      }
+      .scene-history .result-icon,
+      .scene-commit .result-icon {
+        width: 40px;
+        height: 40px;
+      }
+      .scene-history .result-icon svg,
+      .scene-commit .result-icon svg {
+        width: 22px;
+        height: 22px;
+      }
+      .scene-commit .stage {
+        background-image: none;
+      }
+      .scene-commit .nav-history {
+        background: none;
+        color: #74877d;
+      }
+      .scene-commit .nav-changes {
+        background: #e2ede4;
+        color: var(--green);
+      }
+      [data-state="long"] .long-tip {
+        display: block;
+      }
+      [data-state="success"] .flow,
+      [data-state="error"] .flow {
+        display: none;
+      }
+      [data-state="success"] .result-icon {
+        display: grid;
+      }
+      [data-state="success"] .status-dot {
+        animation: none;
+      }
+      [data-state="error"] .status-dot {
+        background: #a88449;
+        animation: none;
+      }
+      [data-state="error"] .status-action {
+        display: inline-block;
+        justify-self: start;
+        background: var(--green);
+        color: #fff;
+        border-color: var(--green);
+        padding: 11px 18px;
+        box-shadow: 0 3px 8px #2f74681a;
+      }
+      .failure-art {
+        display: none;
+        width: 100%;
+        max-width: 156px;
+        height: auto;
+        position: relative;
+      }
+      [data-state="error"] .failure-art {
+        display: block;
+      }
+      .scene-open[data-state="error"] .loading-card {
+        width: 420px;
+        padding: 24px 30px 28px;
+        border: 1px solid #e5dac6;
+        border-radius: 20px;
+        background: linear-gradient(145deg, #fffdf8, #f8faf4);
+        box-shadow: 0 14px 42px #6554350d;
+      }
+      .scene-open[data-state="error"] .art {
+        height: 112px;
+        margin-bottom: 18px;
+      }
+      .scene-open[data-state="error"] .art::before {
+        background: #eee1c966;
+      }
+      .scene-open[data-state="error"] .loading-desc {
+        min-height: 0;
+      }
+      .scene-open[data-state="error"] .wait-info {
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid #e9e4d8;
+      }
+      .scene-open[data-state="success"] .loading-card {
+        display: none;
+      }
+      .scene-open[data-state="success"] .surface.history {
+        display: block;
+      }
+      [data-paused="true"] .flow *,
+      [data-paused="true"] .status-dot {
+        animation-play-state: paused;
+      }
+      [data-reduced="true"] .flow *,
+      [data-reduced="true"] .status-dot {
+        animation: none !important;
+      }
+      [data-reduced="true"] .pulse-line {
+        display: none;
+      }
+      @keyframes trace {
+        to {
+          stroke-dashoffset: -200;
+        }
+      }
+      @keyframes travel {
+        0% {
+          offset-distance: 0%;
+          opacity: 0;
+        }
+        10% {
+          opacity: 1;
+        }
+        85% {
+          opacity: 1;
+        }
+        100% {
+          offset-distance: 100%;
+          opacity: 0;
+        }
+      }
+      @keyframes breath {
+        0%,
+        100% {
+          opacity: 0.4;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @keyframes ripple {
+        0% {
+          transform: scale(0.85);
+          opacity: 0.65;
+        }
+        80%,
+        100% {
+          transform: scale(1.5);
+          opacity: 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .flow *,
+        .status-dot {
+          animation: none !important;
+        }
+        .pulse-line {
+          display: none;
+        }
+      }
+      @media (max-width: 760px) {
+        body {
+          padding: 20px 14px;
+        }
+        .intro {
+          align-items: flex-start;
+          gap: 12px;
+        }
+        .intro h1 {
+          font-size: 24px;
+        }
+        .intro p {
+          max-width: 230px;
+        }
+        .review {
+          font-size: 10px;
+          padding: 6px 9px;
+        }
+        .scenes {
+          width: 100%;
+          justify-content: space-between;
+        }
+        .scenes button {
+          padding: 9px 10px;
+        }
+        .tools {
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .window-top {
+          padding: 0 15px;
+          gap: 15px;
+          height: 66px;
+        }
+        .brand {
+          font-size: 19px;
+        }
+        .project {
+          width: auto;
+          flex: 1;
+          padding: 7px 12px;
+        }
+        .local {
+          display: none;
+        }
+        .sidebar {
+          display: none;
+        }
+        .workspace,
+        .stage {
+          min-height: 435px;
+        }
+        .stage-heading {
+          left: 22px;
+          top: 23px;
+        }
+        .notes {
+          grid-template-columns: 1fr;
+          gap: 14px;
+          padding-top: 20px;
+        }
+        .notes p {
+          margin-top: 4px;
+        }
+        .surface {
+          inset: 70px 20px 24px;
+        }
+        .scene-history .loading-card,
+        .scene-commit .loading-card {
+          right: 14px;
+          bottom: 18px;
+          max-width: calc(100% - 28px);
+          grid-template-columns: 84px minmax(0, 1fr);
+        }
+        .loading-card {
+          padding-left: 10px;
+          padding-right: 10px;
+        }
+        .loading-title {
+          font-size: 18px;
+        }
+        .frame-footer {
+          padding: 0 12px;
+        }
+        .tiny {
+          margin-top: 16px;
+        }
+      }
+      @media (max-width: 480px) {
+        .scene-history .loading-card,
+        .scene-commit .loading-card {
+          grid-template-columns: 60px minmax(0, 1fr);
+          column-gap: 20px;
+          padding: 18px;
+        }
+        .scene-history .art,
+        .scene-commit .art {
+          width: 60px;
+          height: 60px;
+        }
+        .wait-info {
+          flex-wrap: wrap;
+          row-gap: 5px;
+        }
+      }
+    </style>
+  </head>
+  <body
+    data-state="running"
+    data-paused="false"
+    data-reduced="false"
+    class="scene-open"
+  >
+    <main>
+      <header class="intro">
+        <div>
+          <div class="eyebrow">GITMASTER / MOTION STUDY 01</div>
+          <h1>分支汇流</h1>
+          <p>让等待有清晰的反馈，也保留工作台的安静。</p>
+        </div>
+        <span class="review">已审核 · 视觉对照</span>
+      </header>
+      <div class="controls">
+        <nav class="scenes" aria-label="加载场景">
+          <button data-scene="open" aria-pressed="true">01 打开项目</button
+          ><button data-scene="history" aria-pressed="false">02 读取历史</button
+          ><button data-scene="commit" aria-pressed="false">03 创建提交</button>
+        </nav>
+        <div class="tools">
+          <label for="state">演示状态</label
+          ><select id="state">
+            <option value="running">进行中</option>
+            <option value="long">较长等待</option>
+            <option value="success">操作成功</option>
+            <option value="error">操作失败</option></select
+          ><button id="pause" aria-pressed="false">暂停动画</button
+          ><button id="reduce" aria-pressed="false">减少动效</button>
+        </div>
+      </div>
+      <section class="window" aria-label="gitMaster 动画效果预览">
+        <header class="window-top">
+          <div class="brand">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              aria-hidden="true"
+            >
+              <circle cx="6" cy="5" r="2.4" />
+              <circle cx="18" cy="5" r="2.4" />
+              <circle cx="6" cy="19" r="2.4" />
+              <path d="M6 7.4v9.2M18 7.4v2c0 5-12 2-12 7" /></svg
+            ><span>git<strong>Master</strong></span>
+          </div>
+          <div class="project">
+            <b>gitMaster</b><span>本地项目 / 演示仓库</span>
+          </div>
+          <span class="local"><i></i> 本地工作区</span>
+        </header>
+        <div class="workspace">
+          <aside class="sidebar" aria-label="示意导航">
+            <div class="eyebrow">WORKSPACE</div>
+            <h2>gitMaster</h2>
+            <div class="nav-item nav-history active">
+              <svg
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                aria-hidden="true"
+              >
+                <circle cx="10" cy="10" r="7" />
+                <path d="M10 6v4l3 2" /></svg
+              >提交历史
+            </div>
+            <div class="nav-item nav-changes">
+              <svg
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M5 3h10v14H5zM8 7h4M8 10h4M8 13h3" /></svg
+              >本地修改
+            </div>
+            <div class="nav-item">
+              <svg
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M3 5h6l2 2h6v10H3z" /></svg
+              >项目文件
+            </div>
+            <div class="branch">
+              分支
+              <p>main</p>
+            </div>
+          </aside>
+          <div class="stage">
+            <div class="stage-heading" id="stage-heading">WORKSPACE</div>
+            <div class="surface history" aria-label="保留的历史内容示意">
+              <svg
+                class="history-lines"
+                viewBox="0 0 750 320"
+                preserveAspectRatio="xMinYMin meet"
+              >
+                <path
+                  d="M80 50V300"
+                  fill="none"
+                  stroke="#2f7468"
+                  opacity=".4"
+                  stroke-width="2"
+                />
+                <path
+                  d="M80 50C80 100 240 80 240 150V300"
+                  fill="none"
+                  stroke="#466f96"
+                  opacity=".4"
+                  stroke-width="2"
+                />
+                <circle
+                  cx="80"
+                  cy="50"
+                  r="12"
+                  fill="#e0ece3"
+                  stroke="#5e9589"
+                />
+                <circle
+                  cx="80"
+                  cy="160"
+                  r="12"
+                  fill="#e0ece3"
+                  stroke="#5e9589"
+                />
+                <circle
+                  cx="240"
+                  cy="150"
+                  r="12"
+                  fill="#e4edf4"
+                  stroke="#7696b4"
+                />
+                <rect
+                  x="52"
+                  y="7"
+                  width="57"
+                  height="23"
+                  rx="7"
+                  fill="#e6f0e8"
+                  stroke="#c2d9cb"
+                />
+                <text x="65" y="22" class="badge">main</text>
+                <text x="104" y="47">完善工作区恢复</text>
+                <text x="104" y="64" class="meta">a6c2e91 · 开发者</text>
+                <text x="104" y="157">更新使用说明</text>
+                <text x="104" y="174" class="meta">b31f528 · 开发者</text>
+                <text x="264" y="147">优化文件读取</text>
+                <text x="264" y="164" class="meta">d52e7ac · 开发者</text>
+              </svg>
+            </div>
+            <div class="surface commit" aria-label="提交内容示意">
+              <div class="commit-content">
+                <h3>保存本次修改</h3>
+                <p>2 个文件已暂存 · main</p>
+                <div class="file-row">
+                  src / workspace.ts<span>已暂存</span>
+                </div>
+                <div class="file-row">README.md<span>已暂存</span></div>
+                <div class="fake-input">完善工作区恢复与文档说明</div>
+              </div>
+            </div>
+            <div class="loading-card">
+              <div class="art" aria-hidden="true">
+                <svg class="flow" viewBox="0 0 224 156">
+                  <path class="rail teal" d="M112 135V28" />
+                  <path class="rail blue" d="M44 112V90C44 62 112 70 112 28" />
+                  <path
+                    class="rail gold"
+                    d="M180 112V90C180 62 112 70 112 28"
+                  />
+                  <path class="pulse-line teal" d="M112 135V28" />
+                  <path
+                    class="pulse-line blue"
+                    d="M44 112V90C44 62 112 70 112 28"
+                  />
+                  <path
+                    class="pulse-line gold"
+                    d="M180 112V90C180 62 112 70 112 28"
+                  />
+                  <circle r="3" class="traveler" />
+                  <circle r="3" class="traveler blue-dot" />
+                  <circle r="3" class="traveler gold-dot" />
+                  <circle class="node blue" cx="44" cy="112" r="6" />
+                  <circle class="node gold" cx="180" cy="112" r="6" />
+                  <circle class="node teal" cx="112" cy="135" r="5" />
+                  <circle class="node-ring" cx="112" cy="28" r="19" />
+                  <circle
+                    cx="112"
+                    cy="28"
+                    r="13"
+                    fill="#eef6ef"
+                    stroke="#6a9d8d"
+                    stroke-width="1.4"
+                  />
+                  <circle class="core" cx="112" cy="28" r="7" />
+                  <circle class="glint" cx="109" cy="25" r="2" />
+                </svg>
+                <div class="result-icon">
+                  <svg
+                    class="check-icon"
+                    viewBox="0 0 30 30"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="m7 15 5 5 11-11" />
+                  </svg>
+                </div>
+                <svg class="failure-art" viewBox="0 0 156 112" fill="none">
+                  <ellipse
+                    cx="77"
+                    cy="99"
+                    rx="51"
+                    ry="6"
+                    fill="#dedacb"
+                    opacity=".35"
+                  />
+                  <rect
+                    x="33"
+                    y="17"
+                    width="91"
+                    height="65"
+                    rx="10"
+                    fill="#eef3ea"
+                    stroke="#c5d5c4"
+                    transform="rotate(7 78 50)"
+                  />
+                  <path
+                    d="M26 37a8 8 0 0 1 8-8h25l10 10h52a8 8 0 0 1 8 8v38a8 8 0 0 1-8 8H34a8 8 0 0 1-8-8Z"
+                    fill="#faf7ed"
+                    stroke="#c6b28e"
+                    stroke-width="1.5"
+                  />
+                  <path
+                    d="M48 72h15m22 0h17"
+                    stroke="#819d8c"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
+                  <path
+                    d="m68 67 4 5-4 5m11-10-4 5 4 5"
+                    stroke="#ac8752"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                  <circle
+                    cx="46"
+                    cy="72"
+                    r="4"
+                    fill="#f9fbf5"
+                    stroke="#6d9883"
+                    stroke-width="1.5"
+                  />
+                  <circle
+                    cx="104"
+                    cy="72"
+                    r="4"
+                    fill="#f9fbf5"
+                    stroke="#6d9883"
+                    stroke-width="1.5"
+                  />
+                  <circle
+                    cx="126"
+                    cy="37"
+                    r="14"
+                    fill="#f3e7ce"
+                    stroke="#ceb27c"
+                  />
+                  <path
+                    d="M126 30v8m0 5v.1"
+                    stroke="#966c31"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </div>
+              <div role="status" aria-live="polite">
+                <h2 class="loading-title" id="title">正在打开项目</h2>
+                <p class="loading-desc" id="description">
+                  读取仓库信息，准备你的工作区。
+                </p>
+              </div>
+              <div class="wait-info">
+                <span class="status-dot"></span
+                ><span id="phase">读取仓库信息</span><span>·</span
+                ><span class="duration" id="duration" aria-live="off"
+                  >00:00</span
+                >
+              </div>
+              <p class="long-tip" id="long-tip">
+                等待比平时稍久，仍在等待 Git 返回。<br />不需要重复点击或重新打开项目。
+              </p>
+              <button class="status-action" id="retry">重试读取</button>
+            </div>
+          </div>
+        </div>
+        <footer class="frame-footer">
+          <span class="footer-left"
+            ><i class="footer-dot"></i
+            ><span id="footer-state">正在打开项目</span></span
+          ><span>仅演示动画，不执行 Git 操作</span>
+        </footer>
+      </section>
+      <section class="notes" aria-label="动效说明">
+        <div>
+          <div class="note-label"><span>01</span>来自 Git 的分支语言</div>
+          <p>光点沿分支汇入同一个节点。青绿为主，雾蓝与赭金作为轻量点缀。</p>
+        </div>
+        <div>
+          <div class="note-label"><span>02</span>等待有状态，内容有保留</div>
+          <p>
+            首次打开居中提示；历史刷新与提交局部提示。较长等待仍显示状态和计时。
+          </p>
+        </div>
+        <div>
+          <div class="note-label"><span>03</span>完成由真实结果决定</div>
+          <p>
+            不编造百分比，不用动画宣告成功。支持减少动效，失败保留核对与恢复入口。
+          </p>
+        </div>
+      </section>
+      <p class="tiny">
+        本方案已审核并接入
+        gitMaster。本页保留为离线视觉对照；演示状态由上方控件切换，不会读取仓库、保存设置或执行提交。
+      </p>
+    </main>
+    <script>
+      // 独立 HTML 预览使用原生脚本，仅维护演示状态，不连接应用或磁盘。
+      const scenes = {
+        open: {
+          title: "正在打开项目",
+          description: "读取仓库信息，准备你的工作区。",
+          phase: "读取仓库信息",
+          heading: "WORKSPACE",
+          success: "main · 3 个提交",
+          successDescription: "",
+          error: "暂时无法打开项目",
+          errorDescription:
+            "未能读取这个目录的 Git 信息。确认目录仍可访问后，再试一次。",
+        },
+        history: {
+          title: "正在更新提交历史",
+          description: "保留当前视图，读取最新的提交与分支。",
+          phase: "读取提交历史",
+          heading: "COMMIT HISTORY",
+          success: "历史已更新",
+          successDescription: "最新提交与分支已准备好。",
+          error: "历史暂未更新",
+          errorDescription: "当前历史仍然保留，你可以稍后重试。",
+        },
+        commit: {
+          title: "正在创建提交",
+          description: "正在保存本次版本，请勿重复提交。",
+          phase: "等待 Git 执行结果",
+          heading: "LOCAL CHANGES",
+          success: "提交已确认",
+          successDescription: "新版本已保存，本地状态已核实。",
+          error: "提交结果尚未确认",
+          errorDescription: "先核对本地状态，再决定下一步操作。",
+        },
+      };
+      let scene = "open",
+        started = Date.now(),
+        elapsed = 0,
+        state = "running";
+      const stateSelect = document.getElementById("state");
+      const media = matchMedia("(prefers-reduced-motion: reduce)");
+      /** 只更新时长文字；动画循环绝不推进操作阶段或宣告完成。 */
+      function tick() {
+        if (state === "running" || state === "long")
+          elapsed = Math.floor((Date.now() - started) / 1000);
+        const minutes = String(Math.floor(elapsed / 60)).padStart(2, "0");
+        document.getElementById("duration").textContent =
+          minutes + ":" + String(elapsed % 60).padStart(2, "0");
+        if (state === "running" && elapsed >= 12) {
+          state = "long";
+          stateSelect.value = "long";
+          document.body.dataset.state = "long";
+        }
+      }
+      /** 切换演示状态，成功/失败只由显式预览操作触发。 */
+      function render(next) {
+        state = next;
+        stateSelect.value = next;
+        document.body.dataset.state = next;
+        const config = scenes[scene];
+        const title =
+          next === "success"
+            ? config.success
+            : next === "error"
+              ? config.error
+              : config.title;
+        document.getElementById("title").textContent = title;
+        document.getElementById("description").textContent =
+          next === "success"
+            ? config.successDescription
+            : next === "error"
+              ? config.errorDescription
+              : config.description;
+        document.getElementById("phase").textContent =
+          next === "success"
+            ? "演示完成"
+            : next === "error"
+              ? scene === "commit"
+                ? "需要核对"
+                : "读取未完成"
+              : config.phase;
+        document.getElementById("footer-state").textContent = title;
+        document.getElementById("stage-heading").textContent =
+          scene === "open" && next === "success"
+            ? "COMMIT HISTORY"
+            : config.heading;
+        document.getElementById("retry").textContent =
+          scene === "commit" ? "核对本地状态" : "重试读取";
+        document.getElementById("long-tip").textContent =
+          scene === "commit"
+            ? "Git 尚未返回结果，请勿重复提交。"
+            : "等待比平时稍久，仍在等待 Git 返回。无需重复打开项目。";
+        if (next === "running") {
+          started = Date.now();
+          elapsed = 0;
+        }
+        if (next === "long") {
+          elapsed = 18;
+          started = Date.now() - 18000;
+        }
+        tick();
+      }
+      /** 场景切换只改变预览布局与说明。 */
+      function selectScene(event) {
+        scene = event.currentTarget.dataset.scene;
+        document.body.className = "scene-" + scene;
+        document
+          .querySelectorAll("[data-scene]")
+          .forEach((button) =>
+            button.setAttribute(
+              "aria-pressed",
+              String(button.dataset.scene === scene),
+            ),
+          );
+        render("running");
+      }
+      /** 暂停演示动画但保留等待时长，便于审核静态造型。 */
+      function togglePause() {
+        const paused = document.body.dataset.paused !== "true";
+        document.body.dataset.paused = String(paused);
+        this.setAttribute("aria-pressed", String(paused));
+        this.textContent = paused ? "继续动画" : "暂停动画";
+      }
+      /** 手动预览与系统减少动效设置一致，系统偏好始终优先。 */
+      function toggleReduced() {
+        const reduced = document.body.dataset.reduced !== "true";
+        document.body.dataset.reduced = String(reduced);
+        this.setAttribute("aria-pressed", String(reduced));
+      }
+      /** 跟随系统偏好；页面不保存用户设置。 */
+      function syncReduced() {
+        document.body.dataset.reduced = String(media.matches);
+        document
+          .getElementById("reduce")
+          .setAttribute("aria-pressed", String(media.matches));
+      }
+      /** 下拉状态是演示控制，不是后端任务结果。 */
+      function changeState() {
+        render(stateSelect.value);
+      }
+      /** 读取失败演示重新等待；提交失败只演示核对，不重试写入。 */
+      function recover() {
+        render("running");
+        if (scene === "commit") {
+          document.getElementById("title").textContent = "正在核对本地状态";
+          document.getElementById("description").textContent =
+            "读取最新提交记录，确认操作结果。";
+          document.getElementById("phase").textContent = "读取本地状态";
+          document.getElementById("footer-state").textContent =
+            "正在核对本地状态";
+        }
+      }
+      document
+        .querySelectorAll("[data-scene]")
+        .forEach((button) => button.addEventListener("click", selectScene));
+      stateSelect.addEventListener("change", changeState);
+      document.getElementById("pause").addEventListener("click", togglePause);
+      document
+        .getElementById("reduce")
+        .addEventListener("click", toggleReduced);
+      document.getElementById("retry").addEventListener("click", recover);
+      media.addEventListener("change", syncReduced);
+      syncReduced();
+      render("running");
+      setInterval(tick, 1000);
+    </script>
+  </body>
+</html>

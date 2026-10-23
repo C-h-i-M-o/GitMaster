@@ -54,6 +54,7 @@ export function createFileEditorController(api: FileEditorApi) {
   };
   let epoch = 0;
   let readSequence = 0;
+  let interactionSequence = 0;
   let activeRead: {
     path: string;
     controller: AbortController;
@@ -77,6 +78,7 @@ export function createFileEditorController(api: FileEditorApi) {
     if (state.repositoryId === id) return true;
     if (state.savingPath || (dirty() && !discard)) return false;
     epoch++;
+    interactionSequence++;
     activeRead?.controller.abort();
     activeRead = null;
     readSequence++;
@@ -127,6 +129,7 @@ export function createFileEditorController(api: FileEditorApi) {
   }
   /** 打开已存在标签只切换焦点，新文件按需读取完整文档。 */
   async function open(path: string): Promise<void> {
+    interactionSequence++;
     const existing = activeRead;
     if (existing && existing.path !== path) {
       existing.controller.abort();
@@ -174,10 +177,38 @@ export function createFileEditorController(api: FileEditorApi) {
   }
   /** 保存过程中仍可输入，成功结果只确认提交时捕获的那份文本。 */
   function edit(path: string, content: string): void {
+    // 实际切项目同步阻止旧输入；普通后台刷新和文件保存期间仍允许编辑。
+    if (api.blocked() || api.repository()?.repositoryId !== state.repositoryId)
+      return;
     update({ tabs: editEditorTab(state.tabs, path, content) });
   }
-  /** 明确放弃后重新读取，只有成功且草稿未继续变化时才替换原标签。 */
+  /** 用户显式重读优先于后台批次。 */
   async function reload(path: string, discard = false): Promise<boolean> {
+    interactionSequence++;
+    return readTab(path, discard);
+  }
+  /** 逐份刷新干净标签，用户交互或前台在途请求优先，取消后不继续下一份。 */
+  async function reloadCleanDocuments(
+    isCurrent = () => true,
+  ): Promise<boolean> {
+    if (activeRead || api.blocked() || state.savingPath) return false;
+    const interaction = interactionSequence;
+    const token = epoch;
+    for (const tab of state.tabs) {
+      if (
+        !isCurrent() ||
+        interaction !== interactionSequence ||
+        token !== epoch
+      )
+        return false;
+      if (tab.draft === tab.baseline) await readTab(tab.document.path, false);
+    }
+    return (
+      isCurrent() && interaction === interactionSequence && token === epoch
+    );
+  }
+  /** 只有成功且草稿未继续变化时才替换原标签。 */
+  async function readTab(path: string, discard: boolean): Promise<boolean> {
     const tab = state.tabs.find((item) => item.document.path === path);
     if (
       !tab ||
@@ -230,6 +261,7 @@ export function createFileEditorController(api: FileEditorApi) {
     const tab = state.tabs.find((item) => item.document.path === path);
     if (!tab || state.savingPath || api.blocked()) return false;
     if (tab.draft === tab.baseline) return true;
+    interactionSequence++;
     const submitted = tab.draft;
     const token = epoch;
     // 保存已经使读取结果过时，同时取消其排队，避免无效重读占用文件屏障。
@@ -268,6 +300,7 @@ export function createFileEditorController(api: FileEditorApi) {
   }
   /** 关闭仅影响目标标签；未明确放弃时脏文档进入确认状态。 */
   function close(path: string, discard = false): void {
+    interactionSequence++;
     if (state.savingPath === path) return;
     const tabs = closeEditorTab(state.tabs, path, discard);
     if (tabs === state.tabs) {
@@ -321,6 +354,7 @@ export function createFileEditorController(api: FileEditorApi) {
     dirty,
     open,
     reload,
+    reloadCleanDocuments,
     edit,
     save,
     close,

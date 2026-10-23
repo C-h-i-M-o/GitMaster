@@ -1,11 +1,16 @@
-import { useCommitGraph, laneColor } from "../hooks/useCommitGraph";
+import { useCommitGraph } from "../hooks/useCommitGraph";
+import { graphLaneStyle } from "../ui/graphColors";
 import type { Workbench } from "../hooks/useWorkbench";
 import { Icon } from "./Icon";
 import { BranchHeads } from "./BranchHeads";
 import { describeGitError } from "../ui/gitPresentation";
 import { shortcutLabel } from "../ui/shortcuts";
+import { OperationFeedback } from "./OperationFeedback";
+import { graphFeedback, commitFeedback } from "../ui/operationFeedback";
 /** 以真实提交和父关系绘制可导航画布，拖动仅改变展示坐标。 */
 export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
+  const feedback =
+    (w.drawer !== "changes" ? commitFeedback(w) : null) ?? graphFeedback(w);
   const graph = useCommitGraph(
     w.history.page,
     w.history.selectedOid,
@@ -16,7 +21,6 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
     <div className="graph-canvas" ref={graph.root}>
       <div className="graph-heading">
         <span className="eyebrow">COMMIT HISTORY</span>
-        <h1>每一步，都有迹可循。</h1>
       </div>
       <label className="graph-search">
         <Icon name="search" />
@@ -75,12 +79,12 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
           )}
         </div>
       )}
-      {w.history.error && (
+      {w.history.error && !feedback?.error && (
         <p className="graph-notice" role="alert">
           {describeGitError(w.history.error)}
         </p>
       )}
-      {!w.repo.repository ? (
+      {!w.repo.repository && !feedback && !w.repo.openingPath ? (
         <div className="graph-empty">
           <Icon name="branch" />
           <h2>从一个项目开始</h2>
@@ -93,11 +97,7 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
             打开本地仓库
           </button>
         </div>
-      ) : w.history.loading ? (
-        <div className="graph-empty" role="status">
-          正在读取提交历史…
-        </div>
-      ) : w.history.page?.commits.length === 0 ? (
+      ) : !feedback && w.history.page?.commits.length === 0 ? (
         <div className="graph-empty">
           <h2>等待第一份提交</h2>
           <p>在本地修改中暂存文件，然后创建项目的第一个版本。</p>
@@ -106,6 +106,11 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
           </button>
         </div>
       ) : null}
+      {feedback && (
+        <div className="graph-feedback">
+          <OperationFeedback model={feedback} />
+        </div>
+      )}
       <svg
         className="commit-svg"
         ref={graph.svg}
@@ -118,8 +123,8 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
         <defs>
           <radialGradient id="bubble-glass" cx="32%" cy="25%" r="75%">
             <stop offset="0%" stopColor="white" stopOpacity="0.95" />
-            <stop offset="55%" stopColor="#d9eee5" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#559e92" stopOpacity="0.3" />
+            <stop offset="55%" stopColor="white" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="white" stopOpacity="0.04" />
           </radialGradient>
         </defs>
         <g data-graph-world="" transform={graph.transform}>
@@ -127,6 +132,7 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
             <path
               key={edge.id}
               data-edge={edge.id}
+              style={graphLaneStyle(edge.lane)}
               className={edge.boundary ? "graph-edge boundary" : "graph-edge"}
             />
           ))}
@@ -134,13 +140,15 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
             <g
               key={node.oid}
               data-oid={node.oid}
+              style={graphLaneStyle(node.lane)}
               transform={`translate(${node.x} ${node.y})`}
               role="group"
               onKeyDown={graph.nodeKeyDown}
               className={`graph-node ${node.matches ? "" : "dimmed"} ${w.history.selectedOid === node.oid || graph.activeMatchOid === node.oid ? "selected" : ""}`}
             >
               <g
-                tabIndex={0}
+                tabIndex={w.history.stale ? -1 : 0}
+                aria-disabled={w.history.stale}
                 role="button"
                 aria-label={`${node.commit.subject}，${node.oid}`}
                 aria-pressed={w.history.selectedOid === node.oid}
@@ -154,8 +162,12 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
                   {node.refs.map((ref) => ref.name).join(" · ")}
                 </title>
                 <circle r="23" className="node-halo" />
-                <circle r="16" fill={laneColor(node.lane)} fillOpacity="0.32" />
-                <circle r="19" fill="url(#bubble-glass)" />
+                <circle r="16" className="node-core" />
+                <circle
+                  r="19"
+                  className="node-glass"
+                  fill="url(#bubble-glass)"
+                />
                 <circle cx="-6" cy="-7" r="4" fill="white" fillOpacity="0.85" />
                 {(w.preferences.saved?.showLabels ?? true) && (
                   <text x="27" y="-7" className="node-subject">
@@ -178,7 +190,7 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
         </g>
       </svg>
       <div className="graph-legend">
-        <span className="legend-line" /> 父子关系{" "}
+        <span className="legend-line" /> 分支线{" "}
         <span className="legend-line dashed" /> 尚未加载的父提交
       </div>
       <div className="graph-controls">
@@ -200,7 +212,7 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
       {w.history.page?.nextCursor && (
         <button
           className="load-more secondary"
-          disabled={w.history.loadingMore}
+          disabled={w.history.loadingMore || w.history.stale}
           onClick={w.history.loadMore}
         >
           {w.history.loadingMore ? "正在加载…" : "加载更多提交"}

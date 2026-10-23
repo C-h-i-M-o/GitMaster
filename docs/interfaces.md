@@ -244,5 +244,8 @@ CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elastic
 - `read_workspace_sessions()` 返回 `{version:1,lastRootPath:string|null,projects:WorkspaceSession[]}`。`write_workspace_session(session)` 原子保存活动项目并更新 lastRootPath。`WorkspaceSession` 为 `{rootPath,expandedPaths,documents:[{path,position}],activePath,activePage}`，page 为 files/changes/history；position 为 null 或 `{lineNumber,column,scrollTop,scrollLeft}`。
 - 存储位于 app_config_dir/workspace-sessions.json，上限 2,000,000 字节、20 项目、每项目 200 目录/50 文档；位置与路径有界，拒绝未知字段及父路径/绝对文档路径。写入规范化活动根路径，读取历史条目不要求项目仍存在。损坏记录不覆盖，错误不阻止编辑。正文、草稿与 fileId/treeId/snapshotId 均不持久化。
 - 超过 50 个打开文档时，持久化列表优先包含当前活动文档；activePath 必须属于这份有界列表，不能因简单截断导致整份记录被拒绝。
+- 加载反馈只增加前端状态：RepositoryViewState.openingPath 为正在打开或打开失败的目标路径，成功、内部取消和普通刷新清除；HistoryState.stale 标识保留的旧图，旧图不得用于读取详情或分页，新页成功后解除。两者均不持久化、不增加 IPC。OperationFeedbackModel 从这些状态及既有任务身份/阶段派生，计时只更新显示；重试打开走草稿保护，提交未知结果只调用 resume 查询。
+- 编辑器仅在 `loading && openingPath !== null` 时为实际打开项目加锁；控制器同步校验门禁与仓库身份，防止 React 安装新仓库前的迟到输入。普通后台刷新不限制输入。`reloadCleanDocuments(isCurrent)` 使用交互代次逐份重读干净文档；打开、显式重读、关闭、保存和切仓库使旧批次停止，不能抢占前台读取。
+- 分支读取等待历史就绪和写入/刷新门禁释放；已成功的仓库/history 版本不因文件保存重复读取。被取消的当前请求最多三次尝试，间隔 250/500ms，生命周期结束清理重试计时器并拒绝迟到响应。真实错误或连续取消耗尽后保留错误与手动刷新入口，不循环读取。
 - 启动先正常打开仓库，再按路径逐级读取目录页取得新能力，恢复标签与位置。树内折叠复用同会话页，刷新跨会话仅迁移路径；迟到页面不得安装。Windows 扩展长度路径与普通规范路径按同一项目匹配。
 - 参考 Git 官方 [gitattributes 文档](https://git-scm.com/docs/gitattributes) 处理内建 EOL 语义；参考 VS Code [编辑器视图状态接口](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/editorBrowser.ts) 使用 Monaco 模型及视图状态保留当前会话撤销/滚动，跨启动仅保存位置。

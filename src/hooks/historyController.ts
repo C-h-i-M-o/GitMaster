@@ -40,6 +40,7 @@ export interface HistoryState {
   page: HistoryPage | null;
   loading: boolean;
   loadingMore: boolean;
+  stale: boolean;
   selectedOid: string | null;
   detail: CommitDetail | null;
   files: CommitFileList | null;
@@ -54,6 +55,7 @@ const emptyState = (): HistoryState => ({
   page: null,
   loading: false,
   loadingMore: false,
+  stale: false,
   selectedOid: null,
   detail: null,
   files: null,
@@ -112,7 +114,7 @@ export function createHistoryController(api: HistoryApi) {
       const page = await api.readCommitHistory(id, cursor);
       if (!active || owner !== generation) return;
       if (page.repositoryId !== id) throw { code: "STALE_GRAPH" };
-      if (cursor === null) update({ page, loading: false });
+      if (cursor === null) update({ page, loading: false, stale: false });
       else if (state.page?.graphSnapshotId === page.graphSnapshotId)
         update({
           page: {
@@ -156,6 +158,7 @@ export function createHistoryController(api: HistoryApi) {
     if (
       !active ||
       !repository ||
+      state.stale ||
       !state.page?.commits.some((commit) => commit.oid === oid)
     )
       return;
@@ -321,23 +324,34 @@ export function createHistoryController(api: HistoryApi) {
         repository?.versions?.history === next?.versions?.history
       )
         return;
+      const page =
+        repository?.repositoryId === next?.repositoryId ? state.page : null;
       repository = next;
       generation += 1;
       historyRequests.clear();
       clearSelection();
-      update({ page: null, loading: false, loadingMore: false, error: null });
+      update({
+        page,
+        stale: true,
+        loading: false,
+        loadingMore: false,
+        error: null,
+      });
     },
     /** 显式刷新开始一个新图。 */
     refresh: (): Promise<void> => {
       generation += 1;
       historyRequests.clear();
       clearSelection();
-      update({ page: null, loading: false, loadingMore: false, error: null });
+      // 同项目刷新保留旧图，但旧快照不能再发起详情读取。
+      update({ stale: true, loading: false, loadingMore: false, error: null });
       return load(null);
     },
     /** 仅加载当前快照的后续游标。 */
     loadMore: (): Promise<void> =>
-      state.page?.nextCursor ? load(state.page.nextCursor) : Promise.resolve(),
+      !state.stale && state.page?.nextCursor
+        ? load(state.page.nextCursor)
+        : Promise.resolve(),
     selectCommit,
     selectParent,
     selectFile,

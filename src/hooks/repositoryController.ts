@@ -8,6 +8,7 @@ import { normalizeOperationError } from "../services/gitErrors.ts";
 export interface RepositoryViewState {
   repository: RepositoryState | null;
   loading: boolean;
+  openingPath: string | null;
   stale: boolean;
   error: OperationError | null;
   diff: LocalDiff | null;
@@ -43,6 +44,7 @@ export function createRepositoryController(api: RepositoryApi) {
   let state: RepositoryViewState = {
     repository: null,
     loading: false,
+    openingPath: null,
     stale: false,
     error: null,
     diff: null,
@@ -125,6 +127,7 @@ export function createRepositoryController(api: RepositoryApi) {
           : null;
         update({
           repository,
+          openingPath: null,
           loading: false,
           stale: false,
           diffLoading: false,
@@ -171,6 +174,7 @@ export function createRepositoryController(api: RepositoryApi) {
           automaticFailure = false;
           update({
             loading: false,
+            openingPath: null,
             stale: state.repository !== null,
             diffLoading: false,
           });
@@ -201,6 +205,7 @@ export function createRepositoryController(api: RepositoryApi) {
     queued = false;
     queuedForce = false;
     dirty = false;
+    update({ openingPath: path });
     return load(() => api.openRepository(path));
   }
   /** 在途刷新合并为至多一次后续刷新。 */
@@ -212,6 +217,7 @@ export function createRepositoryController(api: RepositoryApi) {
       return Promise.resolve();
     }
     const id = state.repository.repositoryId;
+    update({ openingPath: null });
     return load(() => api.readRepositoryState(id, force), true);
   }
   /** 消费桌面端同代次核实快照，拒绝迟到结果并保留刷新降级路径。 */
@@ -338,6 +344,7 @@ export function createRepositoryController(api: RepositoryApi) {
     dirty = false;
     update({
       repository: null,
+      openingPath: null,
       loading: false,
       stale: false,
       error: null,

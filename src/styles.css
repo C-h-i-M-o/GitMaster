@@ -502,11 +502,6 @@ p[role="alert"] {
   z-index: 1;
   pointer-events: none;
 }
-.graph-heading h1 {
-  font-size: 17px;
-  font-weight: 500;
-  margin: 9px 0 0;
-}
 .graph-search {
   position: absolute;
   right: 20px;
@@ -550,14 +545,14 @@ p[role="alert"] {
   user-select: none;
 }
 .graph-edge {
-  stroke: #8baea2;
-  stroke-width: 1.6;
+  stroke: var(--graph-color, #2f7468);
+  stroke-width: 2;
   fill: none;
-  opacity: 0.62;
+  opacity: 0.9;
 }
 .graph-edge.boundary {
   stroke-dasharray: 5 6;
-  opacity: 0.45;
+  opacity: 0.6;
 }
 .graph-node {
   cursor: grab;
@@ -571,14 +566,25 @@ p[role="alert"] {
 }
 .graph-node .node-halo {
   fill: #ffffff35;
-  stroke: #72a89b80;
+  stroke: var(--graph-color);
+  stroke-opacity: 0.32;
   stroke-width: 1;
+}
+.graph-node .node-core {
+  fill: var(--graph-color);
+  fill-opacity: 0.52;
+}
+.graph-node .node-glass {
+  stroke: var(--graph-color);
+  stroke-opacity: 0.85;
+  stroke-width: 1.4;
 }
 .graph-node.selected .node-halo,
 .graph-node-action:focus-visible .node-halo {
-  stroke: var(--green);
-  stroke-width: 2;
-  fill: #dcece4;
+  stroke: var(--graph-color);
+  stroke-opacity: 1;
+  stroke-width: 2.4;
+  fill: var(--graph-wash);
 }
 .graph-node.dimmed {
   opacity: 0.23;
@@ -622,18 +628,17 @@ p[role="alert"] {
   gap: 5px;
   max-width: 225px;
   padding: 5px 8px;
-  border: 1px solid #ffffffd9;
+  border: 1px solid var(--graph-border, #bcd7c9);
   border-radius: 8px;
-  background: #ffffffba;
-  color: #536e61;
+  background: var(--graph-wash, #eaf3ef);
+  color: var(--graph-color, #2f7468);
   font:
     11px Consolas,
     monospace;
   cursor: default;
 }
 .branch-head.current {
-  background: #edf8f0ed;
-  border-color: #bcd7c9;
+  border-color: var(--graph-color, #2f7468);
 }
 .branch-heads.expanded .branch-head {
   max-width: 100%;
@@ -643,7 +648,7 @@ p[role="alert"] {
   overflow-wrap: anywhere;
 }
 .branch-head.remote {
-  color: #6e8095;
+  border-style: dashed;
 }
 .branch-head-name {
   white-space: nowrap;
@@ -651,9 +656,9 @@ p[role="alert"] {
   text-overflow: ellipsis;
 }
 .branch-head small {
-  border-left: 1px solid #c9d8ce;
+  border-left: 1px solid var(--graph-border, #c9d8ce);
   padding-left: 6px;
-  color: #7e9a89;
+  color: inherit;
   font-size: 9px;
 }
 .branch-head-more {
@@ -664,7 +669,7 @@ p[role="alert"] {
 }
 .branch-head:focus-visible,
 .branch-head-more:focus-visible {
-  outline: 2px solid var(--green);
+  outline: 2px solid var(--graph-color, var(--green));
   outline-offset: 2px;
 }
 
@@ -1683,9 +1688,6 @@ p[role="alert"] {
   .graph-heading {
     left: 18px;
     top: 22px;
-  }
-  .graph-heading h1 {
-    font-size: 15px;
   }
   .graph-search {
     left: 18px;

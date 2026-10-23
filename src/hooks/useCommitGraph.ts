@@ -31,11 +31,6 @@ interface Drag {
   nodeY: number;
   moved: boolean;
 }
-const COLORS = ["#378e80", "#6f9cb5", "#b69b65", "#9f82ad", "#8fa569"];
-/** 颜色表达几何通道，不推测提交所属分支。 */
-export function laneColor(lane: number): string {
-  return COLORS[lane % COLORS.length] ?? COLORS[0]!;
-}
 /** 图形模拟在 React 外更新 SVG；React 只负责数据、选择和控件。 */
 export function useCommitGraph(
   page: HistoryPage | null,

@@ -193,8 +193,9 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
                 readOnly={
                   w.choosing ||
                   w.editorLeaving ||
-                  ((w.operations.busy || w.repo.loading) &&
-                    !w.editor.savingPath)
+                  (w.repo.loading && w.repo.openingPath !== null) ||
+                  // 保存后的后台读取不锁定草稿；Git 写入仍保留编辑保护。
+                  (w.operations.busy && !w.editor.savingPath)
                 }
                 save={w.saveEditor}
                 readPosition={w.workspaceSession.readPosition}

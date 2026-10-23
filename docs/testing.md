@@ -150,3 +150,10 @@ git diff --check
 - macOS 原生验收使用单独应用标识 `dev.gitmaster.ux-acceptance` 和临时仓库，避免改动用户日常配置与真实仓库。分别核对界面结果、配置文件内容及 Git 状态；Windows 按用户本次明确指示跳过，未来验收仍需独立环境。
 - 用户于 2026-10-03 授权全部提交、推送，本轮 7 份必要回归源码显式纳入版本管理，包含根 tests 下 5 份 Node 测试及 m2-m3 下的 group-selection.test.ts、exit-autosave-regression.ts；原有 harness 引用因此可在干净 clone 解析。截图、日志、临时仓库和机器路径元数据仍不入库；Rust 模块测试随源码保留。
 - 退出组合使用 `exit-harness.html` 的“运行退出组合回归”按钮，具体场景在 `exit-autosave-regression.ts`。夹具已适配当前 `apply_settings_patch`；11 项检查覆盖即时编辑退出、失败保存与重试、文件→冲突→设置的取消/继续和仓库上下文失效。上一节旧脚本的正常设置应用确认断言不再适用于即时保存模式；该浏览器组合不代表原生 PTY 或系统退出已验收。
+
+## 2026-10-23 合并前竞态回归
+
+- 已跟踪的 `supplement-editor-controller.test.ts` 增加实际切项目门禁、失败恢复、普通刷新继续编辑，以及 A/B 后台重读与用户打开 C 的交错回归；迟到响应不能覆盖新文档。
+- 已跟踪的 `supplement-history.test.ts` 增加分支取消恢复、连续取消最多三次、真实错误不重试及生命周期结束清理验证。
+- 本地 `save-readonly-harness.html` 与 `final-races.cjs` 使用真实工作台、Monaco 和内存 IPC，验证连续三轮保存、最近项目切换成功/失败，以及分支读取被保存取消后的恢复。夹具不接触用户仓库，不替代原生桌面测试。
+- Windows 核心测试使用 `cargo test -p gitmaster-core --locked -- --test-threads=1 --nocapture`，避免与前端构建、Release 编译或另一套 Git 集成测试并行。单项复跑通过不能覆盖整套测试失败；保留原始日志、退出码与中断记录，不改生产超时或安全断言来取得通过。

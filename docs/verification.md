@@ -1693,3 +1693,96 @@ Release 构建自然结束，退出 0，耗时 4m32s；SHA-256 为 `9295090E11BB
 - `cargo check -p gitmaster-desktop` 通过（`target/final-review-desktop-check.log`）；格式检查通过（`target/final-review-format.log`）。既有平台条件相关 unused 警告、前端大 chunk 提示保留，不作无关清理。
 
 本轮仅新增会话缓存边界修复，没有改变已采样的保存与 Git 调度实现；没有重新构建或重测 Windows Release，不将上述 `9295090...` 原生产物说成包含本次边界修复。完整核心回归尚未取得新的全绿结果，完整 Git 刷新仍约 21 秒，macOS 与安装包仍未补验；这些作为开发分支已知限制保留。审查修复后未发现其他已证实的新增阻断问题，按本轮授权提交当前源码、已跟踪测试及同步文档；不将提交远程等同于发布验收通过。
+
+## 自动保存后只读修复（2026-10-23）
+
+根因：文件保存成功后释放自动刷新门禁，后台仓库读取将 repo.loading 设为 true；ProjectFilesPanel 原来把该状态与 Git 写操作合并为 Monaco 的只读条件。文件已经保存成功，但后台 Git 查询结束前无法继续输入。仅移除 repo.loading 对正文输入的限制，选择项目、离开确认、Git 写操作保护保持不变；没有改变文件版本校验、IPC、Rust 或保存调度。
+
+浏览器交互回归使用真实 useWorkbench、ProjectFilesPanel、Monaco 和官方 Tauri IPC mock。所有文件、保存版本及错误均在内存夹具中，不操作 EvalSpark。夹具为本地 `tests/m2-m3/save-readonly-harness.html`、同名 tsx 和 `useSaveReadonlyHarness.ts`，启动 `pnpm dev` 后可打开该页面复核。
+
+- 修复前：第一次自动保存完成，saves=1、reads=1、loading=true；第二次输入出现 `Cannot edit in read-only editor`，正文仍为 initial-one。
+- 修复后：重新加载页面，打开项目和 README.md，在同一 Monaco 连续输入 -one、-two、-three，每轮等待自动保存完成。最终 saves=3、reads=1、loading=true、dirty=false，草稿与内存文件均为 initial-one-two-three。无需重新打开文件或结束后台刷新，证据截图：`target/save-readonly-proof.png`。
+- 异常路径：模拟后台读取失败并结束合并排队的刷新后，仍能输入 -four 并自动保存；离开保护和 Git 写操作保护分别启用时输入被拒绝，内容不变，解除后恢复输入。
+- 保存失败：注入 FILE_CHANGED 后，内存文件保留原文，草稿保留 -draft，并允许继续输入 -continued；不会自动覆盖，点击“重试保存”后确认完整草稿，错误清除。该夹具验证前端失败处理，不替代真实磁盘外部改写的核心测试。
+- 已跟踪的全部 Node `.test.ts` / `.test.mjs`：94 项通过、0 失败、0 跳过（`target/save-readonly-tests.log`）。
+- `pnpm build` 通过，包含两份 TypeScript 类型检查和生产构建（`target/save-readonly-build.log`）；保留既有大 chunk 提示。`pnpm format:check` 通过（`target/save-readonly-format.log`），文档同步后另做定向格式和 diff 检查。
+
+范围：本次仅修改一个前端只读条件，临时夹具本地保留，未提交或推送。未重新构建或启动 Windows Release，现有运行中的应用不会自动获得本次源码修复；未重跑 Rust 全量、macOS 或安装包验收，既有完整 Git 刷新耗时与核心回归限制不变。
+
+## 提交历史分支配色（2026-10-23）
+
+实现：沿用现有通道布局，为 GraphEdge 补充展示通道，统一连线、节点和引用标签色板；第一父线延续源通道色，其他父线使用目标通道色。标签使用浅底深字，当前 HEAD、远端标识、虚线边界及键盘入口保留；不增加后端调用，不修改用户仓库。
+
+- 先运行新增本地 `tests/windows-history/graph-colors.test.ts`，原实现因缺少连线通道而出现 2 项预期失败；实现后合并、跨通道汇合与分页颜色保持通过。
+- 初次六色对比度检查发现橄榄绿仅 4.49:1，调深橄榄绿并为临界赭金增加余量，最终六组标签均达到 4.5:1。色板循环复用边界也通过。
+- 已跟踪前端测试 94 项，加新颜色回归 3 项及既有图布局/模拟测试 2 项，共 99 项通过、0 失败、0 跳过（`target/graph-colors-tests.log`）。
+- `pnpm build` 通过，包含两份 TypeScript 类型检查（`target/graph-colors-build.log`）；既有大 chunk 提示保留。格式和 diff 检查通过。
+- 浏览器使用本地 `tests/m2-m3/graph-colors-harness.html` / `.tsx`，通过官方 IPC mock 加载三通道合并与共享祖先。实际计算样式确认青绿 rgb(47,116,104)、雾蓝 rgb(70,111,150)、赭金 rgb(140,96,42) 在连线、节点核心与对应引用标签一致；main 与 origin/main 共用节点且保留 HEAD/远端区分。
+- 搜索 feature/界面 得到 1 个匹配，其余 7 个节点淡化，匹配外圈保持雾蓝并加粗至 2.4px；缩放至 83% 后三条通道颜色保持，8 个节点仍有键盘入口。实际 Tab 导航至雾蓝节点，focus-visible 为 true，外圈仍为雾蓝且宽 2.4px。
+- 完整工作台截图：`target/graph-colors-preview.png`。原 1420 预览服务依赖加载异常导致空白，使用本次独立启动的 1421 服务完成视觉验收，不将空白归为应用配色缺陷。
+
+边界：仅前端与浏览器隔离验证；未重建 Windows Release、未运行原生或 macOS 验收、未重跑 Rust 全量。新增临时图测试和预览夹具按约定本地保留；保留自动保存修复，未提交或推送。
+
+## 主页面标语移除与加载动画预览（2026-10-23）
+
+实际组件已移除“每一步，都有迹可循”及其无用标题样式；加载动画只存在于 `docs/previews/loading-motion.html`，没有接入生产组件或调用 Git。
+
+- `pnpm build` 通过，包含两份 TypeScript 配置检查和 Vite 生产构建；既有大 chunk 提示保留。
+- 浏览器预览验证三种场景、自动较长等待和计时、成功、读取失败及重试、提交结果未确认及核对入口。历史内容在局部加载时保留。
+- 实际计算样式确认三枚光点具有不同运动位置；暂停后均为 paused，减少动效后 animationName 均为 none。键盘 Tab 可到达减少动效按钮，focus-visible 为 true；浏览器没有错误或警告日志。
+- 390 像素宽度检查无横向溢出，紧凑卡片左右边界均在视口内；检查后恢复桌面尺寸。桌面效果证据：`target/loading-motion-preview.png`。
+- `pnpm format:check` 通过，`git diff --check` 通过；源码搜索确认原标语和对应标题样式均已移除。
+
+动画仍待用户审核。以上为独立 HTML 和前端工程验证，不等于真实 Git 加载、Windows Release、macOS 或安装包验收；未重建桌面应用、未提交或推送，既有自动保存与分支配色改动保留。
+
+### 预览批注修订验证
+
+修复窄窗口旧样式将间距压为 9px、动画 SVG 超出分配列宽的问题。754×828 视口下历史与提交卡片实测图文间距 28px，SVG 宽度与动画列均为 84px；普通及较长等待内容可切换。390px 视口下间距 20px，卡片横坐标约 28.8–346.4px，页面无横向溢出。测试后恢复浏览器视口。
+
+失败页已改为目录/断开分支插画及恢复按钮，读取重试正常。打开成功后加载卡片 display 为 none、历史为 block，栏目为 COMMIT HISTORY，没有成功中间页。提交失败仍进入本地状态核对；暂停与减少动效保持可用。截图保存在 `target/loading-motion-error-v2.png` 和 `target/loading-motion-compact-v2.png`。本次只修改独立预览与说明，进行格式和 diff 检查，不重复前端应用构建或宣称原生验收通过。
+
+## 加载反馈接入实际应用（2026-10-23）
+
+用户批准第二版后，将动画提取为 OperationFeedback，接入真实 App、仓库/历史控制器及提交流程。新增 openingPath 区分打开与刷新，HistoryState.stale 保留同项目旧图但禁止旧能力读取；useHistory.ready 不因保留旧图提前放行后台远端读取。项目切换不展示其他项目历史。业务状态选择、计时均位于 ts，组件只组合 UI；没有新增后端接口或依赖。
+
+浏览器使用 `tests/m2-m3/loading-harness.html`，实际 App、useWorkbench 与官方 Tauri IPC mock，仅在内存中暂停/释放请求。验证打开等待、打开失败重试、首屏历史；重试重新计时，打开成功不展示中间成功卡片。历史刷新期间旧节点仍存在且 aria-disabled=true，返回新历史后恢复入口。提交依次显示检查范围、写入中、校验中；模拟查询失败后恢复查询，execute_write 始终为 1 次。真实终态到达后卡片消失，提交说明清空，刷新结束后只展示历史。
+
+860×620 最小桌面尺寸下，提交卡片左右约 323–801px，图文间距 28px，页面宽度没有溢出；模拟系统 prefers-reduced-motion 后动画名为 none，测试后恢复浏览器配置。图例、缩放、分页入口保留。截图：`target/loading-app-commit.png`、`target/loading-app-history.png`。
+
+工程证据：94 项已跟踪前端回归通过（`target/loading-tracked-tests.log`）；新增本地 `loading-feedback.test.ts` 5 项通过，覆盖打开失败/重试、内部取消清理等待身份、旧图保留与访问保护、跨项目迟到响应、提交未核实仅查询。最终合计 99 项通过、0 失败、0 跳过（`target/loading-final-tests.log`）。类型和生产构建通过（`target/loading-final-build.log`），全项目格式检查通过（`target/loading-format.log`），保留既有大 chunk 警告。新增测试夹具按约定本地保留。
+
+另通过既有本地刷新调度 7 项（`target/loading-refresh-tests.log`），覆盖无变化不读取、在途请求合并、隐藏窗口、旧项目结果隔离、失败不无限重试。切换项目时实测打开反馈层级为 8、抽屉为 3，等待入口不会被原有抽屉遮挡；分页使用局部动画，返回后保留已有节点。测试页已关闭，不留后台模拟任务。
+
+### Windows Release 实机验收
+
+最终 `pnpm tauri build --no-bundle` 成功（`target/loading-verified-desktop-build.log`）；产物 `target/release/gitmaster-desktop.exe` 的 SHA256 为 `FD362815258BBABAA5E62B865A58EB647CDA6BB355B7B54E6B2900EED84F1065`。该产物包含内部取消清理修正。保留既有 Rust unused/dead_code、链接器输出和前端大 chunk 警告，没有新增依赖或 Rust 源码修改。
+
+Windows 11 实际窗口通过系统目录选择器打开 `target/loading-native-fixture`。先用独立验证副本观察旧文档面板上方的打开反馈，再关闭副本、启动最终 Release，验证自动恢复项目、首屏历史居中加载、刷新保留两条提交并显示局部动画。读取完成后直接展示历史，没有“项目已就绪”中间卡片。
+
+真实提交先尝试仅用于该临时仓库的延时 pre-commit hook，被现有安全检查拒绝；失败后动画退出、错误保留、未产生提交。移除测试 hook 后，通过最终 Release 的提交按钮正常提交。实际等待超过 12 秒，界面显示“正在创建提交”、计时 00:27 和“Git 尚未返回结果，请勿重复提交。”，按钮保持禁用，图文没有交叠。后端确认后反馈退出、提交说明清空、本地修改归零，历史出现 `40aad7535cfcdcc79acd688fc753f3862b5cc881`。Git 只从基线 1 个提交增加到 2 个，`git status --porcelain` 为空；未向 EvalSpark 或源码仓库写入测试提交。
+
+实机截图：`target/loading-native-first-history.jpg`、`target/loading-native-history.jpg`、`target/loading-native-commit.jpg`、`target/loading-native-complete.jpg`。错误恢复查询、缩小窗口和减少动效的详细验证仍以前述浏览器实际组件测试为依据，不冒充原生逐项覆盖。此轮不包含 macOS、安装包、签名及 Rust 全量回归，不表示正式发布验收完成；未提交或推送源码。
+
+最终 `pnpm format:check` 通过（`target/loading-final-format.log`），`git diff --check` 通过。验收后窗口被最小化，恢复时自动化检测到用户输入，未继续切换用户项目；最终程序仍停留在干净的临时仓库，可通过最近项目重新打开 EvalSpark。
+
+## 2026-10-23 最终审查三项竞态修复与合并门槛
+
+审查发现并修复：最近项目打开期间旧编辑器仍能输入，导致草稿与仓库身份分离；干净文档后台逐份重读会取消用户刚打开的文件；分支读取被文件保存取消后没有恢复入口。修复保留自动保存期间连续输入，后台批次让用户操作优先，分支读取等待写入结束并对取消作有限重试。需求和接口见 spec-plan 第 24 节及 interfaces 同日补充。
+
+先补回归：旧实现未阻止切仓库期间输入，断言失败；后台批次接口和分支恢复接口尚不存在，新增用例失败，原有编辑器回归仍通过。随后实现并验证：已跟踪前端回归 98/98 通过（`target/fix-final-tests.log`），另有加载反馈及刷新专项 12/12 通过（`target/fix-final-feedback-tests.log`）。新增用例包含打开失败恢复、仓库返回与 React 安装之间拒绝旧输入、前台打开 C 中断 A/B 后台重读、分支取消恢复/重试上限/真实错误/生命周期清理。
+
+真实 React 工作台与 Monaco 的隔离浏览器验证通过（`target/fix-final-browser.log`）：同一标签连续三轮自动保存；后台刷新挂起时仍可输入；最近项目打开时拒绝正文修改，失败后继续编辑保存，成功后仓库与编辑器身份一致；保存期间分支查询被取消，写入和刷新结束后补读一次，同历史版本后续保存不重复读取。调试阶段曾错误聚焦 Monaco 的备用 textarea、以及只释放连续保存合并出的第一轮刷新；修正夹具后完整脚本退出 0。此验证只使用内存 IPC，不修改用户文件，不宣称新源码已在 Windows Release 实机验收。
+
+工程检查：`pnpm build`（包含 typecheck）、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop --locked`、`git diff --check` 均通过。日志分别为 `target/fix-final-build.log`、`target/fix-final-format.log`、`target/fix-final-desktop-check.log`；保留既有大 chunk 与 Rust unused/dead_code 警告。
+
+Rust 排查保留原始失败：此前默认并发全量为 60 通过、156 失败、6 忽略，730.34 秒（`target/review-final-core.log`）。逐块统计 155 项涉及 TIMEOUT，另 1 项为后代进程测试在 2 秒预算内没有生成 PID 文件，读取返回 NotFound。首次串行复跑在 SHA-256 分支创建出现失败，为定位该失败主动中断，不能记为完整通过（`target/fix-final-core-serial.log`）。同用例单独串行通过，52.80 秒（`target/fix-core-sha256.log`）；后代回收单独通过，2.12 秒（`target/fix-core-descendant.log`）。这些对照支持负载/进程启动时延影响，但不能证明全部失败都是环境问题。生产期限、安全断言与 Rust 源码均未为通过测试而调整。
+
+停止并行构建和其他 Git 集成测试后，完整串行再次遇到失败：`cleanup_failure_is_unknown_and_cannot_create_duplicate_merge` 在 `conflicts/finish.rs:455` 的写后状态核实返回 `TIMEOUT / revParse`。此时已完成 33 通过、1 失败、2 忽略；为诊断主动结束进程，后续用例未执行，不能把这个计数当成完整套件结果（`target/fix-core-isolated-all.log`）。失败发生在注入清理错误之后的真实 Git 读取，尚未走到最后的防重复提交断言，不能宣称该保护已在本次完整运行通过。
+
+该单项临时接入现有固定阶段日志，复跑通过，166.34 秒（`target/fix-core-cleanup-diagnostic.log`）。179 次调用中，进程创建中位数/P95/最大为 16/29/51ms，运行到观察退出为 727/1067/3224ms，管道读取为 3/7/16ms，回收均小于 1ms。诊断输出器随后完整移除，Rust 源码相对本轮开始无差异。额外绕过核心、用 Node 直接串行运行 `git --version`：cmd 启动器三次为 856/740/855ms，mingw64 程序为 515/432/377ms，均退出 0（`target/fix-direct-git-probe.json`）。只使用已安装程序，没有改变应用 Git 路径、系统 PATH、超时或安全软件设置。
+
+结论：已定位为 Git 读取触及生产期限的间歇失败；正常样本的主要耗时在子进程运行期间，非 React 渲染、管道读取或回收等待。对子进程启动/运行造成时延的具体系统因素尚未定位，单项通过不能证明完整套件稳定，也不能将失败全部归为默认测试并发。完整核心验证仍未通过，诊断结束时曾据此暂停提交与合并。Windows Release 仍是上一节产物，本轮没有重建或替换，macOS/安装包/签名未验收。
+
+用户后续明确确认功能验证没有问题，允许合并 main 并提交，暂时保留上述 Rust 间歇超时。本次据此继续提交、合并，并按此前授权推送远程；此项作为已知未解决问题保留，不标记为全量 Rust 验证通过，也不扩大到正式发布的平台验收。
+
+合并收尾复核：更新远端引用后，origin/main 仍为当前功能分支的祖先，可快进合并。再次执行已跟踪前端回归，98/98 通过（`target/merge-final-tests.log`）；全项目格式检查与差异空白检查通过。此轮只补充用户合并决定和验证记录，没有新增功能代码或改变 Rust 生产行为。

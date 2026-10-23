@@ -10,6 +10,7 @@ export interface GraphNode {
 }
 export interface GraphEdge {
   id: string;
+  lane: number;
   from: string;
   to: string;
   boundary: boolean;
@@ -67,6 +68,8 @@ export function layoutGraph(page: HistoryPage | null): GraphLayout {
       const target = positions.get(parentOid);
       edges.push({
         id: `${commit.oid}->${parentOid}:${parentIndex}`,
+        // 主父线延续源通道，其他父线表达合并进来的分支通道。
+        lane: parentIndex === 0 ? node.lane : targetLane,
         from: commit.oid,
         to: parentOid,
         boundary: target === undefined,

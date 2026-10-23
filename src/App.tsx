@@ -8,10 +8,13 @@ import { ChangeDetailDrawer } from "./components/ChangeDetailDrawer";
 import { WorkbenchDialogs } from "./components/WorkbenchDialogs";
 import { WriteConfirmation } from "./components/WriteConfirmation";
 import { WorkspaceNotices } from "./components/WorkspaceNotices";
+import { OperationFeedback } from "./components/OperationFeedback";
+import { openingFeedback } from "./ui/operationFeedback";
 /** 按 HTML 设计稿组合真实工作台，事件与副作用交给独立 hook。 */
 export default function App() {
   const w = useWorkbench();
   const repository = w.repo.repository;
+  const opening = openingFeedback(w);
   return (
     <div className="app-shell">
       <WorkspaceToolbar workbench={w} />
@@ -137,6 +140,11 @@ export default function App() {
             <CommitGraph workbench={w} />
             <WorkbenchDrawer workbench={w} />
             <ChangeDetailDrawer workbench={w} />
+            {opening && (
+              <div className="graph-feedback workspace-opening">
+                <OperationFeedback model={opening} />
+              </div>
+            )}
           </div>
           <BottomPanel workbench={w} />
         </main>
