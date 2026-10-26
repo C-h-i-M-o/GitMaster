@@ -222,28 +222,15 @@ p[role="alert"] {
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
-  font-size: 23px;
-  letter-spacing: -1px;
   width: 186px;
   flex: none;
 }
-.brand strong {
-  font-weight: 650;
-}
-.brand-mark {
-  width: 35px;
-  height: 35px;
-  border-radius: 12px;
-  background: #2c746a;
-  color: white;
-  display: grid;
-  place-items: center;
-  box-shadow: 0 4px 12px #30675625;
-}
-.brand-mark svg {
-  width: 24px;
-  height: 24px;
+.brand-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 1;
+  mix-blend-mode: multiply;
 }
 .toolbar {
   display: flex;
@@ -1646,9 +1633,8 @@ p[role="alert"] {
     padding: 12px 0;
   }
   .brand {
-    width: auto;
+    width: 166px;
     margin-right: auto;
-    font-size: 20px;
   }
   .toolbar {
     order: 3;
@@ -1893,7 +1879,7 @@ p[role="alert"] {
 }
 @media (max-width: 700px) {
   .topbar .brand {
-    width: auto;
+    width: 166px;
   }
   .project-switcher {
     flex: 1;

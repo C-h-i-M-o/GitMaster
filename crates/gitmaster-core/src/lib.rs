@@ -1,4 +1,4 @@
-//! gitMaster 的独立核心，提供应用信息和系统 Git 只读业务。
+//! GitMaster 的独立核心，提供应用信息和系统 Git 只读业务。
 pub mod diagnostics;
 pub mod git;
 
@@ -23,7 +23,7 @@ pub struct AppInfo {
 /// 返回应用元数据，不访问仓库、不检查环境、不修改用户配置。
 pub fn app_info() -> AppInfo {
     AppInfo {
-        name: "gitMaster".to_owned(),
+        name: "GitMaster".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         git_provider: GitProvider::System,
     }

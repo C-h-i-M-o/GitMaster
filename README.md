@@ -1,4 +1,8 @@
-# gitMaster README
+# GitMaster README
+
+![GitMaster](assets/branding/production/logo-horizontal.png)
+
+**2026-10-27：正式品牌资源接入。** 蓝黄双书签标志与黄色 `GitMaster` 字标已用于工作台，PNG/ICNS/ICO 与 favicon 已更新，窗口及 macOS 菜单统一品牌拼写。原始批准设计与生成说明保存在 [品牌素材目录](assets/branding/production/README.md)。同时修复暂存后旧选择残留导致提交输入错误的问题。macOS Release 已构建；后续原生功能测试按本轮用户指示暂时跳过，已有局部实测和工程检查见[最新验证记录](docs/verification.md)末尾。
 
 **2026-10-23：合并前竞态修复。** 最近项目打开期间保护旧文档，后台重读让用户打开文件优先，分支查询被保存取消后自动恢复。98 项已跟踪前端回归、12 项专项及真实 Monaco 隔离流程通过；本轮源码尚未替换 Windows Release，Rust 完整验证与合并状态见[最新验证记录](docs/verification.md)末尾。
 
@@ -97,7 +101,7 @@ AGENTS.md                Agent 协作规范
 - 应用配置 settings.json version 4 统一保存 Git、外观、日志、终端、编辑器及外部打开偏好，兼容 v1/v2/v3 并检查 revision；设置修改后自动保存，有错误时保留输入。最近 20 个成功打开的项目另存于 recent-projects.json；不保存凭据。
 - 已接入 xterm/PTY 多终端及已保存 shell 配置，macOS 双终端退出与 shell 进程回收已实测；系统输入法、Dock 退出和跨平台专项仍待验收。Monaco 多文档编辑与未保存保护已接入，真实文件系统目录采用分页与视口虚拟化。独立脱离会话的进程不在回收保证范围。
 - 当前样式是 Web 玻璃风格，未接入 Apple 原生 Liquid Glass。
-- 图标来自官方初始化模板，应用标识用于开发；正式发布前需要确定品牌资源和签名配置。
+- 图标已替换为用户批准的正式品牌素材，应用标识保持兼容；正式发布前仍需完成签名、公证及双平台交付验收。
 - Windows/macOS 兼容、原生构建及安装包发布需分别验证，具体结果记录在[分阶段验收记录](docs/verification.md)。
 
 ## 文件保存与快捷键

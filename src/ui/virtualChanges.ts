@@ -2,6 +2,31 @@ import type { DiffSide, FileChange } from "../types/git";
 
 export type ChangeGroups = Record<DiffSide, FileChange[]>;
 
+export type ChangeSelection = Record<"stage" | "unstage", string[]>;
+
+/** 仓库快照更新时保留仍属于相同操作方向的可操作项。 */
+export function reconcileChangeSelection(
+  groups: ChangeGroups,
+  selected: ChangeSelection,
+): ChangeSelection {
+  const stageIds = new Set(
+    [...groups.unstaged, ...groups.untracked]
+      .filter((file) => file.kind !== "submodule" && file.kind !== "conflicted")
+      .map((file) => file.changeId),
+  );
+  const unstageIds = new Set(
+    groups.staged
+      .filter((file) => file.kind !== "submodule" && file.kind !== "conflicted")
+      .map((file) => file.changeId),
+  );
+  const stage = selected.stage.filter((id) => stageIds.has(id));
+  const unstage = selected.unstage.filter((id) => unstageIds.has(id));
+  return stage.length === selected.stage.length &&
+    unstage.length === selected.unstage.length
+    ? selected
+    : { stage, unstage };
+}
+
 /** 只计算当前分组可操作项，使用集合避免万文件列表反复线性查找。 */
 export function groupSelection(
   files: readonly FileChange[],

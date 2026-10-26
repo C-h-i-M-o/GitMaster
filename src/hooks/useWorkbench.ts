@@ -10,7 +10,10 @@ import { useRecentProjects } from "./useRecentProjects";
 import { useWorkspaceSession } from "./useWorkspaceSession";
 import { restoreTreePaths } from "../ui/restoreTreePaths";
 import type { WorkspaceSession } from "../types/workspaceSession";
-import { toggleGroupSelection } from "../ui/virtualChanges";
+import {
+  toggleGroupSelection,
+  reconcileChangeSelection,
+} from "../ui/virtualChanges";
 import { mergeTreeFiles } from "../ui/projectTree";
 import { selectionAction } from "../ui/selectionAction";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
@@ -483,6 +486,10 @@ export function useWorkbench() {
   const [selected, setSelected] = useState<
     Record<"stage" | "unstage", string[]>
   >({ stage: [], unstage: [] });
+  // 暂存或刷新后剔除旧方向的 changeId，避免提交重复携带失效选择。
+  useEffect(() => {
+    setSelected((current) => reconcileChangeSelection(changeGroups, current));
+  }, [changeGroups]);
   const [fields, setFields] = useState<Record<Field, string>>({
     message: "",
     branchName: "",

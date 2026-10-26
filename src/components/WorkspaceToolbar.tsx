@@ -1,18 +1,14 @@
 import type { Workbench } from "../hooks/useWorkbench";
 import { Icon } from "./Icon";
 import { shortcutLabel } from "../ui/shortcuts";
+import brandLogo from "../../assets/branding/production/logo-horizontal.png";
 /** 项目菜单呈现持久化的最近记录，工具栏为已有业务入口。 */
 export function WorkspaceToolbar({ workbench: w }: { workbench: Workbench }) {
   const repository = w.repo.repository;
   return (
     <header className="topbar">
-      <a className="brand" href="#workspace" aria-label="gitMaster 工作台">
-        <span className="brand-mark">
-          <Icon name="branch" />
-        </span>
-        <span>
-          git<strong>Master</strong>
-        </span>
+      <a className="brand" href="#workspace" aria-label="GitMaster 工作台">
+        <img className="brand-logo" src={brandLogo} alt="GitMaster" />
       </a>
       <div className="project-switcher">
         <button

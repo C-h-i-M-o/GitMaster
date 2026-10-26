@@ -1786,3 +1786,44 @@ Rust 排查保留原始失败：此前默认并发全量为 60 通过、156 失�
 用户后续明确确认功能验证没有问题，允许合并 main 并提交，暂时保留上述 Rust 间歇超时。本次据此继续提交、合并，并按此前授权推送远程；此项作为已知未解决问题保留，不标记为全量 Rust 验证通过，也不扩大到正式发布的平台验收。
 
 合并收尾复核：更新远端引用后，origin/main 仍为当前功能分支的祖先，可快进合并。再次执行已跟踪前端回归，98/98 通过（`target/merge-final-tests.log`）；全项目格式检查与差异空白检查通过。此轮只补充用户合并决定和验证记录，没有新增功能代码或改变 Rust 生产行为。
+
+## 2026-10-27：GitMaster 正式品牌接入与收尾
+
+### 范围与交付
+
+基于 `de352b0` 新建 `codex/gitmaster-branding`。用户批准蓝黄双书签标志、黄色圆润 **GitMaster** 字标，授权资源归档、接入、验证、提交、合并 main 与推送。后续明确要求尽快完成，mac 测试暂时跳过；以下保留此前已取得的局部原生证据，不将未执行项视为通过。
+
+正式横向品牌 PNG、应用图标 PNG 与说明位于 `assets/branding/production/`；最终批准设计板、较早候选及提示词位于 `assets/branding/h-refined/`。Tauri 官方 icon 命令生成 PNG、ICNS、ICO，32px 图标同时用于 favicon。工作台、窗口、macOS 菜单与应用信息统一展示 GitMaster；应用标识仍为 `dev.gitmaster.desktop`，未迁移用户数据。图像与字体外观均为仓库内资源，不依赖网络字体；原稿为位图，不宣称提供矢量或可编辑字体源文件。
+
+### 工程检查
+
+本机实际环境为 macOS 27.0.1（26A434）、arm64；并非旧环境说明中的 macOS 26.3。
+
+| 检查                                        | 本轮结果                                      |
+| ------------------------------------------- | --------------------------------------------- |
+| `pnpm typecheck` / `pnpm build`             | 通过；最终 build 内含两套 TypeScript 配置检查 |
+| 全部已跟踪 Node 测试                        | 101 通过、0 失败、0 跳过                      |
+| `cargo fmt --all -- --check`                | 通过                                          |
+| `cargo test -p gitmaster-core --locked`     | 259 通过、0 失败、4 忽略；文档测试 0 项       |
+| `cargo check -p gitmaster-desktop --locked` | 通过                                          |
+| `pnpm tauri build --bundles app`            | 通过，包含暂存选择修复后的最终源码            |
+
+`pnpm format:check` 与 `git diff --check` 通过；提交前另核对暂存范围。现有 Rust 未使用项警告及 Vite 大分块提示保留，不为本次品牌任务扩大修改范围。此次 macOS 核心套件通过不消除历史 Windows 环境的间歇超时记录。
+
+产物：`target/release/bundle/macos/GitMaster.app`。已核对 Info.plist 的名称、`dev.gitmaster.desktop` 标识、icon.icns 及最低 macOS 13.0 要求。构建成功不等同于原生完整功能、干净安装、签名或公证验收。
+
+### 已完成的局部 macOS 原生检查
+
+在暂存选择修复前的 Release 应用中观察到新 Logo、GitMaster 窗口与菜单，系统 Git 2.49 可检测。通过临时最近项目配置打开 `target/branding-check/native-fixture`，读取真实历史与分支，打开 README、输入中文并手动保存，磁盘复读与输入一致；刷新显示修改，暂存成功且独立 Git 检查确认索引已更新。Cmd+Q 正常退出。
+
+该轮提交遇到“输入不符合要求”：暂存成功后旧 `selected.stage` 未清除，提交仍带入过期 changeId。修复为随仓库快照过滤各方向失效选择，保留 MM 文件仍有效的两个方向且不自动选择新文件。已在现有 group-selection 测试中新增三项回归，先确认失败，再通过完整 101 项套件；随后重新构建 Release。修复后的原生提交复测按本轮用户指示暂缓。
+
+原生目录选择器曾出现打开按钮不可用，后续自动化报告无窗口和锁屏，未取得成功打开的完整证据，不作根因结论。目录选择、分支切换、设置、终端、退出后会话恢复和 860×620 最小窗口专项均未完成。解锁回复不作为这些功能通过的证据。
+
+Git 测试写入仅限上述临时仓库。验收前备份应用配置，结束后恢复原 recent-projects.json，移除本轮创建的 workspace-sessions.json；settings.json 未改变。三个文件的恢复状态均与备份 manifest 中的 SHA-256 或原始缺失状态一致，未把测试项目留在用户最近项目中。
+
+### 证据与未测边界
+
+本机日志保存在忽略目录 `target/branding-check/`：`frontend-tests-final.log`、`frontend-build-final.log`、`core-tests-final.log`、`desktop-check-final.log`、`release-build.log`；失败回归证据为 `selection-red.log`。配置备份、测试配置、临时仓库与构建产物不提交仓库。
+
+Windows 基线功能通过来自用户对最新 main 的确认；本轮资源替换和选择修复未重复 Windows 实机测试。macOS 后续原生测试按本轮指示暂时跳过；真实远端认证、干净系统安装、签名、公证及发布均未验证或执行。本次交付为源码和品牌资源合并推送，不是发布验收。

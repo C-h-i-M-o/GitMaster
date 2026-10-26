@@ -35,7 +35,7 @@ export function RepositoryView({
     return (
       <section className="repository-panel">
         <h2>打开一个仓库</h2>
-        <p>选择已有工作区，gitMaster 只读取状态。</p>
+        <p>选择已有工作区，GitMaster 只读取状态。</p>
         {loading && <p role="status">正在打开仓库…</p>}
         <button type="button" disabled={disabled || loading} onClick={onOpen}>
           选择仓库目录

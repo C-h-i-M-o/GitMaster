@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "gitMaster",
+  "productName": "GitMaster",
   "version": "0.1.0",
   "identifier": "dev.gitmaster.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "gitMaster",
+        "title": "GitMaster",
         "width": 1120,
         "height": 760,
         "minWidth": 860,

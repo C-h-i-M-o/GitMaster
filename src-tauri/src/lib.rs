@@ -19,20 +19,20 @@ fn guarded_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri
         menu.remove_at(0)?;
         let application = Submenu::with_items(
             app,
-            "gitMaster",
+            "GitMaster",
             true,
             &[
-                &PredefinedMenuItem::about(app, Some("关于 gitMaster"), None)?,
+                &PredefinedMenuItem::about(app, Some("关于 GitMaster"), None)?,
                 &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::services(app, Some("服务"))?,
                 &PredefinedMenuItem::separator(app)?,
-                &PredefinedMenuItem::hide(app, Some("隐藏 gitMaster"))?,
+                &PredefinedMenuItem::hide(app, Some("隐藏 GitMaster"))?,
                 &PredefinedMenuItem::hide_others(app, Some("隐藏其他应用"))?,
                 &PredefinedMenuItem::separator(app)?,
                 &MenuItem::with_id(
                     app,
                     "guarded-quit",
-                    "退出 gitMaster",
+                    "退出 GitMaster",
                     true,
                     Some("CmdOrCtrl+Q"),
                 )?,
@@ -144,7 +144,7 @@ pub fn run() {
             commands::open_git_install_page
         ])
         .build(tauri::generate_context!())
-        .expect("gitMaster 桌面应用启动失败")
+        .expect("GitMaster 桌面应用启动失败")
         .run(|app, event| {
             // 菜单退出同样走窗口关闭确认；最后一个窗口销毁后允许进程退出。
             if let tauri::RunEvent::ExitRequested { api, .. } = event {

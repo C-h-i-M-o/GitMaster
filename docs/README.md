@@ -1,10 +1,12 @@
-# gitMaster 文档索引
+# GitMaster 文档索引
 
-本项目面向 Git 初学者，品牌为 gitMaster。当前正式版主线为 Tauri/React 与独立 Rust 核心，先完成性能、1GB 缓存、功能与双平台交付。达标可长期保留 Tauri；原生仅是正式版后续可选更新。实际证据及已知失败见验证记录。
+本项目面向 Git 初学者，品牌为 GitMaster。当前正式版主线为 Tauri/React 与独立 Rust 核心，先完成性能、1GB 缓存、功能与双平台交付。达标可长期保留 Tauri；原生仅是正式版后续可选更新。实际证据及已知失败见验证记录。
 
 当前分支切换修复、诊断与性能测量见 [专项 Spec + Plan](branch-switch-fix-spec-plan.md)，实际通过及跳过项以 [验证记录](verification.md) 最新章节为准。
 
 ## 阅读顺序
+
+2026-10-27 品牌资源接入、原始设计归档与暂存选择修复见[总计划第 25 节](spec-plan.md#25-gitmaster-品牌资源接入与-macos-验收2026-10-26)。[品牌资源说明](../assets/branding/production/README.md)包含图标生成命令。macOS Release 已构建，后续原生测试按用户本轮指示跳过；实际结果见[验证记录](verification.md)末尾。
 
 2026-10-23 最终审查的三项竞态修复见[总计划第 24 节](spec-plan.md#24-合并前竞态修复与完整验证2026-10-23)；回归覆盖、Rust 失败诊断及合并门槛见[验证记录](verification.md)末尾。前端通过不代表完整 Rust 或最新 Windows Release 已通过。
 
