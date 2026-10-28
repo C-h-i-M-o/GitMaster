@@ -96,7 +96,10 @@
 .feedback-copy h2 {
   font-size: 20px;
   font-weight: 550;
-  margin: 0 0 10px;
+  margin: 0;
+}
+.feedback-copy h2 + p {
+  margin-top: 10px;
 }
 .feedback-copy p {
   font-size: 12px;

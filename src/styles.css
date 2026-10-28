@@ -212,7 +212,7 @@ p[role="alert"] {
     radial-gradient(ellipse at 17% 88%, #f4eadc 0, transparent 46%), #f6f8f3;
 }
 .topbar {
-  height: 82px;
+  height: 60px;
   display: flex;
   align-items: center;
   gap: 28px;
@@ -222,7 +222,7 @@ p[role="alert"] {
 .brand {
   display: flex;
   align-items: center;
-  width: 186px;
+  width: 156px;
   flex: none;
 }
 .brand-logo {
@@ -315,7 +315,7 @@ p[role="alert"] {
   flex: 1;
   min-height: 0;
   gap: 18px;
-  padding: 18px 0 0;
+  padding: 8px 0 0;
 }
 .sidebar {
   width: 196px;
@@ -819,11 +819,6 @@ p[role="alert"] {
   font-size: 22px;
   font-weight: 500;
 }
-.graph-empty p {
-  color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 23px;
-}
 .graph-legend {
   position: absolute;
   bottom: 23px;
@@ -995,9 +990,6 @@ p[role="alert"] {
 .bottom-pane .operation-history {
   height: 100%;
 }
-.bottom-empty {
-  padding: 15px;
-}
 .bottom-resize {
   position: absolute;
   height: 7px;
@@ -1027,10 +1019,6 @@ p[role="alert"] {
 .history-filters select {
   width: auto;
   margin: 0;
-}
-.history-filters small {
-  color: var(--muted);
-  margin-left: auto;
 }
 .history-columns {
   display: grid;
@@ -1110,9 +1098,6 @@ p[role="alert"] {
   font-size: 11px;
 }
 @media (max-width: 860px) {
-  .history-filters small {
-    display: none;
-  }
   .history-columns {
     grid-template-columns: 44% 1fr;
   }
@@ -1599,7 +1584,7 @@ p[role="alert"] {
     gap: 15px;
   }
   .brand {
-    width: 166px;
+    width: 156px;
   }
   .sidebar {
     width: 176px;
@@ -1627,13 +1612,13 @@ p[role="alert"] {
   }
   .topbar {
     height: auto;
-    min-height: 66px;
+    min-height: 60px;
     gap: 12px;
     flex-wrap: wrap;
-    padding: 12px 0;
+    padding: 6px 0;
   }
   .brand {
-    width: 166px;
+    width: 144px;
     margin-right: auto;
   }
   .toolbar {
@@ -1651,7 +1636,7 @@ p[role="alert"] {
   }
   .workspace {
     gap: 9px;
-    padding-top: 10px;
+    padding-top: 8px;
   }
   .sidebar {
     width: 56px;
@@ -1737,7 +1722,8 @@ p[role="alert"] {
   gap: 10px;
   text-align: left;
   width: 100%;
-  padding: 9px 12px;
+  min-height: 44px;
+  padding: 6px 12px;
   border: 1px solid #fff;
   border-radius: 12px;
   background: #ffffff6b;
@@ -1868,7 +1854,7 @@ p[role="alert"] {
     justify-content: center;
   }
   .topbar .brand {
-    width: 176px;
+    width: 156px;
   }
   .project-switcher {
     flex-basis: 240px;
@@ -1879,7 +1865,7 @@ p[role="alert"] {
 }
 @media (max-width: 700px) {
   .topbar .brand {
-    width: 166px;
+    width: 144px;
   }
   .project-switcher {
     flex: 1;

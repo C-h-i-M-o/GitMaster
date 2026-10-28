@@ -28,9 +28,6 @@ export function useOperationFeedback(model: OperationFeedbackModel) {
   return {
     duration: `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`,
     long: !model.error && seconds >= 12,
-    longTip:
-      model.kind === "commit"
-        ? "Git 尚未返回结果，请勿重复提交。"
-        : "等待比平时稍久，仍在等待 Git 返回。无需重复打开项目。",
+    longTip: "耗时较长，仍在等待结果。",
   };
 }

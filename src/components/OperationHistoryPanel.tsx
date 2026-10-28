@@ -30,12 +30,12 @@ export function OperationHistoryPanel({
           value={state.filter}
           onChange={state.changeFilter}
           aria-label="筛选操作状态"
+          title="保留本次会话最近 200 条已结束任务"
         >
           <option value="all">全部</option>
           <option value="running">进行中</option>
           <option value="failed">失败或结果未知</option>
         </select>
-        <small>保留本次会话最近 200 条已结束任务</small>
       </div>
       <div className="history-columns">
         <div className="history-list" aria-label="任务列表">
@@ -77,19 +77,13 @@ export function OperationHistoryPanel({
                 {detail.finishedAt !== null &&
                   ` · 用时 ${Math.max(0, (detail.finishedAt - detail.startedAt) / 1000).toFixed(1)} 秒`}
               </p>
-              {detail.outcome === "succeeded" && (
-                <p
-                  className={
-                    detail.refreshError ? "error-text" : "success-text"
-                  }
-                >
-                  {detail.refreshError
-                    ? "操作已执行，状态核实失败。"
-                    : detail.needsMergeCommit
-                      ? "合并内容已准备，请检查并完成合并提交。"
-                      : "操作已完成并核实。"}
-                </p>
-              )}
+              {detail.outcome === "succeeded" &&
+                detail.needsMergeCommit &&
+                !detail.refreshError && (
+                  <p className="success-text">
+                    合并内容已准备，请检查并完成合并提交。
+                  </p>
+                )}
               {detail.outcome === "unknown" && (
                 <p role="alert">
                   结果未知，请核对状态，不要重复执行。
@@ -128,7 +122,7 @@ export function OperationHistoryPanel({
               </ol>
             </>
           ) : (
-            <p className="muted">选择操作查看过程与结果。</p>
+            <p className="muted">未选择操作</p>
           )}
         </div>
       </div>

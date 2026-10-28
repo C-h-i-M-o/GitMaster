@@ -8,7 +8,6 @@ import { describeGitError } from "../ui/gitPresentation";
 function CloneForm({ w }: { w: Workbench }) {
   return (
     <>
-      <p className="muted">下载一个仓库到新的本地目录。</p>
       <label>
         仓库地址
         <input
@@ -294,7 +293,7 @@ export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
             <p role="alert">{describeGitError(w.resourceError)}</p>
           )}
           {w.operations.activity === "preparing" && (
-            <p role="status">正在准备预览，请稍候…</p>
+            <p role="status">正在准备…</p>
           )}
         </div>
       </dialog>

@@ -121,12 +121,16 @@ export function OperationFeedback({
       <div className="feedback-copy">
         <div role={model.error ? "alert" : "status"}>
           <h2>{model.title}</h2>
-          <p>{model.description}</p>
+          {model.description && <p>{model.description}</p>}
         </div>
         <div className="feedback-meta">
           <i />
-          <span>{model.phase}</span>
-          <span>·</span>
+          {model.phase && (
+            <>
+              <span>{model.phase}</span>
+              <span>·</span>
+            </>
+          )}
           <time aria-live="off">{clock.duration}</time>
         </div>
         {clock.long && <p className="feedback-long">{clock.longTip}</p>}

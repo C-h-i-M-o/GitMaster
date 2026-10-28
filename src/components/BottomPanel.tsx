@@ -153,9 +153,6 @@ export function BottomPanel({ workbench: w }: { workbench: Workbench }) {
             )}
           </div>
         ))}
-        {!panel.tabs.length && (
-          <p className="muted bottom-empty">点击“+”打开新的标签。</p>
-        )}
       </div>
       <dialog
         ref={closing.dialogRef}

@@ -26,9 +26,9 @@ export default function App() {
               {repository?.rootPath.split(/[\\/]/).filter(Boolean).at(-1) ??
                 "尚未打开项目"}
             </strong>
-            <small title={repository?.rootPath}>
-              {repository?.rootPath ?? "让每个版本更清楚"}
-            </small>
+            {repository && (
+              <small title={repository.rootPath}>{repository.rootPath}</small>
+            )}
           </div>
           <nav className="workspace-nav">
             <button
@@ -124,7 +124,7 @@ export default function App() {
             />
             <span>
               {w.preview
-                ? "浏览器界面预览"
+                ? "浏览器预览，Git 功能不可用"
                 : w.git.environment?.status === "ready"
                   ? `Git ${w.git.environment.version}`
                   : "Git 尚未就绪"}
@@ -151,16 +151,14 @@ export default function App() {
       </div>
       <footer className="statusbar">
         <span>
-          {repository
-            ? repository.head.kind === "detached"
+          {repository &&
+            (repository.head.kind === "detached"
               ? "分离头指针"
-              : repository.head.name
-            : "就绪后打开一个仓库"}
+              : repository.head.name)}
         </span>
         <span>
-          {w.preview
-            ? "界面预览，不连接 Git"
-            : `${w.history.page?.commits.length ?? 0} 个提交 · ${w.branches?.branches.length ?? 0} 个分支 · 操作后核实`}
+          {repository &&
+            `${w.history.page?.commits.length ?? 0} 个提交 · ${w.branches?.branches.length ?? 0} 个分支`}
         </span>
       </footer>
       <WorkbenchDialogs workbench={w} />

@@ -24,7 +24,7 @@ export function ContentPreview({
       ) : value?.kind === "unsupported" ? (
         <p>暂不支持预览：{describeUnsupported(value.reason)}</p>
       ) : (
-        <p>选择文件查看内容。</p>
+        <p>未选择文件</p>
       )}
     </div>
   );

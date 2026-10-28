@@ -10,7 +10,7 @@ import { graphFeedback, commitFeedback } from "../ui/operationFeedback";
 /** 以真实提交和父关系绘制可导航画布，拖动仅改变展示坐标。 */
 export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
   const feedback =
-    (w.drawer !== "changes" ? commitFeedback(w) : null) ?? graphFeedback(w);
+    (w.drawer === null ? commitFeedback(w) : null) ?? graphFeedback(w);
   const graph = useCommitGraph(
     w.history.page,
     w.history.selectedOid,
@@ -87,20 +87,14 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
       {!w.repo.repository && !feedback && !w.repo.openingPath ? (
         <div className="graph-empty">
           <Icon name="branch" />
-          <h2>从一个项目开始</h2>
-          <p>
-            {w.preview
-              ? "浏览器仅展示界面。请在桌面应用中连接系统 Git。"
-              : "打开本地仓库，查看提交与分支之间的联系。"}
-          </p>
+          <h2>未打开项目</h2>
           <button className="primary" disabled={!w.canOpen} onClick={w.open}>
             打开本地仓库
           </button>
         </div>
       ) : !feedback && w.history.page?.commits.length === 0 ? (
         <div className="graph-empty">
-          <h2>等待第一份提交</h2>
-          <p>在本地修改中暂存文件，然后创建项目的第一个版本。</p>
+          <h2>暂无提交</h2>
           <button className="secondary" onClick={w.openDrawer("changes")}>
             查看本地修改
           </button>

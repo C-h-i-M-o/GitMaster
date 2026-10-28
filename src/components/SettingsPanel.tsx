@@ -4,6 +4,7 @@ import { useSettingsForm } from "../hooks/useSettingsForm";
 import { describeGitError } from "../ui/gitPresentation";
 import type { SettingsCategory } from "../types/settings";
 import { settingsFieldLocation } from "../ui/settingsField";
+import { shortcutLabel } from "../ui/shortcuts";
 
 const categories: { id: SettingsCategory; label: string }[] = [
   { id: "general", label: "Git 环境" },
@@ -67,9 +68,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   安装官网
                 </button>
               </div>
-              <p className="muted small">
-                候选路径保存前会先验证。更换 Git 后需要重新打开项目。
-              </p>
+              <p className="muted small">更换后需重新打开项目</p>
               {w.git.environment?.status === "ready" && (
                 <div className="git-ready">
                   <strong>Git {w.git.environment.version}</strong>
@@ -114,7 +113,6 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                 />
                 显示提交说明（分支头始终显示）
               </label>
-              <p className="muted small">遵循系统“减少动态效果”设置。</p>
             </section>
           )}
           {w.settingsCategory === "logging" && (
@@ -369,7 +367,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                 />
               </label>
               <p className="muted small">
-                每项参数独立传入，无需为包含空格的参数加引号。程序、参数和目录仅对新会话生效，保存不会启动或重启终端。
+                每项参数单独填写，无需额外引号；程序、参数和目录仅对新会话生效。
               </p>
             </section>
           )}
@@ -425,7 +423,9 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                 </select>
               </label>
               <p className="muted small">
-                手动保存使用 ⌘S / Ctrl+S；自动保存会在停止输入后写入文件。
+                {d.editor.saveMode === "manual"
+                  ? `${shortcutLabel("S")} 保存`
+                  : "停止输入后自动保存"}
               </p>
             </section>
           )}
@@ -443,9 +443,7 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   <option value="terminal">系统终端</option>
                 </select>
               </label>
-              <p className="muted small">
-                打开目标为当前项目文件夹，不改变系统文件关联。使用时检查软件是否可用。
-              </p>
+              <p className="muted small">打开当前项目文件夹</p>
             </section>
           )}
         </fieldset>

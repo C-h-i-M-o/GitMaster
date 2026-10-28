@@ -16,7 +16,7 @@ function Changes({ w }: { w: Workbench }) {
       <div className="changes-content">
         <div className="drawer-scroll changes-list-region">
           <div className="section-heading">
-            <h3>选择这次要保存的修改</h3>
+            <h3>变更文件</h3>
             <span>{w.repo.repository?.changes.length ?? 0} 个文件</span>
           </div>
           <VirtualChanges
@@ -35,7 +35,6 @@ function Changes({ w }: { w: Workbench }) {
               {w.groups.conflicted.length} 个文件存在冲突，打开冲突处理
             </button>
           )}
-          {w.repo.error && <p role="alert">{describeGitError(w.repo.error)}</p>}
         </div>
         <div className="drawer-bottom">
           {feedback && (
@@ -163,7 +162,7 @@ function CommitDetails({ w }: { w: Workbench }) {
           />
         </>
       ) : (
-        <p>在提交图中选择一个节点。</p>
+        <p>未选择提交</p>
       )}
       {w.history.error && (
         <p role="alert">{describeGitError(w.history.error)}</p>
@@ -316,9 +315,6 @@ function Conflicts({ w }: { w: Workbench }) {
             placeholder="说明这次合并的目的"
           />
         </label>
-        <p className="muted small">
-          后端会核对全部冲突已解决，并保留两个合并父提交。
-        </p>
         <button
           className="primary"
           disabled={!w.canWrite("finishMerge") || !w.fields.mergeMessage.trim()}

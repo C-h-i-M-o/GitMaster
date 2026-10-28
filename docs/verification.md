@@ -1827,3 +1827,56 @@ Git 测试写入仅限上述临时仓库。验收前备份应用配置，结束�
 本机日志保存在忽略目录 `target/branding-check/`：`frontend-tests-final.log`、`frontend-build-final.log`、`core-tests-final.log`、`desktop-check-final.log`、`release-build.log`；失败回归证据为 `selection-red.log`。配置备份、测试配置、临时仓库与构建产物不提交仓库。
 
 Windows 基线功能通过来自用户对最新 main 的确认；本轮资源替换和选择修复未重复 Windows 实机测试。macOS 后续原生测试按本轮指示暂时跳过；真实远端认证、干净系统安装、签名、公证及发布均未验证或执行。本次交付为源码和品牌资源合并推送，不是发布验收。
+
+## 2026-10-28：拉取最新提交并启动 Windows 开发版
+
+- 按用户要求获取 origin，并将 main 从 de352b0 快进至 79234e4；HEAD 与 origin/main 一致，没有提交或推送。
+- 原有两份文档的课程周报追加内容完整保留，另以 stash dbef7e4b621e62b935c1f0a5fc3c3e5eb0c2627f 保留拉取前备份。
+- 使用现有 Node.js v24.18.0、pnpm 11.15.1、Cargo 1.98.1 执行 pnpm tauri dev；Debug 构建用时 3 分 49 秒，启动 target/debug/gitmaster-desktop.exe。
+- Vite 开发地址 http://127.0.0.1:1420/ 返回 HTTP 200；桌面进程窗口标题为 GitMaster，Responding 为 True。开发服务和桌面程序保持运行。
+- 构建存在未使用代码及链接器信息警告，无编译错误。本次仅核实开发版启动，未执行完整功能回归、Release、macOS、安装包或签名验收。
+
+## 2026-10-28：工作台提示文案精简
+
+用户批准 spec-plan 第 26 节并授权开发。删除截图四处文字，精简空态、加载、设置和操作记录说明；保留未保存保护、提交范围、远端目标、具体错误及恢复入口。改动限于前端展示、相关测试及文档，没有 Rust、Git 写入行为或持久化结构变更，没有提交或推送。
+
+### 验证结果
+
+- 回归先失败后通过：新增 8 项用例先暴露正常加载重复解释、缺少通知承接选择器以及按中文合并独立错误的问题；修改后专项 15/15 通过。日志：target/copy-check/focused-tests.log。
+- 已跟踪前端测试：通过 git ls-files 枚举 tests 下的 test.ts/test.mjs 后使用 Node 内置测试运行器执行，106/106 通过，无失败或跳过。日志：target/copy-check/frontend-tests.log。此数量与专项存在重叠，不累加为独立用例总数。
+- pnpm typecheck、pnpm build 通过；Vite 原有大分块警告保留。git diff --check 通过。
+- pnpm format:check 已执行，仅提示 docs/spec-plan.md 格式不符。单独用 Prettier 核对第 26 节之前的既有内容得到 false，本轮第 26 节格式检查为 true；保留原有文档而未全篇格式化。本轮修改的源码、测试及新增界面规范按现有格式校验。
+- 复用已安装 Playwright、Edge 及既有 loading-harness/IPC 夹具，运行真实 App 组件：无项目、打开中、12 秒长等待、打开失败与重试、首次历史、分页、提交准备/执行/结果未知、抽屉切换后的查询入口、提交完成、手动保存说明、终端和外部打开设置、刷新旧图、空历史以及浏览器预览均通过。任务执行计数为 1，未知结果恢复没有再次提交，无 pageerror。
+- 1400×928 与 860×620 浏览器视口已检查并查看截图；紧凑加载图文无重叠，无横向溢出，减少动效下动画为 none，键盘焦点可达。截图：target/copy-check/opening.png、narrow.png、preview.png；结果：target/copy-check/ui-check.log。loading-harness 截图底部为本地夹具控制条，不属于产品界面。
+- 测试脚本初次运行的两次失败属于夹具：时钟需在应用创建计时器之前安装；“本地修改”按钮的可访问名称包含文件数量，定位器改为匹配前缀。修正夹具后全部页面断言通过，没有为这些失败调整生产逻辑。
+
+### 原生限制与改动保护
+
+Windows 桌面自动化通过 @oai/sky 读取窗口两次超时，备用 cua.getApp 也超时，未取得本轮原生交互证据。因此计划中的 Windows Tauri 全页面及真实临时仓库交互复验保留未完成；浏览器测试不等同于原生、Release、macOS、安装包或签名验收。本轮没有在用户仓库或临时仓库执行 Git 写入测试，也没有改动用户应用配置。
+
+现有开发服务 1420 保持运行；一次重复启动因端口占用退出后直接复用原服务。没有终止已有桌面应用。已有课程周报、本轮前一次启动记录及 stash 备份保留。新增 UI 脚本与加载专项仍为本地忽略文件，已跟踪的 workspaceNotices.test.ts 仅扩展本次回归。主 Agent 已对照计划独立自查，未进行子代理评审；没有发现本轮引入的阻断问题。无项目空态分支小图标缺少居中类是原有布局问题，本轮保留，不扩大修改范围。
+
+## 2026-10-28：顶部工具栏紧凑布局
+
+本轮根据用户截图压缩顶部，只修改 src/styles.css 和相关文档，保留前一轮未提交的文案改动。
+
+- 使用既有真实 App/IPC 夹具与已安装 Edge/Playwright，分别在改动前后测量。1400×928 主内容区由 745px 增至 777px；1120×740 由 557px 增至 589px；860×620 由 437px 增至 469px，均增加 32px。640×740 的双行工具栏内容区由约 516.67px 增至 538px。
+- 桌面顶部高度由 82px 降至 60px，内容起点由 y=100 降至 y=68。项目入口高度至少 44px；品牌、项目入口、工具按钮没有重叠，页面无横向溢出。已检查超长项目名/路径的省略、项目菜单展开、设置打开关闭、键盘焦点及悬停提示。
+- 已查看 1400 和 860 宽度截图，保留现有颜色、品牌比例及按钮顺序；未修改提交图内部布局、侧栏、Git 行为或接口。
+- pnpm build（含类型检查）通过；原有 Vite 大分块警告保留。目标源码/文档格式和 git diff --check 通过，全项目 spec-plan 既有格式问题仍按前一轮记录保留。
+- 尺寸数据与截图：target/header-layout/before.json、after.json、before-_.png、after-_.png；构建日志：target/header-layout/build.log。脚本位于同一忽略目录，不新增项目依赖或长期测试。
+- 本次证据为浏览器布局与交互检查；Windows 原生自动化此前超时，本轮未声称原生、Release 或 macOS 验收通过。没有提交或推送。
+
+## 2026-10-28：提交前代码审查与检验
+
+用户授权审查、检验，通过后提交并推送。本轮逐项检查第 26、27 节的源码差异、错误承接、恢复查询、操作记录及响应式布局，主 Agent 完成审查。
+
+- 修正一处通知可用性问题：窄窗口的文件差异层会遮挡本地修改面板并使其 inert，通知选择器现在复用 changeDetailFocus.covered，确保顶部仍提供查询入口；宽屏并排时继续使用局部反馈。新增回归先失败后通过，证据为 target/copy-check/review-covered-red.log 和 review-focused.log。
+- 已跟踪前端测试 107/107 通过，无失败或跳过；加载与通知专项 16/16 通过，两者部分重叠。日志为 target/copy-check/review-tests-final.log 和 review-focused.log。
+- pnpm build（含两项 TypeScript 检查）通过，保留现有 Vite 大分块警告；pnpm format:check 和 git diff --check 通过。本轮重新核对 HEAD 与工作区的 spec-plan 均符合现有 Prettier 配置，此前的格式限制不作为当前检查结论。
+- 浏览器复验通过：打开/失败重试、长等待、历史分页、提交结果未知、差异层宽窄切换、顶部查询、其他抽屉承接、设置、空仓库、减少动效及键盘焦点。提交 executeCount 为 1，无重复写入、无 pageerror；日志为 target/copy-check/review-ui-final.log。
+- 布局复验 1400×928、1120×740、860×620、640×740 全部通过，无控件重叠或横向溢出，桌面内容区仍增加 32px。尺寸与截图位于 target/header-layout/after.json 和对应 after 图片。
+- 首次浏览器运行因原 1420 开发服务已停止而连接失败，重新启动后复验。新增交互用例最初在任务忙碌时才选择差异，应用按既有规则延后读取；测试改为任务开始前打开差异，并补齐内存 IPC 响应后通过，未为夹具修改业务读取规则。
+- 无 Rust 或 IPC 变更，本轮未重复 Rust 套件；Windows 原生交互、macOS、Release、安装包与签名未复验。本轮通过结论仅覆盖上述源码审查及前端验证。
+
+提交范围为界面文案、反馈展示、顶部布局、已跟踪通知回归和相关文档。原有课程周报两段追加内容保留在工作区，不加入本次提交；忽略目录下的浏览器夹具、日志、截图与既有 stash 继续本地保留。

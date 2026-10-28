@@ -7,8 +7,8 @@ export interface OperationFeedbackModel {
   kind: "open" | "history" | "commit";
   compact: boolean;
   title: string;
-  description: string;
-  phase: string;
+  description?: string;
+  phase?: string;
   error: boolean;
   action?: () => void | Promise<void>;
   actionLabel?: string;
@@ -26,10 +26,7 @@ export function openingFeedback(
       kind: "open",
       compact: Boolean(repo.repository),
       title: repo.error ? "暂时无法打开项目" : "正在打开项目",
-      description: repo.error
-        ? describeGitError(repo.error)
-        : "读取仓库信息，准备你的工作区。",
-      phase: repo.error ? "读取未完成" : "读取仓库信息",
+      description: repo.error ? describeGitError(repo.error) : undefined,
       error: Boolean(repo.error),
       action: repo.error && w.canOpen ? w.openRecent(path) : undefined,
       actionLabel: "重试读取",
@@ -60,16 +57,7 @@ export function graphFeedback(
         : history.page
           ? "正在更新提交历史"
           : "正在读取提交历史",
-    description: error
-      ? describeGitError(error)
-      : history.page
-        ? "保留当前视图，读取最新的提交与分支。"
-        : "读取提交与分支，准备历史视图。",
-    phase: error
-      ? "读取未完成"
-      : repo.loading
-        ? "读取仓库状态"
-        : "读取提交历史",
+    description: error ? describeGitError(error) : undefined,
     action: error ? history.refresh : undefined,
     actionLabel: "重试读取",
   };
@@ -99,16 +87,15 @@ export function commitFeedback(
         : op.activity === "querying"
           ? "正在核对本地状态"
           : "正在创建提交",
-    description: error
-      ? "先查询任务结果，请勿重复提交。"
-      : "正在保存本次版本，请勿重复提交。",
-    phase: error
-      ? "需要核对"
-      : op.activity === "preparing"
-        ? "检查提交范围"
-        : op.record && !op.record.result
-          ? describeOperationPhase(op.record.progress.phase)
-          : "等待 Git 执行结果",
+    description: error ? "先查询任务结果，请勿重复提交。" : undefined,
+    phase:
+      error || op.activity === "querying"
+        ? undefined
+        : op.activity === "preparing"
+          ? "检查提交范围"
+          : op.record && !op.record.result
+            ? describeOperationPhase(op.record.progress.phase)
+            : "等待 Git 执行结果",
     action: error ? op.resume : undefined,
     actionLabel: "核对本地状态",
   };

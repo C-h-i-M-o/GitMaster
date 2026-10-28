@@ -1,5 +1,7 @@
 import type { OperationError } from "../types/git.ts";
+import type { Workbench } from "../hooks/useWorkbench";
 import { describeGitError } from "./gitPresentation.ts";
+import { openingFeedback, commitFeedback } from "./operationFeedback.ts";
 
 export interface WorkspaceNotice {
   id: string;
@@ -28,23 +30,54 @@ export interface WorkspaceNoticeInput {
   stale: boolean;
   activity: string;
 }
-/** 错误优先且按中文原因去重；成功摘要不会覆盖失败或未核实状态。 */
+/** 仅排除已被当前可见局部反馈完整承接的提示，具体任务错误仍保留。 */
+export function workbenchNoticeInput(w: Workbench): WorkspaceNoticeInput {
+  const localFileOperation =
+    w.operations.operationScope?.kind === "saveFile" ||
+    w.operations.operationScope?.kind === "saveConflict";
+  const foreignOperation =
+    w.operations.operationScope?.repositoryId != null &&
+    w.operations.operationScope.repositoryId !==
+      w.repo.repository?.repositoryId;
+  const opening = openingFeedback(w);
+  const visibleCommit =
+    !opening &&
+    (w.drawer === null ||
+      (w.drawer === "changes" && !w.changeDetailFocus.covered)) &&
+    commitFeedback(w) !== null;
+  return {
+    sync: w.syncRemote,
+    refresh: w.manualRefresh,
+    errors: [
+      w.actionError,
+      w.drawer === "files" ? null : w.resourceError,
+      w.repo.error,
+      localFileOperation || foreignOperation ? null : w.operations.error,
+    ].filter((error) => !opening?.error || error !== w.repo.error),
+    stale: w.repo.stale,
+    activity:
+      localFileOperation || foreignOperation || visibleCommit
+        ? "idle"
+        : w.operations.activity,
+  };
+}
+
+/** 同一个错误对象只呈现一次，不按中文文案合并不同来源的失败。 */
 export function workspaceNotices(
   input: WorkspaceNoticeInput,
 ): WorkspaceNotice[] {
   const result: WorkspaceNotice[] = [];
-  const messages = new Set<string>();
+  const seen = new Set<OperationError>();
   for (const error of [
     ...input.errors,
     input.sync.error,
     input.refresh.error,
   ]) {
-    if (!error) continue;
+    if (!error || seen.has(error)) continue;
+    seen.add(error);
     const message = describeGitError(error);
-    if (messages.has(message)) continue;
-    messages.add(message);
     result.push({
-      id: `error:${error.code}:${message}`,
+      id: `error:${seen.size}:${error.code}:${message}`,
       tone: "error",
       message,
     });
