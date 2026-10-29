@@ -1,5 +1,9 @@
 //! 写入只接受当前已交付的确认计划；后台任务由核心独立持有。
-use super::{blocking, readonly::Context, DesktopState, Session};
+use super::{
+    blocking,
+    readonly::{Context, HistoryCache},
+    DesktopState, Session,
+};
 use gitmaster_core::git::{self, coordinator::RepositoryCoordinator, *};
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -64,6 +68,9 @@ impl Preparation {
 
 /// 写请求保存后端当前签发的资源映射，前端不能自行提供路径或引用。
 enum Input {
+    RevertStart(String, Arc<Mutex<HistoryCache>>),
+    RevertConflict(RevertConflictWriteRequest, Arc<git::revert::RevertSession>),
+    Restore(Vec<String>, Arc<git::restore::RestoreSession>),
     File(String, String, String, Arc<git::files::ProjectFilesSession>),
     Local(LocalWriteRequest, Option<Arc<git::branches::BranchSession>>),
     Remote(RemoteWriteRequest, Arc<git::remote::RemoteSession>),
@@ -118,12 +125,26 @@ impl WritePreparation {
         } else {
             None
         };
+        let input = if let LocalWriteRequest::RevertCommit { commit_oid } = request {
+            let cache = s
+                .history
+                .clone()
+                .ok_or_else(|| OperationError::new("STALE_GRAPH"))?;
+            Input::RevertStart(commit_oid, cache)
+        } else if let LocalWriteRequest::RestoreFiles { source, file_ids } = request {
+            let cache = s
+                .restore_source
+                .clone()
+                .ok_or_else(|| OperationError::new("STALE_REQUEST"))?;
+            if cache.page(None)?.source != source {
+                return Err(OperationError::new("STALE_REQUEST"));
+            }
+            Input::Restore(file_ids, cache)
+        } else {
+            Input::Local(request, branches)
+        };
         let ticket = Preparation::begin(&mut s)?;
-        Ok(Self {
-            ticket,
-            ctx,
-            input: Input::Local(request, branches),
-        })
+        Ok(Self { ticket, ctx, input })
     }
     /// 远端操作必须使用当前远端列表签发的 ID。
     fn remote(
@@ -167,10 +188,44 @@ impl WritePreparation {
             input: Input::Conflict(request, cache),
         })
     }
+    /// 撤销保存和完成只接受独立撤销会话签发的 ID。
+    fn revert_conflict(
+        shared: &DesktopState,
+        repository_id: &str,
+        revert_session_id: &str,
+        request: RevertConflictWriteRequest,
+    ) -> Result<Self, OperationError> {
+        let mut s = shared.lock()?;
+        let ctx = Context::capture(&s, repository_id)?;
+        let cache = s
+            .revert
+            .clone()
+            .filter(|cache| cache.state().revert_session_id == revert_session_id)
+            .ok_or_else(|| OperationError::new("STALE_CONFLICT"))?;
+        let ticket = Preparation::begin(&mut s)?;
+        Ok(Self {
+            ticket,
+            ctx,
+            input: Input::RevertConflict(request, cache),
+        })
+    }
+
     /// 在准备前后检查捕获的映射仍是当前资源。
     fn check(&self, s: &Session) -> Result<(), OperationError> {
         self.ticket.check(s)?;
         let valid = match &self.input {
+            Input::RevertStart(_, cache) => s
+                .history
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, cache)),
+            Input::RevertConflict(_, cache) => s
+                .revert
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, cache)),
+            Input::Restore(_, cache) => s
+                .restore_source
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, cache)),
             Input::File(_, _, _, cache) => s
                 .project_files
                 .as_ref()
@@ -203,10 +258,37 @@ impl WritePreparation {
         let r = &self.ctx.repository;
         let s = &self.ctx.state;
         let preview = match &self.input {
+            Input::RevertStart(oid, cache) => {
+                let authorized = cache
+                    .lock()
+                    .map_err(|_| OperationError::new("GIT_EXECUTION_FAILED"))?
+                    .authorizes_commit(oid);
+                if !authorized {
+                    return Err(OperationError::new("STALE_GRAPH"));
+                }
+                git::revert::prepare_revert(c, g, r, s, oid)
+            }
+            Input::RevertConflict(request, cache) => match request {
+                RevertConflictWriteRequest::SaveRevertConflict {
+                    conflict_id,
+                    fingerprint,
+                    content,
+                } => cache.prepare_save(c, conflict_id, fingerprint, content),
+                RevertConflictWriteRequest::FinishRevert { message } => {
+                    cache.prepare_finish(c, message)
+                }
+            },
+            Input::Restore(ids, cache) => cache.prepare(c, s, ids),
             Input::File(id, version, content, cache) => {
                 cache.prepare_save_with_state(c, s, id, version, content)
             }
             Input::Local(request, branches) => match request {
+                LocalWriteRequest::RevertCommit { .. } => Err(OperationError::new("STALE_GRAPH")),
+                LocalWriteRequest::AbortRevert {} => git::revert::prepare_abort(c, g, r, s),
+                LocalWriteRequest::CleanUntracked { change_ids } => {
+                    git::clean::prepare(c, g, r, s, change_ids)
+                }
+                LocalWriteRequest::RestoreFiles { .. } => Err(OperationError::new("STALE_REQUEST")),
                 LocalWriteRequest::Stage { change_ids } => {
                     git::write::prepare_index_change(c, g, r, s, change_ids, true)
                 }
@@ -431,6 +513,23 @@ pub async fn prepare_conflict_write(
     let shared = state.inner().clone();
     let prepare = WritePreparation::conflict(&shared, &repository_id, &merge_session_id, request)?;
     blocking("prepare_conflict_write", move || prepare.run(&shared)).await
+}
+
+/// 撤销文本保存和最终提交使用独立请求类型与会话身份。
+#[tauri::command]
+pub async fn prepare_revert_conflict_write(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    revert_session_id: String,
+    request: RevertConflictWriteRequest,
+) -> Result<WritePreview, OperationError> {
+    let shared = state.inner().clone();
+    let prepare =
+        WritePreparation::revert_conflict(&shared, &repository_id, &revert_session_id, request)?;
+    blocking("prepare_revert_conflict_write", move || {
+        prepare.run(&shared)
+    })
+    .await
 }
 /// 启动确认的仓库任务，函数返回后核心继续执行。
 #[tauri::command]

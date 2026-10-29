@@ -4,6 +4,26 @@ export type ChangeGroups = Record<DiffSide, FileChange[]>;
 
 export type ChangeSelection = Record<"stage" | "unstage", string[]>;
 
+export interface SnapshotChangeSelection {
+  repositoryId: string | undefined;
+  snapshotId: string | undefined;
+  selection: ChangeSelection;
+}
+
+/** changeId 仅在一个仓库快照内有效；刷新后不能把旧序号当作新文件的授权。 */
+export function changeSelectionForSnapshot(
+  stored: SnapshotChangeSelection,
+  repositoryId: string | undefined,
+  snapshotId: string | undefined,
+): ChangeSelection {
+  return repositoryId !== undefined &&
+    snapshotId !== undefined &&
+    stored.repositoryId === repositoryId &&
+    stored.snapshotId === snapshotId
+    ? stored.selection
+    : { stage: [], unstage: [] };
+}
+
 /** 仓库快照更新时保留仍属于相同操作方向的可操作项。 */
 export function reconcileChangeSelection(
   groups: ChangeGroups,

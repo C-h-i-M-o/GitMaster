@@ -7,6 +7,7 @@ description = "gitMaster 独立业务核心，不依赖桌面框架"
 
 [dependencies]
 serde.workspace = true
+serde_json = "1"
 cap-std = "=4.0.2"
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"

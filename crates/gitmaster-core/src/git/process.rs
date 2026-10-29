@@ -318,6 +318,32 @@ pub(crate) fn run_local_git(
     }
 }
 
+/// 历史差异只读取已初始化的私有 bare 目录与固定提交属性，不访问真实工作区或索引。
+pub(crate) fn run_history_diff(
+    git: &GitExecutable,
+    directory: &Path,
+    objects: &Path,
+    oid: &str,
+    args: &[OsString],
+    limit: usize,
+    allow_truncate: bool,
+) -> Result<ProcessOutput, OperationError> {
+    let mut cmd = command(git, directory);
+    cmd.env("GIT_CONFIG_GLOBAL", null_device())
+        .env("GIT_CONFIG_SYSTEM", null_device())
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_OBJECT_DIRECTORY", dunce::simplified(objects))
+        .args([
+            "-c",
+            "core.attributesFile=",
+            "-c",
+            &format!("attr.tree={oid}"),
+        ])
+        .args(args);
+    run_command_with_deadline(cmd, &[], limit, allow_truncate, TIMEOUT, false)
+}
+
 /// 私有转换仓库不继承用户配置或属性，仅使用捕获的内建设置与对象存储。
 pub(crate) fn run_isolated_git(
     git: &GitExecutable,

@@ -46,6 +46,7 @@ pub(crate) fn capture(
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",
         "REVERT_HEAD",
+        "gitmaster-revert.json",
         "BISECT_HEAD",
     ] {
         add(
@@ -240,7 +241,7 @@ fn open_directory(path: &Path) -> Result<Dir, OperationError> {
 }
 
 /// 操作标记目录每次重新打开，不缓存其存在性或实体身份。
-fn directory_identity(path: &Path) -> Result<String, OperationError> {
+pub(crate) fn directory_identity(path: &Path) -> Result<String, OperationError> {
     identity_from_directory(&open_directory(path)?)
 }
 

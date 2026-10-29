@@ -45,6 +45,11 @@ export function describeGitError(error: OperationError): string {
     WORKTREE_DIRTY: "工作区有未保存修改。",
     INDEX_LOCKED: "索引正被其他 Git 进程锁定，请等待该进程结束后重试。",
     HEAD_REQUIRED: "当前仓库还没有提交，请先创建第一个版本。",
+    UNSUPPORTED_RECOVERY_TARGET:
+      "该来源包含不支持恢复的对象或特殊文件，请选择普通文件来源。",
+    UNSUPPORTED_REVERT:
+      "请选择当前分支历史中的普通提交；首版不支持撤销根提交或合并提交。",
+    UNTRACKED_COLLISION: "目标路径存在未跟踪文件，请先保留或移走该文件。",
     SYNC_UPSTREAM_REQUIRED:
       "当前分支的上游尚未配置或无法唯一识别，请先设置同步目标。",
     SYNC_TARGET_MISSING: "远端目标分支已不存在，请重新选择同步目标。",

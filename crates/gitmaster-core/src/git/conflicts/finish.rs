@@ -1,9 +1,10 @@
-//! 固定完整索引与双亲，显式提交后只清理确认过的合并元数据。
+//! 固定完整索引与父节点，显式提交后只清理确认过的操作元数据。
 use super::*;
 use crate::git::{
     coordinator::{CoordinationKey, OperationReporter, RepositoryCoordinator},
     merge::validate_merge_config,
     process::{inspect_local_config, run_local_git},
+    revert::anchor::{AnchorRecord, FILE as REVERT_ANCHOR},
     write::{
         create_commit_object, operation_result, parse_oid, validate_message, IndexTransaction,
     },
@@ -20,8 +21,29 @@ const MERGE_FILES: [&str; 5] = [
     "MERGE_HEAD",
 ];
 
+// 起点记录最后移除；清理中断后保留的原 HEAD 会阻止重复提交。
+const REVERT_FILES: [&str; 5] = [
+    "MERGE_MSG",
+    "MERGE_RR",
+    "AUTO_MERGE",
+    "REVERT_HEAD",
+    REVERT_ANCHOR,
+];
+
+/// 两种操作各自清理固定元数据，不接收前端文件名。
+fn metadata_names(kind: ConflictKind) -> &'static [&'static str] {
+    match kind {
+        ConflictKind::Merge => &MERGE_FILES,
+        ConflictKind::Revert => &REVERT_FILES,
+    }
+}
+
 /// 捕获元数据的内容和文件身份，缺失的可选文件也属于确认前提。
-struct MergeFiles(BTreeMap<String, Option<FileBytes>>);
+pub(crate) struct OperationFiles {
+    kind: ConflictKind,
+    files: BTreeMap<String, Option<FileBytes>>,
+    allow_missing_marker: bool,
+}
 
 /// 最终提交计划不持有工作文件草稿，仅保存用户确认的完整索引与父提交。
 struct FinishPlan {
@@ -32,11 +54,37 @@ struct FinishPlan {
     parents: Vec<String>,
     identity: CommitIdentity,
     message: String,
-    metadata: MergeFiles,
+    metadata: OperationFiles,
+    kind: ConflictKind,
+    anchor: Option<AnchorRecord>,
 }
 
 /// 完整索引、双亲、身份和说明都在执行前展示，准备不产生用户仓库对象。
 pub fn prepare_finish(
+    coordinator: &RepositoryCoordinator,
+    session: &ConflictSession,
+    message: &str,
+) -> Result<WritePreview, OperationError> {
+    if session.kind != ConflictKind::Merge {
+        return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
+    }
+    prepare_finish_kind(coordinator, session, message)
+}
+
+/// 撤销采用独立入口，只接收撤销会话，最终提交必须固定原 HEAD 为唯一父节点。
+pub(crate) fn prepare_revert_finish(
+    coordinator: &RepositoryCoordinator,
+    session: &ConflictSession,
+    message: &str,
+) -> Result<WritePreview, OperationError> {
+    if session.kind != ConflictKind::Revert {
+        return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
+    }
+    prepare_finish_kind(coordinator, session, message)
+}
+
+/// 共用确认和执行机制，父节点与元数据校验由真实会话种类决定。
+fn prepare_finish_kind(
     coordinator: &RepositoryCoordinator,
     session: &ConflictSession,
     message: &str,
@@ -50,18 +98,28 @@ pub fn prepare_finish(
     let parents = plan.parents.clone();
     let author = plan.identity.author_display();
     let branch = branch(&plan.fingerprint.head)?.to_owned();
+    let (kind, warning) = match session.kind {
+        ConflictKind::Merge => (
+            OperationKind::FinishMerge,
+            "本次保存整个暂存区，并生成包含两个父提交的合并提交；未暂存内容保持不变。",
+        ),
+        ConflictKind::Revert => (
+            OperationKind::FinishRevert,
+            "本次保存整个暂存区，生成以撤销前 HEAD 为唯一父节点的新提交；未暂存内容保持不变。",
+        ),
+    };
     let prepared = coordinator.prepare(
         generation,
         Some(session.repo.id.clone()),
         key,
-        OperationKind::FinishMerge,
+        kind.clone(),
         move |reporter| plan.execute_with(reporter, || Ok(())),
     )?;
     Ok(WritePreview {
         plan_id: prepared.plan_id,
         repository_id: session.repo.id.clone(),
         snapshot_id: state.snapshot_id,
-        kind: OperationKind::FinishMerge,
+        kind,
         head: state.head,
         parent_oids: parents.clone(),
         paths,
@@ -71,9 +129,7 @@ pub fn prepare_finish(
             name: branch,
             oid: Some(parents[0].clone()),
         }),
-        warnings: vec![
-            "本次保存整个暂存区，并生成包含两个父提交的合并提交；未暂存内容保持不变。".into(),
-        ],
+        warnings: vec![warning.into()],
         expires_at: prepared.expires_at,
     })
 }
@@ -84,7 +140,13 @@ fn capture(
     message: &str,
     deadline: Instant,
 ) -> Result<(FinishPlan, RepositoryState, Vec<String>), OperationError> {
-    validate_snapshot(&session.git, &session.repo, &session.snapshot.id, deadline)?;
+    validate_snapshot_for(
+        &session.git,
+        &session.repo,
+        &session.snapshot.id,
+        session.kind,
+        deadline,
+    )?;
     if session
         .snapshot
         .entries
@@ -96,21 +158,41 @@ fn capture(
     if session.snapshot.merge_heads.len() != 1 {
         return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
     }
-    let metadata = MergeFiles::capture(&session.repo, deadline)?;
+    let metadata = OperationFiles::capture(&session.repo, session.kind, deadline)?;
     validate_finish_environment(
         &session.git,
         &session.repo,
         &session.snapshot.head,
         &session.snapshot.merge_heads[0],
+        session.kind,
         deadline,
     )?;
-    let fingerprint = guard::merge_fingerprint(&session.git, &session.repo, false, deadline)?;
+    let fingerprint = session
+        .kind
+        .fingerprint(&session.git, &session.repo, false, deadline)?;
+    let anchor = if session.kind == ConflictKind::Revert {
+        let record = AnchorRecord::read(&session.repo, deadline)?;
+        record.validate_state(&fingerprint.head, &session.snapshot.merge_heads[0])?;
+        Some(record)
+    } else {
+        None
+    };
     let paths = guard::commit_paths(&session.git, &session.repo, &fingerprint, deadline)?;
     let identity = guard::identity(&session.git, &session.repo, deadline)?;
     let state = read_repository_state_until(&session.git, &session.repo, deadline)?;
-    validate_snapshot(&session.git, &session.repo, &session.snapshot.id, deadline)?;
+    validate_snapshot_for(
+        &session.git,
+        &session.repo,
+        &session.snapshot.id,
+        session.kind,
+        deadline,
+    )?;
     metadata.validate(&session.repo, deadline)?;
-    if guard::merge_fingerprint(&session.git, &session.repo, false, deadline)? != fingerprint {
+    if session
+        .kind
+        .fingerprint(&session.git, &session.repo, false, deadline)?
+        != fingerprint
+    {
         return Err(OperationError::new("STALE_WRITE_PLAN"));
     }
     Ok((
@@ -119,13 +201,18 @@ fn capture(
             repo: session.repo.clone(),
             session: session.snapshot.id.clone(),
             fingerprint,
-            parents: vec![
-                session.snapshot.head.clone(),
-                session.snapshot.merge_heads[0].clone(),
-            ],
+            parents: match session.kind {
+                ConflictKind::Merge => vec![
+                    session.snapshot.head.clone(),
+                    session.snapshot.merge_heads[0].clone(),
+                ],
+                ConflictKind::Revert => vec![session.snapshot.head.clone()],
+            },
             identity,
             message: message.into(),
             metadata,
+            kind: session.kind,
+            anchor,
         },
         state,
         paths,
@@ -175,7 +262,10 @@ impl FinishPlan {
                 "update-ref",
                 "--no-deref",
                 "-m",
-                "gitMaster: 完成合并",
+                match self.kind {
+                    ConflictKind::Merge => "gitMaster: 完成合并",
+                    ConflictKind::Revert => "gitMaster: 完成撤销",
+                },
                 &reference,
                 &oid,
                 &self.parents[0],
@@ -215,16 +305,22 @@ impl FinishPlan {
                 None,
                 deadline,
             )?;
-            let header = format!(
-                "tree {tree}\nparent {}\nparent {}\n",
-                self.parents[0], self.parents[1]
-            );
+            let parents = self
+                .parents
+                .iter()
+                .map(|oid| format!("parent {oid}\n"))
+                .collect::<String>();
+            let header = format!("tree {tree}\n{parents}author ");
             if !object.starts_with(header.as_bytes()) {
                 return Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"));
             }
             self.validate_after_reference(&oid, &transaction, deadline)?;
             self.metadata.remove(&self.repo, deadline)?;
-            for name in MERGE_FILES.into_iter().chain(["MERGE_AUTOSTASH"]) {
+            for name in metadata_names(self.kind)
+                .iter()
+                .copied()
+                .chain(["MERGE_AUTOSTASH"])
+            {
                 if optional_file(&self.repo, name, deadline)?.is_some() {
                     return Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"));
                 }
@@ -251,16 +347,26 @@ impl FinishPlan {
 
     /// 引用发布前每次都重新核对完整确认输入与实际合并代次。
     fn revalidate(&self, own_lock: bool, deadline: Instant) -> Result<(), OperationError> {
-        validate_snapshot(&self.git, &self.repo, &self.session, deadline)?;
+        validate_snapshot_for(&self.git, &self.repo, &self.session, self.kind, deadline)?;
         self.metadata.validate(&self.repo, deadline)?;
+        if let Some(anchor) = &self.anchor {
+            anchor.revalidate(&self.repo, deadline)?;
+        }
         validate_finish_environment(
             &self.git,
             &self.repo,
             &self.parents[0],
-            &self.parents[1],
+            self.parents
+                .get(1)
+                .map(String::as_str)
+                .unwrap_or(&self.parents[0]),
+            self.kind,
             deadline,
         )?;
-        if guard::merge_fingerprint(&self.git, &self.repo, own_lock, deadline)? != self.fingerprint
+        if self
+            .kind
+            .fingerprint(&self.git, &self.repo, own_lock, deadline)?
+            != self.fingerprint
         {
             return Err(OperationError::new("STALE_WRITE_PLAN"));
         }
@@ -277,7 +383,7 @@ impl FinishPlan {
         self.metadata.validate(&self.repo, deadline)?;
         let state = read_repository_state_until(&self.git, &self.repo, deadline)?;
         if !transaction.owns_lock()
-            || state.operations != ["merge"]
+            || state.operations != [self.kind.operation()]
             || !matches!(&state.head, HeadState::Branch { name, oid: actual } if name == branch(&self.fingerprint.head)? && actual == oid)
             || guard::read_index_bytes(&self.repo)? != self.fingerprint.index_bytes
         {
@@ -287,41 +393,91 @@ impl FinishPlan {
     }
 }
 
-impl MergeFiles {
+impl OperationFiles {
+    /// 有效起点已落盘但 Git 尚未启动时，也允许用户明确中止；不接管外部 sequencer。
+    pub(crate) fn capture_revert_abort(
+        repo: &RepositoryHandle,
+        deadline: Instant,
+    ) -> Result<Self, OperationError> {
+        Self::capture_kind(repo, ConflictKind::Revert, true, deadline)
+    }
+
+    /// 返回捕获的原生标记，调用方不能用当前 HEAD 替代撤销目标。
+    pub(crate) fn marker_bytes(&self) -> Option<&[u8]> {
+        self.files[self.kind.marker()]
+            .as_ref()
+            .map(|file| file.bytes.as_slice())
+    }
+
     /// 捕获普通元数据文件，不跟随链接或等待 FIFO；不支持自动 stash 残留。
-    fn capture(repo: &RepositoryHandle, deadline: Instant) -> Result<Self, OperationError> {
+    fn capture(
+        repo: &RepositoryHandle,
+        kind: ConflictKind,
+        deadline: Instant,
+    ) -> Result<Self, OperationError> {
+        Self::capture_kind(repo, kind, false, deadline)
+    }
+
+    /// 完成必须有原生标记，中止仅放宽启动中断的缺失标记，其他校验一致。
+    fn capture_kind(
+        repo: &RepositoryHandle,
+        kind: ConflictKind,
+        allow_missing_marker: bool,
+        deadline: Instant,
+    ) -> Result<Self, OperationError> {
         if std::fs::symlink_metadata(repo.git_dir.join("MERGE_AUTOSTASH")).is_ok() {
             return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
         }
+        if kind == ConflictKind::Revert
+            && std::fs::symlink_metadata(repo.git_dir.join("sequencer")).is_ok()
+        {
+            return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
+        }
         let mut files = BTreeMap::new();
-        for name in MERGE_FILES {
+        for &name in metadata_names(kind) {
             files.insert(name.into(), optional_file(repo, name, deadline)?);
         }
-        if files["MERGE_HEAD"].is_none() {
+        if (!allow_missing_marker && files[kind.marker()].is_none())
+            || (kind == ConflictKind::Revert && files[REVERT_ANCHOR].is_none())
+        {
             return Err(OperationError::new("STALE_CONFLICT"));
         }
-        Ok(Self(files))
+        Ok(Self {
+            kind,
+            files,
+            allow_missing_marker,
+        })
     }
 
     /// 包括缺失文件在内，任何新一轮合并或外部修改都使清理前提失效。
-    fn validate(&self, repo: &RepositoryHandle, deadline: Instant) -> Result<(), OperationError> {
-        if Self::capture(repo, deadline)?.0 != self.0 {
+    pub(crate) fn validate(
+        &self,
+        repo: &RepositoryHandle,
+        deadline: Instant,
+    ) -> Result<(), OperationError> {
+        if Self::capture_kind(repo, self.kind, self.allow_missing_marker, deadline)?.files
+            != self.files
+        {
             return Err(OperationError::new("STALE_CONFLICT"));
         }
         Ok(())
     }
 
     /// 逐项再次核对字节与身份；不删除捕获后被替换的元数据。
-    fn remove(&self, repo: &RepositoryHandle, deadline: Instant) -> Result<(), OperationError> {
+    pub(crate) fn remove(
+        &self,
+        repo: &RepositoryHandle,
+        deadline: Instant,
+    ) -> Result<(), OperationError> {
         self.validate(repo, deadline)?;
         let dir = Dir::open_ambient_dir(&repo.git_dir, cap_std::ambient_authority())
             .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
-        for name in MERGE_FILES {
+        for &name in metadata_names(self.kind) {
             guard::check_time(deadline)?;
-            if optional_file(repo, name, deadline)? != self.0[name] {
+            if optional_file(repo, name, deadline)? != self.files[name] {
                 return Err(OperationError::new("STALE_CONFLICT"));
             }
-            if self.0[name].is_some() {
+            if self.files[name].is_some() {
                 dir.remove_file(name)
                     .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
             }
@@ -349,6 +505,7 @@ fn validate_finish_environment(
     repo: &RepositoryHandle,
     head: &str,
     incoming: &str,
+    kind: ConflictKind,
     deadline: Instant,
 ) -> Result<(), OperationError> {
     validate_merge_config(git, repo, deadline)?;
@@ -358,6 +515,10 @@ fn validate_finish_environment(
         .is_some_and(|value| value != "files")
     {
         return Err(OperationError::new("UNSUPPORTED_WRITE_CONFIGURATION"));
+    }
+    if kind == ConflictKind::Revert {
+        // 撤销依靠持久起点与引用 CAS 防重放，不使用合并的祖先判断。
+        return Ok(());
     }
     let args = [
         "--no-replace-objects",
@@ -387,6 +548,68 @@ mod tests {
     use super::*;
     use crate::git::repository::{open_repository, tests::Fixture};
     use std::fs;
+
+    /// 启动中断只允许中止，有原生 sequencer 的外部撤销不能被接管。
+    #[test]
+    fn revert_abort_metadata_allows_interrupted_start_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = RepositoryHandle {
+            id: "interrupted-revert".into(),
+            root: directory.path().into(),
+            git_dir: directory.path().into(),
+            common_dir: directory.path().into(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        fs::write(repo.git_dir.join(REVERT_ANCHOR), b"anchor").unwrap();
+        assert!(OperationFiles::capture(&repo, ConflictKind::Revert, deadline).is_err());
+        let metadata = OperationFiles::capture_revert_abort(&repo, deadline).unwrap();
+        assert!(metadata.marker_bytes().is_none());
+        fs::create_dir(repo.git_dir.join("sequencer")).unwrap();
+        assert!(metadata.validate(&repo, deadline).is_err());
+        assert!(metadata.remove(&repo, deadline).is_err());
+        assert!(repo.git_dir.join(REVERT_ANCHOR).exists());
+    }
+
+    /// 元数据清理只删除所属操作的文件，撤销记录最后清除，外部同内容替换仍被保留。
+    #[test]
+    fn finish_metadata_scopes_cleanup_and_rejects_replacement() {
+        for kind in [ConflictKind::Merge, ConflictKind::Revert] {
+            let directory = tempfile::tempdir().unwrap();
+            let repo = RepositoryHandle {
+                id: "metadata-test".into(),
+                root: directory.path().into(),
+                git_dir: directory.path().into(),
+                common_dir: directory.path().into(),
+            };
+            let deadline = Instant::now() + Duration::from_secs(10);
+            for &name in metadata_names(kind) {
+                fs::write(repo.git_dir.join(name), name.as_bytes()).unwrap();
+            }
+            fs::write(repo.git_dir.join("unrelated"), b"preserved").unwrap();
+            let captured = OperationFiles::capture(&repo, kind, deadline).unwrap();
+            let marker = kind.marker();
+            fs::rename(repo.git_dir.join(marker), repo.git_dir.join("old-marker")).unwrap();
+            fs::write(repo.git_dir.join(marker), marker.as_bytes()).unwrap();
+            assert!(captured.remove(&repo, deadline).is_err());
+            assert!(repo.git_dir.join("MERGE_MSG").exists());
+            OperationFiles::capture(&repo, kind, deadline)
+                .unwrap()
+                .remove(&repo, deadline)
+                .unwrap();
+            for &name in metadata_names(kind) {
+                assert!(!repo.git_dir.join(name).exists());
+            }
+            assert_eq!(
+                fs::read(repo.git_dir.join("unrelated")).unwrap(),
+                b"preserved"
+            );
+            assert!(repo.git_dir.join("old-marker").exists());
+        }
+        assert_eq!(
+            metadata_names(ConflictKind::Revert).last(),
+            Some(&REVERT_ANCHOR)
+        );
+    }
 
     /// 在真实冲突上采用本地版本，让索引无差异而仍需要保存双亲关系。
     fn resolved() -> (Fixture, RepositoryHandle, ConflictSession) {

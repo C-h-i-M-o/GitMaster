@@ -4,6 +4,7 @@ import type {
   OperationKind,
   OperationPhase,
   OperationCounts,
+  RecoveryPathResult,
 } from "../types/git.ts";
 
 export interface HistoryEvent {
@@ -29,6 +30,8 @@ export interface OperationHistoryEntry {
   recoveryPath: string | null;
   needsMergeCommit: boolean;
   events: HistoryEvent[];
+  pathResults?: RecoveryPathResult[];
+  pathResultCount?: number;
 }
 
 let preparationSequence = 0;
@@ -120,6 +123,14 @@ export function updateOperationHistory(
         ? (result.cloneRecovery?.path ?? null)
         : null,
     events: duplicate ? events : [...events, event].slice(-100),
+    pathResults:
+      result && "pathResults" in result
+        ? result.pathResults?.slice(0, 100)
+        : undefined,
+    pathResultCount:
+      result && "pathResults" in result
+        ? result.pathResults?.length
+        : undefined,
     needsMergeCommit:
       result?.outcome === "succeeded" &&
       result.kind === "integrate" &&

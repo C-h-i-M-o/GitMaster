@@ -186,6 +186,22 @@ pub(super) struct ConflictRequest {
     generation: u64,
 }
 impl ConflictRequest {
+    /// 撤销复用请求排序，但发布到独立槽，普通 merge 不能接管其文档能力。
+    fn run_revert(self, shared: &DesktopState) -> Result<git::revert::RevertState, OperationError> {
+        let key = CoordinationKey::repository(&self.ctx.repository)?;
+        let cache = self.ctx.coordinator.read(&key, || {
+            git::revert::RevertSession::new(&self.ctx.git, &self.ctx.repository)
+        })?;
+        let result = cache.state();
+        let mut s = shared.lock()?;
+        self.ctx.check(&s)?;
+        if s.conflicts_request != self.generation {
+            return Err(OperationError::new("STALE_CONFLICT"));
+        }
+        s.revert = Some(Arc::new(cache));
+        Ok(result)
+    }
+
     /// 先清除旧会话，防止列表刷新期间仍接受旧编辑器。
     pub(super) fn begin(
         shared: &DesktopState,
@@ -195,6 +211,7 @@ impl ConflictRequest {
         let ctx = Context::capture(&s, repository_id)?;
         s.conflicts_request += 1;
         s.conflicts = None;
+        s.revert = None;
         Ok(Self {
             ctx,
             generation: s.conflicts_request,
@@ -225,6 +242,55 @@ pub async fn read_conflicts(
     let shared = state.inner().clone();
     let request = ConflictRequest::begin(&shared, &repository_id)?;
     blocking("read_conflicts", move || request.run(&shared)).await
+}
+
+/// 读取真实撤销状态，重启后重新签发撤销会话，不使用 mergeSessionId。
+#[tauri::command]
+pub async fn read_revert_state(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+) -> Result<git::revert::RevertState, OperationError> {
+    let shared = state.inner().clone();
+    let request = ConflictRequest::begin(&shared, &repository_id)?;
+    blocking("read_revert_state", move || request.run_revert(&shared)).await
+}
+
+/// 撤销三方文档只接受当前撤销清单签发的文件和会话 ID。
+#[tauri::command]
+pub async fn read_revert_conflict_document(
+    state: State<'_, DesktopState>,
+    repository_id: String,
+    revert_session_id: String,
+    conflict_id: String,
+) -> Result<git::revert::RevertConflictDocument, OperationError> {
+    let shared = state.inner().clone();
+    let (ctx, cache) = {
+        let s = shared.lock()?;
+        let ctx = Context::capture(&s, &repository_id)?;
+        let cache = s
+            .revert
+            .clone()
+            .filter(|cache| cache.state().revert_session_id == revert_session_id)
+            .ok_or_else(|| OperationError::new("STALE_CONFLICT"))?;
+        (ctx, cache)
+    };
+    blocking("read_revert_conflict_document", move || {
+        let key = CoordinationKey::repository(&ctx.repository)?;
+        let result = ctx
+            .coordinator
+            .read(&key, || cache.read_document(&conflict_id))?;
+        let s = shared.lock()?;
+        ctx.check(&s)?;
+        if !s
+            .revert
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &cache))
+        {
+            return Err(OperationError::new("STALE_CONFLICT"));
+        }
+        Ok(result)
+    })
+    .await
 }
 /// 返回三方文本和工作文件指纹，拒绝旧合并会话或刷新前的缓存。
 #[tauri::command]

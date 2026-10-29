@@ -146,10 +146,18 @@ fn text_conflict_returns_real_three_stage_resolution_state() {
     let OperationResult::NeedsResolution { conflict, .. } = result else {
         panic!("预期真实冲突状态，实际 {result:?}");
     };
-    assert_eq!(conflict.unresolved_count, 1);
-    assert_eq!(conflict.paths, ["file"]);
+    let ConflictSummary::Merge {
+        merge_session_id,
+        unresolved_count,
+        paths,
+    } = conflict
+    else {
+        panic!("合并结果不能携带撤销摘要");
+    };
+    assert_eq!(unresolved_count, 1);
+    assert_eq!(paths, ["file"]);
     let session = ConflictSession::new(&f.git, &repo).unwrap();
-    assert_eq!(session.state().merge_session_id, conflict.merge_session_id);
+    assert_eq!(session.state().merge_session_id, merge_session_id);
     let document = session
         .read_document(&session.state().files[0].conflict_id)
         .unwrap();

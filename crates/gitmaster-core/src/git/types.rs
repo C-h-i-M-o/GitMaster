@@ -93,9 +93,27 @@ pub enum FileDiff {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LocalWriteRequest {
     #[serde(rename_all = "camelCase")]
-    Stage { change_ids: Vec<String> },
+    RevertCommit {
+        commit_oid: String,
+    },
+    AbortRevert {},
     #[serde(rename_all = "camelCase")]
-    Unstage { change_ids: Vec<String> },
+    CleanUntracked {
+        change_ids: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    RestoreFiles {
+        source: super::restore::RestoreSource,
+        file_ids: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Stage {
+        change_ids: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Unstage {
+        change_ids: Vec<String>,
+    },
     #[serde(rename_all = "camelCase")]
     Commit {
         message: String,
@@ -103,9 +121,34 @@ pub enum LocalWriteRequest {
         stage_change_ids: Vec<String>,
     },
     #[serde(rename_all = "camelCase")]
-    CreateBranch { name: String },
+    CreateBranch {
+        name: String,
+    },
     #[serde(rename_all = "camelCase")]
-    SwitchBranch { branch_id: String },
+    SwitchBranch {
+        branch_id: String,
+    },
+}
+
+#[cfg(test)]
+mod recovery_contract_tests {
+    use super::LocalWriteRequest;
+
+    /// 恢复只能通过明确来源与后端文件身份进入本地写准备入口。
+    #[test]
+    fn restore_request_accepts_explicit_source_and_file_ids() {
+        let input = r#"{"kind":"restoreFiles","source":{"kind":"head"},"fileIds":["file-1"]}"#;
+        assert!(serde_json::from_str::<LocalWriteRequest>(input).is_ok());
+    }
+
+    /// 清理只接受快照签发的 changeId，不能把任意路径当成删除权限。
+    #[test]
+    fn clean_request_requires_change_ids() {
+        let selected = r#"{"kind":"cleanUntracked","changeIds":["change-1"]}"#;
+        let arbitrary = r#"{"kind":"cleanUntracked","paths":["../outside"]}"#;
+        assert!(serde_json::from_str::<LocalWriteRequest>(selected).is_ok());
+        assert!(serde_json::from_str::<LocalWriteRequest>(arbitrary).is_err());
+    }
 }
 
 /// 远端写操作请求，按 kind 区分具体参数。
@@ -167,6 +210,20 @@ pub enum ConflictWriteRequest {
     FinishMerge { message: String },
 }
 
+/// 撤销会话的保存和最终提交请求，不能与普通合并请求混用。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RevertConflictWriteRequest {
+    #[serde(rename_all = "camelCase")]
+    SaveRevertConflict {
+        conflict_id: String,
+        fingerprint: String,
+        content: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    FinishRevert { message: String },
+}
+
 /// 写入能力上下文。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +235,10 @@ pub struct WriteContext {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteCapabilities {
+    pub revert: WriteCapability,
+    pub save_revert_conflict: WriteCapability,
+    pub finish_revert: WriteCapability,
+    pub abort_revert: WriteCapability,
     pub stage: WriteCapability,
     pub unstage: WriteCapability,
     pub commit: WriteCapability,
@@ -221,8 +282,23 @@ pub struct WritePreview {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WriteTarget {
+    Revert {
+        oid: String,
+    },
+    Clean {
+        files: Vec<super::clean::CleanFilePreview>,
+    },
     #[serde(rename_all = "camelCase")]
-    LocalBranch { name: String, oid: Option<String> },
+    Restore {
+        source: super::restore::RestoreSource,
+        source_oid: Option<String>,
+        files: Vec<super::restore::RestoreFilePreview>,
+    },
+    #[serde(rename_all = "camelCase")]
+    LocalBranch {
+        name: String,
+        oid: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     Remote {
         remote_id: String,
@@ -268,6 +344,9 @@ pub struct OperationHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OperationKind {
+    Revert,
+    CleanUntracked,
+    RestoreFiles,
     SetUpstream,
     SaveFile,
     Stage,
@@ -280,7 +359,10 @@ pub enum OperationKind {
     Push,
     Integrate,
     SaveConflict,
+    SaveRevertConflict,
     FinishMerge,
+    FinishRevert,
+    AbortRevert,
 }
 
 /// 操作阶段。
@@ -327,13 +409,22 @@ pub enum WriteRefresh {
     NotApplicable,
 }
 
-/// 冲突摘要。
+/// 冲突摘要按操作区分身份；撤销摘要不签发可用于写入的会话。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConflictSummary {
-    pub merge_session_id: String,
-    pub unresolved_count: u32,
-    pub paths: Vec<String>,
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConflictSummary {
+    #[serde(rename_all = "camelCase")]
+    Merge {
+        merge_session_id: String,
+        unresolved_count: u32,
+        paths: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Revert {
+        target_commit_oid: String,
+        unresolved_count: u32,
+        paths: Vec<String>,
+    },
 }
 
 /// 克隆失败后可继续处理的工作区上下文。
@@ -364,6 +455,8 @@ pub enum OperationResult {
         commit_oid: Option<String>,
         branch_name: Option<String>,
         clone_path: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        path_results: Vec<RecoveryPathResult>,
         refresh: WriteRefresh,
     },
     #[serde(rename_all = "camelCase")]
@@ -372,6 +465,8 @@ pub enum OperationResult {
         kind: OperationKind,
         error: super::error::OperationError,
         clone_recovery: Option<CloneRecovery>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        path_results: Vec<RecoveryPathResult>,
         refresh: WriteRefresh,
     },
     #[serde(rename_all = "camelCase")]
@@ -380,6 +475,8 @@ pub enum OperationResult {
         kind: OperationKind,
         error: super::error::OperationError,
         clone_recovery: Option<CloneRecovery>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        path_results: Vec<RecoveryPathResult>,
         refresh: WriteRefresh,
     },
     #[serde(rename_all = "camelCase")]
@@ -389,6 +486,38 @@ pub enum OperationResult {
         conflict: ConflictSummary,
         refresh: WriteRefresh,
     },
+}
+
+/// 多文件恢复或清理的逐路径结果，部分完成不能被整体失败提示掩盖。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryPathResult {
+    pub path: String,
+    pub status: RecoveryPathStatus,
+    pub error: Option<super::error::OperationError>,
+}
+
+/// 区分已完成、确认失败、尚未执行和无法核实的文件结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryPathStatus {
+    Succeeded,
+    Failed,
+    NotExecuted,
+    Unknown,
+}
+
+impl OperationResult {
+    /// 将真实逐路径执行记录附加到现有成功、失败或未知终态。
+    pub(crate) fn with_path_results(mut self, results: Vec<RecoveryPathResult>) -> Self {
+        match &mut self {
+            Self::Succeeded { path_results, .. }
+            | Self::Failed { path_results, .. }
+            | Self::Unknown { path_results, .. } => *path_results = results,
+            Self::NeedsResolution { .. } => (),
+        }
+        self
+    }
 }
 
 /// 操作记录，将进度与最终结果绑定。

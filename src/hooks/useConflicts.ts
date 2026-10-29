@@ -1,5 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { readConflictDocument, readConflicts } from "../services/git";
+import {
+  readConflictDocument,
+  readConflicts,
+  readRevertState,
+  readRevertConflictDocument,
+} from "../services/git";
 import type { RepositoryState } from "../types/git";
 import { createConflictsController } from "./conflictsController";
 /** 每个工作区独立持有冲突草稿，浏览器预览不发起读取。 */
@@ -8,7 +13,12 @@ export function useConflicts(
   enabled: boolean,
 ) {
   const [controller] = useState(() =>
-    createConflictsController({ readConflicts, readConflictDocument }),
+    createConflictsController({
+      readConflicts,
+      readConflictDocument,
+      readRevertState,
+      readRevertConflictDocument,
+    }),
   );
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -17,7 +27,12 @@ export function useConflicts(
   useEffect(() => {
     controller.activate();
     controller.setRepository(enabled ? repository : null);
-    if (enabled && repository?.operations.includes("merge"))
+    if (
+      enabled &&
+      repository?.operations.some(
+        (operation) => operation === "merge" || operation === "revert",
+      )
+    )
       void controller.refresh();
     return () => controller.deactivate();
   }, [controller, repository, enabled]);

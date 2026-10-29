@@ -1,5 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+  RestoreFilePage,
+  RestoreSource,
   EditableFile,
   LogLevel,
   LogSettings,
@@ -16,6 +18,9 @@ import type {
   ConflictDocument,
   ConflictState,
   ConflictWriteRequest,
+  RevertState,
+  RevertConflictDocument,
+  RevertConflictWriteRequest,
   LocalWriteRequest,
   OperationHandle,
   OperationRecord,
@@ -46,6 +51,14 @@ export interface RepositoryWatchState {
 
 /** 判断当前是否连接桌面 IPC；浏览器预览不发起调用。 */
 export const isDesktop = (): boolean => isTauri();
+/** 来源与分页由后端冻结；不将路径直接提交给恢复执行器。 */
+export const prepareRestoreSource = (
+  repositoryId: string,
+  snapshotId: string,
+  source: RestoreSource,
+  cursor: string | null,
+): Promise<RestoreFilePage> =>
+  call("prepare_restore_source", { repositoryId, snapshotId, source, cursor });
 /** 仅解析当前干净分支的上游，不查询服务器或写入配置。 */
 export const readSyncTarget = (
   repositoryId: string,
@@ -338,6 +351,34 @@ export const assessRemote = (
 /** 读取当前仓库冲突状态。 */
 export const readConflicts = (repositoryId: string): Promise<ConflictState> =>
   call("read_conflicts", { repositoryId });
+
+/** 读取真实撤销清单，不复用普通合并会话。 */
+export const readRevertState = (repositoryId: string): Promise<RevertState> =>
+  call("read_revert_state", { repositoryId });
+
+/** 撤销文档只使用撤销列表签发的会话和文件 ID。 */
+export const readRevertConflictDocument = (
+  repositoryId: string,
+  revertSessionId: string,
+  conflictId: string,
+): Promise<RevertConflictDocument> =>
+  call("read_revert_conflict_document", {
+    repositoryId,
+    revertSessionId,
+    conflictId,
+  });
+
+/** 保存或完成撤销沿用一次性计划，但请求类型与普通合并完全分离。 */
+export const prepareRevertConflictWrite = (
+  repositoryId: string,
+  revertSessionId: string,
+  request: RevertConflictWriteRequest,
+): Promise<WritePreview> =>
+  call("prepare_revert_conflict_write", {
+    repositoryId,
+    revertSessionId,
+    request,
+  });
 /** 读取指定冲突文件的可编辑文档。 */
 export const readConflictDocument = (
   repositoryId: string,

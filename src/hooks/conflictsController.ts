@@ -5,8 +5,17 @@ import type {
   ConflictWriteRequest,
   OperationError,
   RepositoryState,
+  RevertState,
+  RevertConflictDocument,
+  RevertConflictWriteRequest,
 } from "../types/git.ts";
 export interface ConflictsApi {
+  readRevertState(repositoryId: string): Promise<RevertState>;
+  readRevertConflictDocument(
+    repositoryId: string,
+    sessionId: string,
+    conflictId: string,
+  ): Promise<RevertConflictDocument>;
   readConflicts(repositoryId: string): Promise<ConflictState>;
   readConflictDocument(
     repositoryId: string,
@@ -15,8 +24,8 @@ export interface ConflictsApi {
   ): Promise<ConflictDocument>;
 }
 export interface ConflictsSnapshot {
-  conflicts: ConflictState | null;
-  document: ConflictDocument | null;
+  conflicts: ConflictState | RevertState | null;
+  document: ConflictDocument | RevertConflictDocument | null;
   draft: string;
   dirty: boolean;
   loading: boolean;
@@ -24,6 +33,15 @@ export interface ConflictsSnapshot {
   stale: boolean;
   needsDiscard: boolean;
   error: OperationError | null;
+}
+/** 仅在前端编排中读取各自的会话 ID，不将撤销 ID 传给合并接口。 */
+function sessionId(
+  value:
+    ConflictState | RevertState | ConflictDocument | RevertConflictDocument,
+): string {
+  return "revertSessionId" in value
+    ? value.revertSessionId
+    : value.mergeSessionId;
 }
 /** 将冲突草稿与原始指纹成对保留，读取失败不能悄悄覆盖编辑内容。 */
 export function createConflictsController(api: ConflictsApi) {
@@ -48,9 +66,14 @@ export function createConflictsController(api: ConflictsApi) {
     state = { ...state, ...next };
     if (active) for (const listener of listeners) listener();
   }
-  /** 当前状态必须属于有真实 merge 标记的仓库。 */
+  /** 当前状态必须唯一属于 merge 或 revert，混合操作不获得编辑能力。 */
   function allowed(): boolean {
-    return active && repository?.operations.includes("merge") === true;
+    return (
+      active &&
+      repository?.operations.length === 1 &&
+      (repository.operations[0] === "merge" ||
+        repository.operations[0] === "revert")
+    );
   }
   /** 绑定新上下文，未保存草稿保留为陈旧内容，不允许再次写回。 */
   function setRepository(next: RepositoryState | null): void {
@@ -97,9 +120,15 @@ export function createConflictsController(api: ConflictsApi) {
       ...(discard ? { document: null, draft: "", dirty: false } : {}),
     });
     try {
-      const conflicts = await api.readConflicts(repoId);
+      const reverting = repository.operations[0] === "revert";
+      const conflicts = await (reverting
+        ? api.readRevertState(repoId)
+        : api.readConflicts(repoId));
       if (!allowed() || token !== generation) return;
-      if (conflicts.repositoryId !== repoId)
+      if (
+        conflicts.repositoryId !== repoId ||
+        reverting !== "revertSessionId" in conflicts
+      )
         throw { code: "STALE_CONFLICT", retryable: true };
       update({
         conflicts,
@@ -143,7 +172,7 @@ export function createConflictsController(api: ConflictsApi) {
     const token = generation;
     const fileToken = ++fileGeneration;
     const repoId = repository.repositoryId;
-    const session = conflicts.mergeSessionId;
+    const session = sessionId(conflicts);
     update({
       documentLoading: true,
       error: null,
@@ -151,15 +180,14 @@ export function createConflictsController(api: ConflictsApi) {
       ...(discard ? { document: null, draft: "", dirty: false } : {}),
     });
     try {
-      const document = await api.readConflictDocument(
-        repoId,
-        session,
-        conflictId,
-      );
+      const document = await ("revertSessionId" in conflicts
+        ? api.readRevertConflictDocument(repoId, session, conflictId)
+        : api.readConflictDocument(repoId, session, conflictId));
       if (!allowed() || token !== generation || fileToken !== fileGeneration)
         return;
       if (
-        document.mergeSessionId !== session ||
+        sessionId(document) !== session ||
+        "revertSessionId" in document !== "revertSessionId" in conflicts ||
         document.conflictId !== conflictId
       )
         throw { code: "STALE_CONFLICT", retryable: true };
@@ -197,21 +225,27 @@ export function createConflictsController(api: ConflictsApi) {
   }
   /** 沿用展示文档的指纹，陈旧或正在读取的内容不能准备保存。 */
   function saveRequest(): Extract<
-    ConflictWriteRequest,
-    { kind: "saveConflict" }
+    ConflictWriteRequest | RevertConflictWriteRequest,
+    { kind: "saveConflict" | "saveRevertConflict" }
   > | null {
     if (
       !allowed() ||
       !state.document ||
+      !state.conflicts ||
       state.loading ||
       state.documentLoading ||
       state.stale ||
-      state.document.mergeSessionId !== state.conflicts?.mergeSessionId ||
+      sessionId(state.document) !== sessionId(state.conflicts) ||
+      "revertSessionId" in state.document !==
+        "revertSessionId" in state.conflicts ||
       state.conflicts.repositoryId !== repository?.repositoryId
     )
       return null;
     return {
-      kind: "saveConflict",
+      kind:
+        "revertSessionId" in state.document
+          ? "saveRevertConflict"
+          : "saveConflict",
       conflictId: state.document.conflictId,
       fingerprint: state.document.fingerprint,
       content: state.draft,

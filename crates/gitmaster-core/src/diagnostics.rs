@@ -66,6 +66,8 @@ pub fn log_elapsed(stage: &'static str, elapsed: std::time::Duration) {
             | "file_queue_wait"
             | "file_read_io"
             | "git_process_create"
+            | "git_process_prepare"
+            | "git_process_wait"
             | "git_run_to_observed_exit"
             | "git_pipe_drain"
             | "git_process_reap"

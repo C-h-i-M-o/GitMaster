@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Workbench } from "../hooks/useWorkbench";
 import { useNativeDialog } from "../hooks/useNativeDialog";
+import { useDestructiveConfirmation } from "../hooks/useDestructiveConfirmation";
 import {
   describeOperationKind,
   formatOperationExpiry,
@@ -20,6 +21,16 @@ export function WriteConfirmation({
   const dialog = useNativeDialog(
     preview !== null,
     workbench.operations.discardPreview,
+  );
+  const isClean =
+    preview?.type === "write" && preview.value.kind === "cleanUntracked";
+  const isAbort =
+    preview?.type === "write" && preview.value.kind === "abortRevert";
+  const requiresAcknowledgement = isClean || isAbort;
+  const destructive = useDestructiveConfirmation(
+    preview?.value.planId,
+    requiresAcknowledgement,
+    workbench.operations.confirm,
   );
   if (!preview)
     return (
@@ -63,6 +74,19 @@ export function WriteConfirmation({
           </>
         )}
         <div className="dialog-actions">
+          {requiresAcknowledgement && (
+            <label className="clean-confirmation">
+              <input
+                type="checkbox"
+                checked={destructive.accepted}
+                onChange={destructive.change}
+                disabled={busy}
+              />
+              {isClean
+                ? "我已核对清单，确认删除；这些文件无法通过 Git 恢复。"
+                : "我已核对影响范围，确认丢弃当前冲突编辑和暂存区修改。"}
+            </label>
+          )}
           <button
             className="secondary"
             type="button"
@@ -74,8 +98,10 @@ export function WriteConfirmation({
           <button
             className="primary"
             type="button"
-            onClick={workbench.operations.confirm}
-            disabled={busy}
+            onClick={destructive.confirm}
+            disabled={
+              busy || (requiresAcknowledgement && !destructive.accepted)
+            }
           >
             确认执行
           </button>
@@ -94,6 +120,11 @@ function WriteDetails({
     { type: "write" }
   >["value"];
 }): ReactNode {
+  const recovery =
+    value.kind === "restoreFiles" ||
+    value.kind === "cleanUntracked" ||
+    value.kind === "revert" ||
+    value.kind === "abortRevert";
   return (
     <dl>
       <dt>当前 HEAD</dt>
@@ -104,19 +135,29 @@ function WriteDetails({
             ? `游离 HEAD（${value.head.oid}）`
             : `未出生分支（${value.head.name}）`}
       </dd>
-      <dt>父提交</dt>
-      <dd>
-        {value.parentOids.length > 0 ? (
-          <ul>
-            {value.parentOids.map((oid) => (
-              <li key={oid}>{oid}</li>
-            ))}
-          </ul>
-        ) : (
-          "根提交（无父提交）"
-        )}
-      </dd>
-      <dt>路径</dt>
+      {!recovery && (
+        <>
+          <dt>父提交</dt>
+          <dd>
+            {value.parentOids.length > 0 ? (
+              <ul>
+                {value.parentOids.map((oid) => (
+                  <li key={oid}>{oid}</li>
+                ))}
+              </ul>
+            ) : (
+              "根提交（无父提交）"
+            )}
+          </dd>
+        </>
+      )}
+      <dt>
+        {value.kind === "revert"
+          ? "原提交涉及路径"
+          : value.kind === "abortRevert"
+            ? "当前已跟踪变化"
+            : "路径"}
+      </dt>
       <dd>
         {value.paths.length > 0 ? (
           <ul>
@@ -128,10 +169,14 @@ function WriteDetails({
           "无路径"
         )}
       </dd>
-      <dt>作者</dt>
-      <dd>{value.author ?? "未提供"}</dd>
-      <dt>说明</dt>
-      <dd>{value.message ?? "未提供"}</dd>
+      {!recovery && (
+        <>
+          <dt>作者</dt>
+          <dd>{value.author ?? "未提供"}</dd>
+          <dt>说明</dt>
+          <dd>{value.message ?? "未提供"}</dd>
+        </>
+      )}
       <dt>目标</dt>
       <dd>{value.target ? <Target target={value.target} /> : "当前索引"}</dd>
       {value.warnings.length > 0 && (
@@ -161,6 +206,60 @@ function Target({
     >["value"]["target"]
   >;
 }): ReactNode {
+  if (target.kind === "revert") return <span>被撤销提交：{target.oid}</span>;
+  if (target.kind === "clean")
+    return (
+      <ul>
+        {target.files.map((file) => (
+          <li key={file.path}>
+            {file.path} · {file.bytes} 字节
+            <small className="clean-file-hash">SHA-256：{file.sha256}</small>
+          </li>
+        ))}
+      </ul>
+    );
+  if (target.kind === "restore")
+    return (
+      <div>
+        <p>
+          {target.source.kind === "index"
+            ? "暂存区"
+            : target.source.kind === "head"
+              ? "当前提交"
+              : "历史提交"}{" "}
+          {target.sourceOid ?? ""}
+        </p>
+        {target.files.map((file) => (
+          <details key={file.path}>
+            <summary>
+              {file.path} ·{" "}
+              {file.before
+                ? `${file.before.bytes} → ${file.after.bytes} 字节`
+                : `恢复缺失文件，${file.after.bytes} 字节`}
+            </summary>
+            <p className="small">
+              原内容 SHA-256：{file.before?.sha256 ?? "文件不存在"}
+            </p>
+            <p className="small">目标 SHA-256：{file.after.sha256}</p>
+            {file.after.text !== null &&
+            (file.before === null || file.before.text !== null) ? (
+              <div className="restore-comparison">
+                <section>
+                  <h4>当前工作区</h4>
+                  <pre>{file.before?.text ?? "（文件不存在）"}</pre>
+                </section>
+                <section>
+                  <h4>恢复后</h4>
+                  <pre>{file.after.text}</pre>
+                </section>
+              </div>
+            ) : (
+              <p>二进制、大文件或批量选择仅展示完整内容摘要。</p>
+            )}
+          </details>
+        ))}
+      </div>
+    );
   if (target.kind === "localBranch")
     return (
       <span>

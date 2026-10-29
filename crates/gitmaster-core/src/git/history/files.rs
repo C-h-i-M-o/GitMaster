@@ -1,9 +1,6 @@
 //! 固定提交对象的文件列表与差异，不访问工作文件内容。
 use super::*;
-use crate::git::{
-    diff::text_diff, process::run_git, repository::command_error, CommitFile, CommitFileList,
-    FileDiff,
-};
+use crate::git::{diff::text_diff, CommitFile, CommitFileList, FileDiff};
 use std::ffi::OsString;
 
 /// 最近一次签发的文件选择，生命周期受图快照约束。
@@ -35,18 +32,12 @@ impl HistorySession {
             Some(_) => return Err(OperationError::new("INVALID_INPUT")),
             None => detail.parent_oids.first().cloned(),
         };
-        let args = diff_args(oid, parent.as_deref(), "--raw", &[]);
-        let raw = run_git(&self.git, &self.repository.root, &args, OUTPUT_LIMIT, false)?;
-        if !raw.success {
-            return Err(command_error(&raw.stderr));
-        }
-        let mut entries = parse_raw(&raw.stdout)?;
-        let args = diff_args(oid, parent.as_deref(), "--numstat", &[]);
-        let stats = run_git(&self.git, &self.repository.root, &args, OUTPUT_LIMIT, false)?;
-        if !stats.success {
-            return Err(command_error(&stats.stderr));
-        }
-        apply_stats(&mut entries, &stats.stdout)?;
+        let mut entries = self.diff_query(oid, parent.as_deref(), "--raw", &[], |bytes, _| {
+            parse_raw(bytes)
+        })?;
+        self.diff_query(oid, parent.as_deref(), "--numstat", &[], |bytes, _| {
+            apply_stats(&mut entries, bytes)
+        })?;
         let list_id = next_id();
         for (index, entry) in entries.iter_mut().enumerate() {
             entry.file.file_id = format!("{}:{list_id}:{index}", self.snapshot_id);
@@ -89,22 +80,23 @@ impl HistorySession {
         if let Some(path) = &entry.file.original_path {
             paths.push(path);
         }
-        let args = diff_args(
+        self.diff_query(
             &selection.oid,
             selection.parent.as_deref(),
             "--patch",
             &paths,
-        );
-        let out = run_git(&self.git, &self.repository.root, &args, 1024 * 1024, true)?;
-        if !out.success && !out.truncated {
-            return Err(command_error(&out.stderr));
-        }
-        text_diff(out.stdout, out.truncated)
+            |bytes, truncated| text_diff(bytes.to_vec(), truncated),
+        )
     }
 }
 
 /// 固定 OID 比较，根提交由 --root 表达；NUL 与字面路径消除路径解释歧义。
-fn diff_args(oid: &str, parent: Option<&str>, format: &str, paths: &[&str]) -> Vec<OsString> {
+pub(super) fn diff_args(
+    oid: &str,
+    parent: Option<&str>,
+    format: &str,
+    paths: &[&str],
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--literal-pathspecs",
         "diff-tree",
@@ -269,8 +261,12 @@ mod tests {
         f.write(name, b"selected\n");
         f.write("decoy", b"other\n");
         f.write("binary", b"\0binary");
+        f.write(".gitattributes", b"decoy -diff\n");
         f.command(&["add", "."]);
         f.command(&["commit", "-m", "root"]);
+        // 历史视图应遵从提交内的属性，不随未提交属性或仓库专用覆盖变化。
+        f.write(".gitattributes", b"decoy diff\n");
+        fs::write(f.root.join(".git/info/attributes"), b"decoy diff\n").unwrap();
         let (repo, _) = open_repository(&f.git, &f.root).unwrap();
         let tracked = [
             repo.git_dir.join("index"),
@@ -280,12 +276,31 @@ mod tests {
             f.root.join(name),
         ];
         let before: Vec<_> = tracked.iter().map(|path| fs::read(path).unwrap()).collect();
+        let version: Vec<u32> = f
+            .git
+            .version
+            .split('.')
+            .take(2)
+            .map(|part| part.parse().unwrap())
+            .collect();
+        let fixed_view = (version[0], version[1]) >= (2, 43);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let content_cache = Arc::new(crate::cache::ContentCache::new(cache_dir.path()).unwrap());
         let mut session = HistorySession::new(f.git.clone(), repo).unwrap();
+        session.set_content_cache(content_cache.clone());
         let page = session.read_page(None).unwrap();
         let oid = &page.commits[0].oid;
         let list = session.commit_files(oid, None).unwrap();
         assert_eq!(list.parent_oid, None);
-        assert_eq!(list.files.len(), 3);
+        assert_eq!(list.files.len(), 4);
+        let decoy = list.files.iter().find(|file| file.path == "decoy").unwrap();
+        assert_eq!(
+            matches!(
+                session.commit_file_diff(&decoy.file_id).unwrap(),
+                FileDiff::Binary
+            ),
+            fixed_view
+        );
         let selected = list.files.iter().find(|file| file.path == name).unwrap();
         assert_eq!((selected.additions, selected.deletions), (Some(1), Some(0)));
         assert_eq!(selected.status, "A");
@@ -307,9 +322,38 @@ mod tests {
             FileDiff::Binary
         ));
         assert!(session.commit_file_diff("../../index").is_err());
+        // 重新打开存储清空内存命中；无效可执行路径确保列表和补丁实际来自磁盘。
+        drop(content_cache);
+        session.set_content_cache(Arc::new(
+            crate::cache::ContentCache::new(cache_dir.path()).unwrap(),
+        ));
+        if fixed_view {
+            session.git.path = f.root.join("git-must-not-run.exe");
+        }
+        let FileDiff::Text {
+            content: cached, ..
+        } = session.commit_file_diff(&selected.file_id).unwrap()
+        else {
+            panic!("已提交补丁应能从缓存重读");
+        };
+        assert_eq!(cached, content);
         let again = session.commit_files(oid, None).unwrap();
         assert_ne!(again.files[0].file_id, list.files[0].file_id);
         assert!(session.commit_file_diff(&selected.file_id).is_err());
+        session.content_cache.as_ref().unwrap().clear().unwrap();
+        assert_eq!(
+            session
+                .commit_file_diff(
+                    &again
+                        .files
+                        .iter()
+                        .find(|file| file.path == name)
+                        .unwrap()
+                        .file_id
+                )
+                .is_err(),
+            fixed_view
+        );
         assert_eq!(
             tracked
                 .iter()

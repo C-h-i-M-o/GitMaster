@@ -558,6 +558,7 @@ impl RepositoryCoordinator {
                             operation_id: reporter.handle.operation_id.clone(),
                             kind: reporter.kind,
                             error: OperationError::new("STALE_WRITE_PLAN"),
+                            path_results: Vec::new(),
                             clone_recovery: None,
                             refresh: WriteRefresh::Failed {
                                 error: OperationError::new("STALE_REQUEST"),
@@ -578,6 +579,7 @@ impl RepositoryCoordinator {
                 operation_id: handle.operation_id.clone(),
                 kind: failure_reporter.kind,
                 error: OperationError::new("GIT_EXECUTION_FAILED"),
+                path_results: Vec::new(),
                 clone_recovery: None,
                 refresh: WriteRefresh::Failed {
                     error: OperationError::new("STALE_REQUEST"),
@@ -732,6 +734,7 @@ impl OperationReporter {
             operation_id: self.handle.operation_id.clone(),
             kind: self.kind,
             error: OperationError::new("WRITE_OUTCOME_UNKNOWN"),
+            path_results: Vec::new(),
             clone_recovery: None,
             refresh: WriteRefresh::Failed {
                 error: OperationError::new("WRITE_OUTCOME_UNKNOWN"),
@@ -1282,6 +1285,7 @@ mod tests {
             kind: reporter.kind,
             commit_oid: None,
             branch_name: None,
+            path_results: Vec::new(),
             clone_path: None,
             refresh: WriteRefresh::NotApplicable,
         }

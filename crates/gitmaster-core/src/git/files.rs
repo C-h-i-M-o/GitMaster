@@ -2,7 +2,7 @@
 pub mod editor_text;
 mod filesystem;
 pub mod reader;
-mod save_context;
+pub(crate) mod save_context;
 pub mod tree;
 use super::{
     diff::preview,

@@ -1,4 +1,5 @@
 //! GitMaster 的独立核心，提供应用信息和系统 Git 只读业务。
+pub mod cache;
 pub mod diagnostics;
 pub mod git;
 

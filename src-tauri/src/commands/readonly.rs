@@ -14,6 +14,13 @@ pub(super) struct HistoryCache {
     graph_snapshot_id: String,
 }
 
+impl HistoryCache {
+    /// 写准备仅能使用当前图实际返回的提交，检查不启动 Git。
+    pub(super) fn authorizes_commit(&self, oid: &str) -> bool {
+        self.session.authorizes_commit(oid)
+    }
+}
+
 /// 后台读取捕获的桌面代次；不持有主会话锁或接受前端路径。
 pub(super) struct Context {
     pub(super) git: GitExecutable,
@@ -123,6 +130,7 @@ impl HistoryRequest {
             if desktop.history_request != self.generation {
                 return Err(OperationError::new("STALE_GRAPH"));
             }
+            let content_cache = desktop.content_cache.clone();
             drop(desktop);
             match &self.existing {
                 Some(cache) => {
@@ -138,6 +146,9 @@ impl HistoryRequest {
                         self.ctx.git.clone(),
                         self.ctx.repository.clone(),
                     )?;
+                    if let Some(content_cache) = content_cache {
+                        session.set_content_cache(content_cache);
+                    }
                     let page = session.read_page(None)?;
                     let cache = Arc::new(Mutex::new(HistoryCache {
                         session,

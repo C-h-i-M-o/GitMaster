@@ -17,6 +17,14 @@ function Changes({ w }: { w: Workbench }) {
         <div className="drawer-scroll changes-list-region">
           <div className="section-heading">
             <h3>变更文件</h3>
+            <button
+              className="secondary"
+              disabled={!w.canOpenWrite}
+              onClick={w.restoreFiles.openDialog}
+              title="从暂存区、当前或历史提交恢复文件；请先保存草稿"
+            >
+              恢复文件
+            </button>
             <span>{w.repo.repository?.changes.length ?? 0} 个文件</span>
           </div>
           <VirtualChanges
@@ -27,12 +35,14 @@ function Changes({ w }: { w: Workbench }) {
             toggleGroup={w.toggleChangeGroup}
             inspect={w.inspectChange}
           />
-          {w.groups.conflicted.length > 0 && (
+          {(w.groups.conflicted.length > 0 || w.reverting) && (
             <button
               className="warning-card"
               onClick={w.openDrawer("conflicts")}
             >
-              {w.groups.conflicted.length} 个文件存在冲突，打开冲突处理
+              {w.reverting
+                ? "撤销进行中：检查修改、完成提交或中止撤销"
+                : `${w.groups.conflicted.length} 个文件存在冲突，打开冲突处理`}
             </button>
           )}
         </div>
@@ -66,6 +76,14 @@ function Changes({ w }: { w: Workbench }) {
           {w.selection.reason}
         </p>
         <div className="changes-actions">
+          <button
+            className="secondary"
+            disabled={!w.canOpenWrite || w.cleanSelectionCount === 0}
+            onClick={w.prepareClean}
+            title="只清理所勾选的未跟踪文件，下一步核对清单"
+          >
+            清理未跟踪（{w.cleanSelectionCount}）
+          </button>
           <button
             className="secondary"
             disabled={
@@ -119,6 +137,21 @@ function CommitDetails({ w }: { w: Workbench }) {
           </dl>
           <pre className="commit-body">{detail.body}</pre>
           {detail.truncated && <p role="status">提交说明已截断。</p>}
+          <button
+            className="secondary"
+            disabled={!w.canWrite("revert") || detail.parentOids.length !== 1}
+            title={
+              detail.parentOids.length !== 1
+                ? "首版仅支持普通单父提交"
+                : w.writeReason("revert")
+            }
+            onClick={w.prepareRevertCommit}
+          >
+            撤销此提交…
+          </button>
+          <p className="muted small">
+            保留原历史，先预览并应用反向修改，再确认保存新的撤销提交。
+          </p>
           {detail.parentOids.length ? (
             <label>
               比较父提交
@@ -173,6 +206,8 @@ function CommitDetails({ w }: { w: Workbench }) {
 /** 三栏显示原始两侧与可编辑结果，采用一侧不会自动写入。 */
 function Conflicts({ w }: { w: Workbench }) {
   const state = w.conflicts;
+  const reverting = w.reverting;
+  const finishKind = reverting ? "finishRevert" : "finishMerge";
   const scroll = useConflictScroll(
     state.document?.local ?? null,
     state.document?.incoming ?? null,
@@ -185,7 +220,11 @@ function Conflicts({ w }: { w: Workbench }) {
     <>
       <div className="drawer-scroll">
         <div className="section-heading">
-          <p className="muted">逐个保存并暂存后，再完成合并。</p>
+          <p className="muted">
+            {reverting
+              ? "检查撤销结果；有冲突时逐个保存并暂存，然后完成撤销提交。"
+              : "逐个保存并暂存后，再完成合并。"}
+          </p>
           <button
             className="secondary"
             disabled={w.operations.busy || state.loading}
@@ -194,6 +233,14 @@ function Conflicts({ w }: { w: Workbench }) {
             重新读取
           </button>
         </div>
+        {reverting &&
+          state.conflicts &&
+          "revertSessionId" in state.conflicts && (
+            <p className="muted small">
+              撤销目标：
+              <span className="mono">{state.conflicts.targetCommitOid}</span>
+            </p>
+          )}
         <div className="conflict-files">
           {state.conflicts?.files.map((file) => (
             <button
@@ -228,11 +275,11 @@ function Conflicts({ w }: { w: Workbench }) {
             <details className="conflict-oids">
               <summary>查看三个版本的对象 ID</summary>
               <dl className="metadata">
-                <dt>共同基线</dt>
+                <dt>{reverting ? "被撤销提交" : "共同基线"}</dt>
                 <dd>{selectedFile?.stageOids.base ?? "无"}</dd>
                 <dt>本地</dt>
                 <dd>{selectedFile?.stageOids.local ?? "无"}</dd>
-                <dt>传入</dt>
+                <dt>{reverting ? "被撤销提交的父版本" : "传入"}</dt>
                 <dd>{selectedFile?.stageOids.incoming ?? "无"}</dd>
               </dl>
             </details>
@@ -255,7 +302,7 @@ function Conflicts({ w }: { w: Workbench }) {
                 </pre>
               </section>
               <section>
-                <h3>合并结果</h3>
+                <h3>{reverting ? "冲突解决结果" : "合并结果"}</h3>
                 <span className="muted small">可编辑，保存时写入并暂存</span>
                 <div
                   className="merge-result-scroll"
@@ -263,7 +310,7 @@ function Conflicts({ w }: { w: Workbench }) {
                   onScroll={scroll.onScroll}
                 >
                   <textarea
-                    aria-label="合并结果"
+                    aria-label={reverting ? "冲突解决结果" : "合并结果"}
                     style={scroll.resultStyle}
                     wrap="off"
                     spellCheck={false}
@@ -274,13 +321,13 @@ function Conflicts({ w }: { w: Workbench }) {
                 </div>
               </section>
               <section>
-                <h3>传入版本</h3>
+                <h3>{reverting ? "被撤销提交的父版本" : "传入版本"}</h3>
                 <button
                   className="secondary"
                   disabled={state.stale || w.operations.busy}
                   onClick={w.useConflictSide("incoming")}
                 >
-                  采用传入全文
+                  {reverting ? "采用父版本全文" : "采用传入全文"}
                 </button>
                 <pre
                   tabIndex={0}
@@ -301,28 +348,48 @@ function Conflicts({ w }: { w: Workbench }) {
           </>
         ) : (
           <p className="muted">
-            选择一个支持的文本冲突；外部工具处理后请重新读取。
+            {reverting && state.conflicts?.files.length === 0
+              ? "没有未解决冲突。请检查本地修改，再填写说明并完成撤销提交。"
+              : "选择一个支持的文本冲突；外部工具处理后请重新读取。"}
           </p>
         )}
       </div>
       <div className="drawer-bottom">
         <label>
-          合并提交说明
+          {reverting ? "撤销提交说明" : "合并提交说明"}
           <textarea
             value={w.fields.mergeMessage}
             onChange={w.field("mergeMessage")}
             rows={2}
-            placeholder="说明这次合并的目的"
+            placeholder={
+              reverting ? "说明本次撤销的原因" : "说明这次合并的目的"
+            }
           />
         </label>
         <button
           className="primary"
-          disabled={!w.canWrite("finishMerge") || !w.fields.mergeMessage.trim()}
-          title={w.writeReason("finishMerge")}
-          onClick={w.prepareFinishMerge}
+          disabled={
+            !state.conflicts ||
+            state.stale ||
+            state.loading ||
+            !w.canWrite(finishKind) ||
+            !w.fields.mergeMessage.trim()
+          }
+          title={w.writeReason(finishKind)}
+          onClick={w.prepareFinishConflict}
         >
-          预览完成合并
+          {reverting ? "预览完成撤销" : "预览完成合并"}
         </button>
+        {reverting && (
+          <button
+            className="secondary"
+            disabled={!w.canWrite("abortRevert")}
+            title={w.writeReason("abortRevert")}
+            onClick={w.prepareAbortRevert}
+          >
+            中止本次撤销…
+          </button>
+        )}
       </div>
     </>
   );

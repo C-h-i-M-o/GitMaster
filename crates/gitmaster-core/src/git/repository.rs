@@ -223,7 +223,7 @@ fn read_state_until(
         ("merge", &["MERGE_HEAD"][..]),
         ("rebase", &["rebase-merge", "rebase-apply"][..]),
         ("cherryPick", &["CHERRY_PICK_HEAD"][..]),
-        ("revert", &["REVERT_HEAD"][..]),
+        ("revert", &["REVERT_HEAD", "gitmaster-revert.json"][..]),
         ("bisect", &["BISECT_LOG"][..]),
     ] {
         if markers

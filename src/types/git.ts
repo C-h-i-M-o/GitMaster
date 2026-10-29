@@ -56,7 +56,39 @@ export type FileDiff =
       reason: "conflict" | "submodule" | "encoding" | "symlink";
     };
 
+export type RestoreSource =
+  { kind: "index" } | { kind: "head" } | { kind: "commit"; oid: string };
+export interface RestoreFileCandidate {
+  fileId: string;
+  path: string;
+  sourceOid: string;
+}
+export interface RestoreFilePage {
+  sourceId: string;
+  source: RestoreSource;
+  sourceOid: string | null;
+  files: RestoreFileCandidate[];
+  nextCursor: string | null;
+}
+export interface RestoreContentPreview {
+  bytes: number;
+  sha256: string;
+  text: string | null;
+}
+export interface RestoreFilePreview {
+  path: string;
+  before: RestoreContentPreview | null;
+  after: RestoreContentPreview;
+}
+export interface RecoveryPathResult {
+  path: string;
+  status: "succeeded" | "failed" | "notExecuted" | "unknown";
+  error: OperationError | null;
+}
+
 export type OperationKind =
+  | "cleanUntracked"
+  | "restoreFiles"
   | "setUpstream"
   | "saveFile"
   | "stage"
@@ -69,8 +101,16 @@ export type OperationKind =
   | "push"
   | "integrate"
   | "saveConflict"
-  | "finishMerge";
+  | "saveRevertConflict"
+  | "revert"
+  | "finishMerge"
+  | "finishRevert"
+  | "abortRevert";
 export type LocalWriteRequest =
+  | { kind: "revertCommit"; commitOid: string }
+  | { kind: "abortRevert" }
+  | { kind: "cleanUntracked"; changeIds: string[] }
+  | { kind: "restoreFiles"; source: RestoreSource; fileIds: string[] }
   | { kind: "stage" | "unstage"; changeIds: string[] }
   | { kind: "commit"; message: string; stageChangeIds?: string[] }
   | { kind: "createBranch"; name: string }
@@ -98,10 +138,23 @@ export type ConflictWriteRequest =
   | { kind: "finishMerge"; message: string };
 export type WriteCapability =
   { status: "allowed" } | { status: "error"; error: OperationError };
+
+export type RevertConflictWriteRequest =
+  | {
+      kind: "saveRevertConflict";
+      conflictId: string;
+      fingerprint: string;
+      content: string;
+    }
+  | { kind: "finishRevert"; message: string };
 export interface WriteContext {
   repositoryId: string;
   snapshotId: string;
   capabilities: {
+    revert: WriteCapability;
+    saveRevertConflict: WriteCapability;
+    finishRevert: WriteCapability;
+    abortRevert: WriteCapability;
     stage: WriteCapability;
     unstage: WriteCapability;
     commit: WriteCapability;
@@ -116,6 +169,17 @@ export interface WriteContext {
   };
 }
 export type WriteTarget =
+  | { kind: "revert"; oid: string }
+  | {
+      kind: "clean";
+      files: Array<{ path: string; bytes: number; sha256: string }>;
+    }
+  | {
+      kind: "restore";
+      source: RestoreSource;
+      sourceOid: string | null;
+      files: RestoreFilePreview[];
+    }
   | { kind: "localBranch"; name: string; oid: string | null }
   | {
       kind: "remote";
@@ -186,11 +250,19 @@ export type WriteRefresh =
   | { status: "ready"; state: RepositoryState }
   | { status: "failed"; error: OperationError }
   | { status: "notApplicable" };
-export interface ConflictSummary {
-  mergeSessionId: string;
-  unresolvedCount: number;
-  paths: string[];
-}
+export type ConflictSummary =
+  | {
+      kind: "merge";
+      mergeSessionId: string;
+      unresolvedCount: number;
+      paths: string[];
+    }
+  | {
+      kind: "revert";
+      targetCommitOid: string;
+      unresolvedCount: number;
+      paths: string[];
+    };
 export type CloneStage = "download" | "checkout" | "publish";
 export interface CloneRecovery {
   path: string;
@@ -204,6 +276,7 @@ export type OperationResult =
       commitOid: string | null;
       branchName: string | null;
       clonePath: string | null;
+      pathResults?: RecoveryPathResult[];
       refresh: WriteRefresh;
     }
   | {
@@ -212,6 +285,7 @@ export type OperationResult =
       kind: OperationKind;
       error: OperationError;
       cloneRecovery: CloneRecovery | null;
+      pathResults?: RecoveryPathResult[];
       refresh: WriteRefresh;
     }
   | {
@@ -220,6 +294,7 @@ export type OperationResult =
       kind: OperationKind;
       error: OperationError;
       cloneRecovery: CloneRecovery | null;
+      pathResults?: RecoveryPathResult[];
       refresh: WriteRefresh;
     }
   | {
@@ -441,6 +516,25 @@ export interface ConflictDocument {
   encoding: string;
   lineEnding: string;
   fingerprint: string;
+}
+
+/** 撤销保留独立会话字段；observedHeadOid 是读取时 HEAD，不推测原始起点。 */
+export interface RevertState extends Pick<
+  ConflictState,
+  "repositoryId" | "files"
+> {
+  revertSessionId: string;
+  targetCommitOid: string;
+  observedHeadOid: string;
+  unresolvedCount: number;
+}
+
+/** 共用三方正文结构，但撤销文档绝不携带 mergeSessionId。 */
+export interface RevertConflictDocument extends Omit<
+  ConflictDocument,
+  "mergeSessionId"
+> {
+  revertSessionId: string;
 }
 
 /** 日志详细程度与后端实际生效状态。 */

@@ -1,5 +1,8 @@
 import type { ErrorDiagnostic, OperationError } from "../types/git";
 const codes = new Set([
+  "UNSUPPORTED_RECOVERY_TARGET",
+  "UNSUPPORTED_REVERT",
+  "UNTRACKED_COLLISION",
   "GIT_NOT_FOUND",
   "GIT_PATH_INVALID",
   "GIT_UNSUPPORTED",

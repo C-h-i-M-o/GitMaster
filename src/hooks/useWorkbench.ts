@@ -1,4 +1,5 @@
 import { useEditorAutosave } from "./useEditorAutosave";
+import { useRestoreFiles } from "./useRestoreFiles";
 import { useWorkbenchShortcuts } from "./useWorkbenchShortcuts";
 import { useChangeDetailFocus } from "./useChangeDetailFocus";
 import { useLogSettings } from "./useLogSettings";
@@ -12,7 +13,9 @@ import { restoreTreePaths } from "../ui/restoreTreePaths";
 import type { WorkspaceSession } from "../types/workspaceSession";
 import {
   toggleGroupSelection,
-  reconcileChangeSelection,
+  changeSelectionForSnapshot,
+  type ChangeSelection,
+  type SnapshotChangeSelection,
 } from "../ui/virtualChanges";
 import { mergeTreeFiles } from "../ui/projectTree";
 import { selectionAction } from "../ui/selectionAction";
@@ -483,13 +486,36 @@ export function useWorkbench() {
       });
     } else void editor.controller.reload(path);
   }
-  const [selected, setSelected] = useState<
-    Record<"stage" | "unstage", string[]>
-  >({ stage: [], unstage: [] });
-  // 暂存或刷新后剔除旧方向的 changeId，避免提交重复携带失效选择。
-  useEffect(() => {
-    setSelected((current) => reconcileChangeSelection(changeGroups, current));
-  }, [changeGroups]);
+  const [storedSelection, storeSelection] = useState<SnapshotChangeSelection>({
+    repositoryId: repository?.repositoryId,
+    snapshotId: repository?.snapshotId,
+    selection: { stage: [], unstage: [] },
+  });
+  // 在渲染和事件读取时立即失效，不等待 effect，避免序号复用勾选另一文件。
+  const selected = changeSelectionForSnapshot(
+    storedSelection,
+    repository?.repositoryId,
+    repository?.snapshotId,
+  );
+  /** 每次主动勾选绑定当前快照，旧快照的选择不参与后续切换。 */
+  function setSelected(
+    update: ChangeSelection | ((current: ChangeSelection) => ChangeSelection),
+  ): void {
+    storeSelection((stored) => ({
+      repositoryId: repository?.repositoryId,
+      snapshotId: repository?.snapshotId,
+      selection:
+        typeof update === "function"
+          ? update(
+              changeSelectionForSnapshot(
+                stored,
+                repository?.repositoryId,
+                repository?.snapshotId,
+              ),
+            )
+          : update,
+    }));
+  }
   const [fields, setFields] = useState<Record<Field, string>>({
     message: "",
     branchName: "",
@@ -623,6 +649,7 @@ export function useWorkbench() {
     !operations.busy &&
     !editor.savingPath &&
     (drawer === "changes" ||
+      drawer === "detail" ||
       drawer === "conflicts" ||
       modal === "branch" ||
       modal === "remote");
@@ -692,7 +719,11 @@ export function useWorkbench() {
       );
       pendingCommit.current = null;
     }
-    if (done.result.outcome === "needsResolution") setDrawer("conflicts");
+    if (
+      done.result.outcome === "needsResolution" ||
+      (done.result.kind === "revert" && done.result.outcome === "succeeded")
+    )
+      setDrawer("conflicts");
   }, [workspace.completion]);
   useEffect(() => {
     if (operations.failureNotification) setShowOperations(true);
@@ -721,9 +752,28 @@ export function useWorkbench() {
   const canSwitchBranch =
     canOpenWrite &&
     (!context || context.capabilities.switchBranch.status === "allowed");
+  const restoreFiles = useRestoreFiles(
+    {
+      repository: () => repo.getSnapshot().repository,
+      blocked: () =>
+        workspace.preview ||
+        repo.getSnapshot().loading ||
+        repo.getSnapshot().stale ||
+        operations.getSnapshot().busy ||
+        conflicts.getSnapshot().dirty ||
+        editor.controller.dirty() ||
+        Boolean(editor.controller.getSnapshot().savingPath),
+      read: api.prepareRestoreSource,
+      prepare: operations.prepareLocal,
+    },
+    repository?.snapshotId,
+  );
   /** 能力与当前快照一致才开放写入口，详细拒绝原因保留在后端预览。 */
   function canWrite(
-    kind: Exclude<OperationKind, "clone" | "saveFile" | "setUpstream">,
+    kind: Exclude<
+      OperationKind,
+      "clone" | "saveFile" | "setUpstream" | "restoreFiles" | "cleanUntracked"
+    >,
   ): boolean {
     return (
       !blocked &&
@@ -736,7 +786,10 @@ export function useWorkbench() {
   }
   /** 提供按钮和读屏可使用的能力门禁原因。 */
   function writeReason(
-    kind: Exclude<OperationKind, "clone" | "saveFile" | "setUpstream">,
+    kind: Exclude<
+      OperationKind,
+      "clone" | "saveFile" | "setUpstream" | "restoreFiles" | "cleanUntracked"
+    >,
   ): string {
     if (workspace.preview) return "请在桌面应用中使用 Git 功能";
     if (!repository) return "请先打开仓库";
@@ -896,6 +949,25 @@ export function useWorkbench() {
       stageChangeIds: selected.stage,
     });
   }
+  /** 第一次清理动作只准备明确勾选的未跟踪项，后续仍需不可恢复确认。 */
+  function prepareClean(): void {
+    if (
+      !canOpenWrite ||
+      editor.controller.dirty() ||
+      editor.controller.getSnapshot().savingPath
+    )
+      return;
+    const changeIds =
+      repository?.changes
+        .filter(
+          (change) =>
+            change.kind === "untracked" &&
+            selected.stage.includes(change.changeId),
+        )
+        .map((change) => change.changeId) ?? [];
+    if (changeIds.length)
+      void operations.prepareLocal({ kind: "cleanUntracked", changeIds });
+  }
   /** 创建分支只创建引用，不切换工作区。 */
   function prepareBranch(): void {
     if (canWrite("createBranch"))
@@ -998,18 +1070,52 @@ export function useWorkbench() {
   /** 将带原始指纹的当前草稿交给后端预览。 */
   function prepareSaveConflict(): void {
     const request = conflicts.saveRequest();
-    const session = conflicts.conflicts?.mergeSessionId;
-    if (request && session && !operations.busy)
-      void operations.prepareConflict(session, request);
+    const session = conflicts.conflicts;
+    if (!request || !session || operations.busy) return;
+    if ("revertSessionId" in session && request.kind === "saveRevertConflict")
+      void operations.prepareRevertConflict(session.revertSessionId, request);
+    else if ("mergeSessionId" in session && request.kind === "saveConflict")
+      void operations.prepareConflict(session.mergeSessionId, request);
   }
-  /** 完成合并必须重新验证整个索引和双亲。 */
-  function prepareFinishMerge(): void {
-    const session = conflicts.conflicts?.mergeSessionId;
-    if (session && canWrite("finishMerge"))
-      void operations.prepareConflict(session, {
+  /** 按当前会话种类完成合并或撤销，索引与父节点由对应后端重新验证。 */
+  function prepareFinishConflict(): void {
+    const session = conflicts.conflicts;
+    if (
+      !session ||
+      conflicts.stale ||
+      conflicts.loading ||
+      !fields.mergeMessage.trim()
+    )
+      return;
+    if ("revertSessionId" in session && canWrite("finishRevert"))
+      void operations.prepareRevertConflict(session.revertSessionId, {
+        kind: "finishRevert",
+        message: fields.mergeMessage,
+      });
+    else if ("mergeSessionId" in session && canWrite("finishMerge"))
+      void operations.prepareConflict(session.mergeSessionId, {
         kind: "finishMerge",
         message: fields.mergeMessage,
       });
+  }
+  /** 仅撤销当前历史详情中的普通提交，准备仍由后端核对可达性和图能力。 */
+  function prepareRevertCommit(): void {
+    const detail = workspace.history.detail;
+    if (!detail || detail.parentOids.length !== 1 || !canWrite("revert"))
+      return;
+    setFields((current) => ({
+      ...current,
+      mergeMessage: `撤销提交 ${detail.oid}`,
+    }));
+    void operations.prepareLocal({
+      kind: "revertCommit",
+      commitOid: detail.oid,
+    });
+  }
+  /** 中止只准备预览，真正执行还需独立勾选及确认，未保存草稿须先处理。 */
+  function prepareAbortRevert(): void {
+    if (canWrite("abortRevert"))
+      void operations.prepareLocal({ kind: "abortRevert" });
   }
   /** 刷新冲突文件前先处理未保存草稿。 */
   function refreshConflicts(): void {
@@ -1429,6 +1535,14 @@ export function useWorkbench() {
   );
   return {
     ...workspace,
+    restoreFiles,
+    prepareClean,
+    cleanSelectionCount:
+      repository?.changes.filter(
+        (change) =>
+          change.kind === "untracked" &&
+          selected.stage.includes(change.changeId),
+      ).length ?? 0,
     git: { ...workspace.git, refresh: refreshGitProtected },
     chooseGit: chooseGitProtected,
     resetGit: resetGitProtected,
@@ -1543,7 +1657,10 @@ export function useWorkbench() {
     editConflict,
     useConflictSide,
     prepareSaveConflict,
-    prepareFinishMerge,
+    prepareFinishConflict,
+    prepareRevertCommit,
+    prepareAbortRevert,
+    reverting: repository?.operations.includes("revert") ?? false,
     refreshConflicts,
     discardDraft,
     keepDraft,

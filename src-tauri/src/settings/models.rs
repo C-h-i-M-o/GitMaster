@@ -104,6 +104,9 @@ impl Default for SaveMode {
     deny_unknown_fields
 )]
 pub enum SettingsPatch {
+    Cache {
+        disk_cache_enabled: bool,
+    },
     Git {
         git_path: Option<String>,
     },

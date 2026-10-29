@@ -519,6 +519,7 @@ fn execute_clone(
             operation_id,
             kind: OperationKind::Clone,
             error,
+            path_results: Vec::new(),
             clone_recovery: None,
             refresh: WriteRefresh::NotApplicable,
         };
@@ -543,6 +544,7 @@ fn execute_clone(
                 operation_id,
                 kind: OperationKind::Clone,
                 error,
+                path_results: Vec::new(),
                 clone_recovery: Some(CloneRecovery {
                     path: root.to_string_lossy().into_owned(),
                     stage: recovery_stage,
@@ -558,6 +560,7 @@ fn execute_clone(
                 operation_id,
                 kind: OperationKind::Clone,
                 error,
+                path_results: Vec::new(),
                 clone_recovery: Some(CloneRecovery {
                     path: target.to_string_lossy().into_owned(),
                     stage,
@@ -605,6 +608,7 @@ fn execute_clone(
                 kind: OperationKind::Clone,
                 commit_oid,
                 branch_name,
+                path_results: Vec::new(),
                 clone_path: Some(target.to_string_lossy().into_owned()),
                 refresh: WriteRefresh::Ready { state },
             }
@@ -613,6 +617,7 @@ fn execute_clone(
             operation_id,
             kind: OperationKind::Clone,
             error: OperationError::new("WRITE_OUTCOME_UNKNOWN"),
+            path_results: Vec::new(),
             clone_recovery: Some(CloneRecovery {
                 path: target.to_string_lossy().into_owned(),
                 stage: CloneStage::Publish,

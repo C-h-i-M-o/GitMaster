@@ -1,4 +1,6 @@
 //! 固定 Git 引用图快照并提供有界历史读取。
+mod cache;
+mod diff_cache;
 mod files;
 use super::repository::{next_id, query};
 use super::types::{CommitDetail, CommitSummary, HistoryPage, HistoryRefTip, ReferenceKind};
@@ -6,6 +8,7 @@ use super::{GitExecutable, OperationError, RepositoryHandle};
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
+    sync::{Arc, Mutex},
 };
 
 const PAGE_SIZE: usize = 50;
@@ -14,6 +17,8 @@ const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 /// 绑定仓库和引用快照的历史读取会话。
 pub struct HistorySession {
+    content_cache: Option<Arc<crate::cache::ContentCache>>,
+    diff_directory: Mutex<Option<tempfile::TempDir>>,
     git: GitExecutable,
     repository: RepositoryHandle,
     snapshot_id: String,
@@ -26,6 +31,10 @@ pub struct HistorySession {
 }
 
 impl HistorySession {
+    /// 仅检查当前图已交付的 OID；展示缓存本身不能签发撤销写权限。
+    pub fn authorizes_commit(&self, oid: &str) -> bool {
+        self.returned.contains(oid)
+    }
     /// 冻结本地及远端引用头，并固定最多 1000 个可达提交。
     pub fn new(git: GitExecutable, repository: RepositoryHandle) -> Result<Self, OperationError> {
         let refs = query(
@@ -96,6 +105,8 @@ impl HistorySession {
         commits.retain(|oid| seen.insert(oid.clone()));
         commits.truncate(MAX_COMMITS);
         Ok(Self {
+            content_cache: None,
+            diff_directory: Mutex::new(None),
             git,
             repository,
             snapshot_id,
@@ -106,6 +117,40 @@ impl HistorySession {
             details: HashMap::new(),
             file_selection: None,
         })
+    }
+
+    /// 由宿主注入全局缓存，核心不决定平台目录；缓存不能签发历史会话或写能力。
+    pub fn set_content_cache(&mut self, cache: Arc<crate::cache::ContentCache>) {
+        self.content_cache = Some(cache);
+    }
+
+    /// 展示缓存仍经过原始解析器；过期、损坏或配置变化时回退真实 Git。
+    fn cached_query<T>(
+        &self,
+        key: &str,
+        args: &[&str],
+        parse: impl Fn(&[u8]) -> Result<T, OperationError>,
+    ) -> Result<T, OperationError> {
+        let scope = self
+            .content_cache
+            .as_ref()
+            .and_then(|_| cache::scope(&self.repository));
+        let key = format!("history-utf8-v1:{}:{key}", self.git.version);
+        if let (Some(cache), Some(scope)) = (&self.content_cache, &scope) {
+            if let Some(bytes) = cache.get(scope, &key) {
+                if let Ok(value) = parse(&bytes) {
+                    return Ok(value);
+                }
+            }
+        }
+        let bytes = query(&self.git, &self.repository.root, args, OUTPUT_LIMIT)?;
+        let value = parse(&bytes)?;
+        if let (Some(cache), Some(scope)) = (&self.content_cache, &scope) {
+            if cache::scope(&self.repository).as_ref() == Some(scope) {
+                cache.put(scope, &key, &bytes);
+            }
+        }
+        Ok(value)
     }
 
     /// 读取固定快照的一页，游标只在本会话内有效。
@@ -180,58 +225,69 @@ impl HistorySession {
             "--no-notes",
             "--no-show-signature",
             "--no-use-mailmap",
+            "--encoding=UTF-8",
             "--format=%H%x00%P%x00%an%x00%aI%x00%B",
         ];
         args.extend(oids.iter().map(String::as_str));
         args.push("--");
-        let bytes = query(&self.git, &self.repository.root, &args, OUTPUT_LIMIT)?;
-        parse_summaries(&bytes, oids)
+        self.cached_query(&format!("summaries:{}", oids.join(",")), &args, |bytes| {
+            parse_summaries(bytes, oids)
+        })
     }
     /// 从冻结 OID 读取原始说明和身份，格式模式不额外添加结尾换行。
     fn detail(&self, oid: &str) -> Result<CommitDetail, OperationError> {
         if !self.commits.iter().any(|value| value == oid) {
             return Err(OperationError::new("INVALID_INPUT"));
         }
-        let bytes = query(
-            &self.git,
-            &self.repository.root,
+        self.cached_query(
+            &format!("detail:{oid}"),
             &[
                 "show",
                 "-s",
                 "--no-use-mailmap",
+                "--encoding=UTF-8",
+                "--no-notes",
+                "--no-show-signature",
                 "--format=format:%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B",
                 oid,
             ],
-            OUTPUT_LIMIT,
-        )?;
-        let fields: Vec<&[u8]> = bytes.splitn(9, |b| *b == 0).collect();
-        if fields.len() != 9 {
-            return Err(OperationError::new("PARSE_FAILED"));
-        }
-        let message = text(fields[8])?;
-        let subject = message.lines().next().unwrap_or_default().to_owned();
-        let body = message.strip_prefix(&subject).unwrap_or("").to_owned();
-        Ok(CommitDetail {
-            oid: text(fields[0])?,
-            parent_oids: if fields[1].is_empty() {
-                Vec::new()
-            } else {
-                text(fields[1])?
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect()
-            },
-            subject,
-            author_name: text(fields[2])?,
-            authored_at: text(fields[4])?,
-            body,
-            author_email: text(fields[3])?,
-            committer_name: text(fields[5])?,
-            committer_email: text(fields[6])?,
-            committed_at: text(fields[7])?,
-            truncated: false,
-        })
+            |bytes| parse_detail(bytes, oid),
+        )
     }
+}
+
+/// 缓存和真实输出使用同一字段校验，不接受另一个 OID 的提交信息。
+fn parse_detail(bytes: &[u8], expected: &str) -> Result<CommitDetail, OperationError> {
+    let fields: Vec<&[u8]> = bytes.splitn(9, |b| *b == 0).collect();
+    if fields.len() != 9 {
+        return Err(OperationError::new("PARSE_FAILED"));
+    }
+    if fields[0] != expected.as_bytes() {
+        return Err(OperationError::new("PARSE_FAILED"));
+    }
+    let message = text(fields[8])?;
+    let subject = message.lines().next().unwrap_or_default().to_owned();
+    let body = message.strip_prefix(&subject).unwrap_or("").to_owned();
+    Ok(CommitDetail {
+        oid: text(fields[0])?,
+        parent_oids: if fields[1].is_empty() {
+            Vec::new()
+        } else {
+            text(fields[1])?
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect()
+        },
+        subject,
+        author_name: text(fields[2])?,
+        authored_at: text(fields[4])?,
+        body,
+        author_email: text(fields[3])?,
+        committer_name: text(fields[5])?,
+        committer_email: text(fields[6])?,
+        committed_at: text(fields[7])?,
+        truncated: false,
+    })
 }
 
 /// 通过 stdin 传递冻结的引用头，避免 Windows 命令行长度限制。

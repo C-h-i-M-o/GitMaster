@@ -49,7 +49,9 @@ pub fn read_write_context(
         .iter()
         .any(|c| c.kind == "untracked" || (c.kind == "tracked" && c.worktree_status != "."));
     let identity = if platform.is_ok()
-        && ((idle.is_ok() && (staged || selectable)) || state.operations == ["merge"])
+        && ((idle.is_ok() && (staged || selectable))
+            || state.operations == ["merge"]
+            || state.operations == ["revert"])
     {
         guard::identity(git, repo, deadline).map(|_| ())
     } else {
@@ -64,11 +66,32 @@ pub fn read_write_context(
         .and(named.clone())
         .and(headed.clone());
     let unresolved = state.changes.iter().any(|c| c.kind == "conflicted");
+    let reverting = platform
+        .clone()
+        .and(require(
+            state.operations == ["revert"],
+            "REPOSITORY_OPERATION_ACTIVE",
+        ))
+        .and(named.clone())
+        .and(headed.clone());
     let network = platform.and(idle);
     let result = WriteContext {
         repository_id: state.repository_id.clone(),
         snapshot_id: state.snapshot_id.clone(),
         capabilities: WriteCapabilities {
+            revert: capability(local.clone().and(headed.clone()).and(clean.clone())),
+            save_revert_conflict: capability(
+                reverting
+                    .clone()
+                    .and(require(unresolved, "UNSUPPORTED_CONFLICT")),
+            ),
+            finish_revert: capability(
+                reverting
+                    .clone()
+                    .and(require(!unresolved, "UNRESOLVED_CONFLICTS"))
+                    .and(identity.clone()),
+            ),
+            abort_revert: capability(reverting),
             stage: capability(local.clone()),
             unstage: capability(local.clone().and(require(staged, "EMPTY_SELECTION"))),
             commit: capability(

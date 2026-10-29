@@ -16,6 +16,7 @@ import {
 import { normalizeOperationError } from "../services/gitErrors";
 import type {
   ConflictWriteRequest,
+  RevertConflictWriteRequest,
   OperationError,
   OperationResult,
 } from "../types/git";
@@ -46,7 +47,8 @@ export function useWorkspace() {
       if (
         result.outcome === "succeeded" &&
         scope.verified &&
-        result.kind === "saveConflict" &&
+        (result.kind === "saveConflict" ||
+          result.kind === "saveRevertConflict") &&
         pendingSave.current
       ) {
         conflicts.acknowledgeSave(
@@ -167,6 +169,21 @@ export function useWorkspace() {
     },
     [operations.activity, operations.prepareConflict],
   );
+  /** 撤销草稿和指纹一起进入确认，失败保留原编辑。 */
+  const prepareRevertConflict = useCallback(
+    async (
+      session: string,
+      request: RevertConflictWriteRequest,
+    ): Promise<void> => {
+      if (operations.activity !== "idle") return;
+      pendingSave.current =
+        request.kind === "saveRevertConflict"
+          ? { id: request.conflictId, content: request.content }
+          : null;
+      await operations.prepareRevertConflict(session, request);
+    },
+    [operations.activity, operations.prepareRevertConflict],
+  );
   /** 手动刷新先关闭预览；活动任务或未保存冲突内容须先处理。 */
   const refreshRepository = useCallback(async (): Promise<void> => {
     if (
@@ -245,7 +262,7 @@ export function useWorkspace() {
     setFileSaveActive,
     git: { ...git, refresh: refreshGit },
     repo: { ...repo, refresh: refreshRepository },
-    operations: { ...operations, prepareConflict },
+    operations: { ...operations, prepareConflict, prepareRevertConflict },
     history,
     remote,
     conflicts,

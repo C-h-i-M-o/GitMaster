@@ -1,6 +1,14 @@
 # 分阶段验证记录
 
-各节保留当时的执行状态；当前分支切换修复和交付以文末“分支切换修复验收”章节为准，历史未提交、未实施或失败记录不代表最新本机结果。
+## 2026-10-29 提交前工程检查
+
+用户授权检查通过后提交并推送 `liuyilun-m4-release`，不合并 `main`。本轮 `pnpm typecheck`、`pnpm build`、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop` 均通过；保留已有 Vite 大 chunk 及 Rust 未使用代码警告。
+
+核心测试首次误用默认并发，且与前端检查并行，不符合本项目串行 Git 集成测试约定。出现大量失败后停止本轮测试子进程，退出码 -1，日志保留于 `target/m4/pre-push-core-tests.log`；该次不是通过。随后其他检查均结束，使用 `--exact --test-threads=1 --nocapture` 单独诊断 `git::branches::tests::branch_list_resolves_current_upstream_and_linked_worktree`，1 项通过（64.77 秒），日志为 `target/m4/pre-push-core-isolated.log`。此结果说明该用例串行运行可以通过，不足以证明所有失败都由并发造成，也不能替代整套核心测试通过。
+
+用户随后明确授权直接提交，并要求文档注明测试未进行。按此决定，本次不进行完整功能测试、性能测试、安装验收及截图，最终测试由用户完成；核心全套测试未取得通过结论，上述实际运行过的失败及单项通过记录如实保留。本次允许依据已通过的工程检查提交并推送开发分支，不合并 main，不发布 Release，不把工程检查通过表述为全部测试通过。课程周报的既有两段文档改动保留本地，不纳入 M4 提交范围。
+
+各节保留当时的执行状态。当前 M4 交付以文末“最新 Windows 候选包”和“最终验收移交用户”章节为准，使用入口见 [M4 开发交接](spec-plan.md#m4-handoff)。历史未提交、未实施或失败记录不代表最新本机结果，也不会被后续单项通过覆盖。
 
 ## 性能优化首批实施（2026-09-23）
 
@@ -1880,3 +1888,134 @@ Windows 桌面自动化通过 @oai/sky 读取窗口两次超时，备用 cua.get
 - 无 Rust 或 IPC 变更，本轮未重复 Rust 套件；Windows 原生交互、macOS、Release、安装包与签名未复验。本轮通过结论仅覆盖上述源码审查及前端验证。
 
 提交范围为界面文案、反馈展示、顶部布局、已跟踪通知回归和相关文档。原有课程周报两段追加内容保留在工作区，不加入本次提交；忽略目录下的浏览器夹具、日志、截图与既有 stash 继续本地保留。
+
+## 2026-10-28 M4 实施中的验证记录
+
+范围：用户授权当前 Windows 设备实施计划第 1—7 项；本地分支 liuyilun-m4-release，未提交、未推送。Mac 留待其他设备。本节持续补充，不代表 M4 已完成。
+
+- 环境：Node 24.18.0、pnpm 11.15.1、cargo/rustc 1.98.1、Git 2.55.0.windows.3。没有下载或安装新工具。
+- 前端原始基线：已跟踪 Node 测试 107/107 通过，pnpm build（含 typecheck）通过；Vite 既有大 chunk 提示仍存在。证据：target/m4/baseline-frontend.log、baseline-build.log。
+- Rust 原始串行基线：运行 222 项的套件，在两个 branches 测试失败后主动终止该测试子进程以单独诊断，不能算完整回归。create_supports_sha256_repository 单独运行仍在 open_repository 的 revParse 阶段 TIMEOUT（44.71 秒）；不是仅由测试并发引起。证据：baseline-core.log、baseline-sha256-isolated.log。
+- 恢复新增测试：来源分页的会话/游标边界 1 项通过；缺失普通文件安全创建、晚到碰撞、嵌套仓库和超限输入 2 项通过。证据：restore-pages.log、restore-create-green.log。
+- 请求契约先行测试：restoreFiles 与 cleanUntracked 仍处于接口接入前的失败阶段，不能列为通过。证据：recovery-contract-red.log。
+- 文件恢复执行链：编译通过后真实临时仓库用例在准备阶段返回 ACCESS_DENIED（184.36 秒），未进入用户文件写入；查明新隔离转换器使用 --template= 初始化后缺少 .git/info 目录。已按现有暂存转换器的模式显式创建私有目录，待复验。证据：restore-write-green.log（文件名不代表通过）。
+- Windows 进程耗时：增加仅手工运行的 ignored 采样测试，对比相同参数的直接进程和受管进程，并输出已有脱敏阶段耗时；没有修改超时或关闭安全校验。
+- README 历史内容已迁入开发归档，新增 Issue 模板、GitHub 文案审阅稿。尚未推送，不能宣称 GitHub 在线渲染或 About 已更新。
+- 尚未验证：最新完整核心回归、桌面编译与 Release、恢复端到端、清理与撤销、缓存及性能门槛、安装签名、干净系统、截图；后续记录逐项更新，不沿用早期跳过许可。
+
+### Windows 未签名构建补充
+
+- 用户最新决定覆盖先前签名资源回复：Windows 不使用代码签名，直接构建。已授权下载打包需要的官方 NSIS 与离线 WebView2 资源；未授权提交、推送或发布。
+- tauri.windows.conf.json 设置 NSIS、offlineInstaller、silent，并显式保留空证书和签名命令；不影响系统 Git。
+- 首次 pnpm tauri build --bundles nsis --config src-tauri/tauri.windows.conf.json：前端 build/typecheck 通过；Rust Release 编译失败。桌面侧报告不存在 restore/clean 模块及请求变体，而源码和已通过的 Debug 检查包含这些接口。
+- 核查 Release 核心 fingerprint/dep-info 为 2026-10-23，未列新增模块，当前 mod.rs/types.rs 已于 2026-10-28 更新。正在单独记录 Cargo 增量诊断并重建核心；此时未生成本轮 NSIS 包。证据：target/m4/windows-nsis-build.log、release-core-fingerprint.log。
+- 恢复核心扩展 7/7 通过（238.45 秒）；包含删除的二进制恢复、预览后外部编辑拒绝、未跟踪碰撞拒绝、索引和无关内容保留。证据：restore-core-expanded.log。
+- recovery_ 专项 7/7 通过（91.67 秒；含一项既有冲突恢复测试，不与恢复 7 项重复累加），其中 Windows 文件句柄删除、换行转换、请求契约均通过。证据：recovery-primitives.log。
+- 清理真实仓库专项首次在 open_repository 的 revParse 阶段 TIMEOUT，尚未进入 prepare 或删除，保留为失败待复验。证据：clean-core.log。
+
+### Windows Git 超时专项（2026-10-28）
+
+本轮按用户要求排查期限与执行耗时，没有修改生产超时、Git 安装、用户设置或系统保护。只增加脱敏阶段计时和手工诊断测试；样本全部使用临时仓库。
+
+- 当前策略：普通只读命令最多 10 秒，本地写进程最多 60 秒，网络进程最多 15 分钟；业务链还受自身总预算限制。status/diff 的安全配置读取与业务命令共享只读预算。测试总用时不能直接解释为单条 Git 命令用时。
+- 首轮新诊断在环境检测阶段即失败：两个候选的 `git --version` 分别在 10,107ms、10,267ms 返回 TIMEOUT，尚未打开仓库。进程准备 3/13ms，CreateProcess 30/53ms，启动后的等待 9,978/9,981ms，管道读取累计 22/32ms，回收 93/157ms。此样本没有正常退出事件，不能推定 Git 内部在哪个步骤停顿。证据：target/m4/timeout-process-comparison.log。
+- 同时段通过 PowerShell 直接运行系统 Git：cmd 入口三次 2,878/1,670/7,278ms；mingw64 原生入口三次 6,542/7,799/2,383ms，全部退出 0。系统性能计数器一次为 100%，可用物理内存约 2.5GiB；这只是当时快照，后续进程 CPU 差分没有锁定持续占满的具体组件，不能据此归因到安全软件或某个应用。
+- 新 Release 应用日志也记录 `git_process` 在 10,083ms 超时，外层 `open_repository` 总计 29,208ms（2026-10-28 09:08:48 UTC）。说明异常不只发生于测试执行器。日志只读取现有脱敏诊断，没有打开或修改用户仓库。
+- 编译和打包结束后独占采样，同一 `rev-parse --is-inside-work-tree` 每组 20 次：系统入口直接执行中位 541ms、P95 663ms；应用受管执行中位 553ms、P95 770ms；原生入口直接执行中位 291ms、P95 378ms，受管执行中位 345ms、P95 451ms。全部成功。完整打开空仓库各 3 次：系统入口中位 6,559ms，原生入口中位 3,949ms；样本数不足以作为发布 P95。证据：timeout-process-comparison-2.log。
+- 进一步使用 Git 自带 Trace2，交替测试两个入口的 version/rev-parse，共 40 次，均退出 0。系统入口 rev-parse 平均墙钟 632.78ms，其中首条 Trace2 之前 469.05ms，Git Trace2 内部累计 52.75ms；原生入口对应 356.73/270.73/54.61ms。此轮没有重现 10 秒长尾，确认正常样本主要开销在 Git Trace2 覆盖区间之外，但不据此断言所有慢样本都是相同原因。证据：timeout-trace2-comparison.log、同目录时间戳 JSONL、trace-git-startup.ps1；字段语义参考 [Git Trace2 文档](https://git-scm.com/docs/api-trace2/2.33.0.html)。
+- 进程执行器回归 3 通过、2 ignored（子进程夹具和手工性能采样）；原先失败的 SHA-256 分支用例通过 35.86 秒，清理真实仓库用例通过 47.63 秒。清理本轮实际进入准备和删除，验证未选择文件、忽略文件、已跟踪文件及索引保留。证据：timeout-process-regression.log、timeout-sha256-recheck.log、timeout-clean-recheck.log。未删除前次失败，也不将这次复验称为间歇超时已经修复。
+
+结论：10 秒对正常小型只读查询有余量，但本机存在明显的进程执行延迟波动，已造成实际超时；串行多次启动进一步拉长打开和准备流程。正常样本未显示管道读取或回收占据主要时间。仅扩大期限不能消除延迟，应继续减少重复查询、核实慢时段系统等待原因，并以保留异常样本的实测决定是否调整不同操作的预算。暂不静默将用户 Git 路径替换为原生入口，因其认证与辅助程序环境仍需完整验证。
+
+### 本轮构建与前端复验补充
+
+- 定向清理 gitmaster-core 的 Release 缓存后重建，Rust Release 成功（8m23s），新主程序 9,232,896 字节，SHA-256 为 `28E4CB99A1F7FCDEAC8BC4E0600FE269E736654E5C30FD5571B53CAEF296EF38`。Get-AuthenticodeSignature 确认为 NotSigned。
+- 官方 NSIS、nsis-tauri-utils 下载并通过 Tauri 哈希校验，微软离线 WebView2 资源下载后执行 makensis。安装包文件已产生：`GitMaster_0.1.0_x64-setup.exe`，221,711,156 字节，SHA-256 `52A11E1902E6B1662CA18E0DBB5262EB732B11D03BB3752E90723F501586750C`，NotSigned；但构建命令最终因文件占用（os error 32）退出 1，因此尚不能列为完整打包通过。构建结束前曾启动新主程序，后续须在关闭该验收实例后重新打包核实。证据：windows-nsis-build-retry.log。
+- 原生窗口控制被用户按 Escape 中止，之后未继续控制界面；原生交互和安装验收仍未完成。
+- 前端按已跟踪 TS 测试及本地恢复测试运行 108 项通过，补跑已跟踪 mjs 搜索测试 2 项通过，合计 110 项；format:check 通过。证据：recovery-frontend-tests.log、recovery-frontend-mjs.log、format-check.log。
+
+### Windows Release 原生补验（2026-10-28）
+
+用户重新明确授权操作电脑后，使用 Computer Use 在实际 Release 窗口验收；测试仓库为本轮专用 `target/m4/ui-release`，含三个示例提交、一个已跟踪修改、两个未跟踪文件及一个忽略文件。未在用户真实仓库执行 Git 写入。此轮窗口对应前述 SHA-256 为 `28E4CB99…` 的未签名程序，不包含下述验收后修复。
+
+- 恢复来源读取和覆盖预览通过：HEAD 固定到 `210f5b2270f794ecc0fc9d7aed6c040ae4163255`；选择“使用说明.md”，预览完整展示 90 → 67 字节及前后正文、SHA-256。取消后六个文件及 `.git/index` 字节摘要均不变。证据：target/m4/ui-before.json、ui-restore-cancel.json。
+- 清理预览和取消通过：清单只有“临时笔记.txt”（44 字节），二次确认默认未勾选、执行按钮禁用；取消后上述七项摘要均不变。证据：ui-clean-cancel.json。
+- 清理实际执行通过：勾选确认后仅删除选中文件；“保留笔记.txt”、ignored.txt、已跟踪文件和索引仍与基线完全一致。操作记录显示逐文件“已完成”，本次执行用时 19.4 秒。证据：ui-clean-executed.json。单个样本不能作为性能门槛通过依据。
+- 恢复实际执行通过：文件最终摘要 `79F1C98DFE49A9E2026C391527F7D4F16C20F2346D754B2071BB1381D22C8479` 与预览目标一致，工作台未暂存项消失；索引与无关文件不变。操作记录显示逐文件“已完成”，本次用时 26.1 秒。证据：ui-restore-executed.json。
+- 发现并修复待复验：清理后刷新，旧序号 changeId 被另一未跟踪文件复用，旧前端筛选逻辑错误保留了勾选。已将勾选绑定 repositoryId/snapshotId，在首次渲染和事件读取时即清空过期选择。新增快照选择测试 4 项与既有分组测试 5 项均通过，typecheck 通过；仍需重构 Release 后复验。证据：ui-selection-red.log、ui-selection-green.log、ui-selection-typecheck.log。
+- 确认文案修正：恢复和清理不再显示无关的父提交、作者和提交说明，避免清理被误标为“根提交”。原版展开恢复正文后需滚动才能操作底部按钮；此次缩减无关内容，布局仍需新 Release 实测。ui-confirmation-typecheck.log 通过。
+- 尚未完成：新修复 Release 回归、完整核心测试、安装/升级/卸载、干净 Windows、任务四撤销闭环、任务五缓存与性能门槛。macOS 仍留后续设备，不将本次局部通过写成 M4 完成。
+
+### 中断后的检查核对（2026-10-29）
+
+- 用户确认没有干净 Windows 环境、不需要过多测试：本轮跳过干净系统、缺失 WebView2/Git 及相应断网安装场景，停止扩展环境矩阵；保留本机安装/启动和本次改动的必要验证。跳过不等于实测通过。
+
+- 10 月 28 日前端测试最终为 114/114 通过，含已跟踪 TS/mjs、本地恢复控制器和新增快照选择测试；format:check 通过。证据：target/m4/ui-frontend-tests.log、ui-format-check.log。
+- 最新桌面 `cargo check -p gitmaster-desktop --locked` 通过（47.46 秒）。撤销会话重建/三方内容/旧会话拒绝专项通过（108.63 秒）；这些不代表撤销发起、完成、中止和 UI 已实现。证据：ui-desktop-check.log、revert-session-recheck.log。
+- 新增撤销冲突保存测试首次失败在夹具 `open_repository` 的 revParse，退出码 -1073741205（0xC000026B），未执行保存。按 [Microsoft NTSTATUS 定义](https://learn.microsoft.com/ko-kr/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55)，此状态是窗口站正在关闭导致 DLL 初始化失败，区别于 TIMEOUT。保留该失败，恢复环境后单独复验；不将此系统退出码当成保存逻辑通过。证据：revert-save-recheck.log。
+- 恢复环境后的保存专项仍未进入保存：在 RevertSession::new 的 gitQuery 超时，89.49 秒退出 101；不再反复重跑挑选通过样本。证据：revert-save-recheck-2.log。后续随实际性能修复验证对应路径。
+- 缓存存储核心已实现：固定全局 1GB 磁盘、128MiB 内存；单块 8MiB 上限，目录实际占用包括清单和临时文件，非阻塞 OS 锁、LRU、SHA-256 校验、坏块丢弃、关闭及清除。只新增三个有针对性的本地文件测试，最终 3/3 通过（4.31 秒），不调用 Git。证据：cache-red.log、cache-final.log。尚未接入历史读取、应用开关和用量界面，因此不能宣称用户已享受持久缓存或任务五完成。
+
+### Windows 安装包结果与缓存接入（2026-10-29）
+
+- 关闭验收实例后完整 NSIS 构建成功，命令 `pnpm tauri build --bundles nsis --config src-tauri/tauri.windows.conf.json` 退出 0，日志结束为 `Finished 1 bundle`。Release 编译 8m21s。包包含恢复/清理、快照选择修复与确认框简化，不包含之后补充的缓存接入。证据：target/m4/windows-nsis-ui-fix.log、windows-nsis-ui-fix-artifacts.json。
+- 安装包 `target/release/bundle/nsis/GitMaster_0.1.0_x64-setup.exe`：221,715,248 字节，SHA-256 `CE808CE90A91F3871BD8B59C49A9B46DE72F833B1ED3DF8F14D79B553E5B79DA`，NotSigned。构建目录主程序 9,233,920 字节，SHA-256 `47DB8C3B3C1789B9FF7E5987D68D4380A66025950D3420962194C32D140D5B40`，NotSigned。
+- 本机安装器实际显示成功完成，随后已安装应用出现 `http://tauri.localhost/` 工作台，不依赖开发服务器。当前宿主环境将实际安装位置虚拟化到 Codex 包的 `LocalCache/Local/GitMaster`；不能据此声称干净系统或标准独立安装环境已验证。已安装主程序 SHA-256 为 `7DFFE063FC34CCE607079E4228143962637969B5BB572B0560826DEE28F51FF3`，长度相同。逐字节比对确认只差 3 字节：`__TAURI_BUNDLE_TYPE_VAR_UNK` 变为 `__TAURI_BUNDLE_TYPE_VAR_NSS`，与构建日志的 NSIS bundle type patch 对应，其他字节一致。
+- 启动后的测试仓库读取再次显示 Git 超时。用户按 Escape 停止 Computer Use，之后没有继续操作界面。因此新包的清理勾选修复仍缺原生复验证据，安装/启动窗口存在不代表主流程无问题；升级、卸载及完整安装回归均未完成。
+- 缓存接入源码已从存储层推进到历史查询和桌面：共享 ContentCache 注入历史会话，提交摘要/详情缓存使用仓库目录实体、图语义元数据、Git 版本和 OID 作为作用域；原始输出重新经过解析，缓存不能绕过本会话已返回 OID 的校验。桌面启动提供固定缓存目录，失败回退真实读取。
+- 设置增加磁盘开关、真实用量、清除入口；复用现有版本 4 配置和 revision 保存队列，旧配置读取默认开启且不立即改写，关闭保留已有磁盘文件及有界内存缓存。设置保存成功后才同步运行时开关。清除接口不接收前端路径，只清应用生成的缓存块和清单。
+- 必要检查：`cargo check -p gitmaster-desktop --locked` 通过（1m03s），`pnpm typecheck` 通过；设置模块 14/14 通过（1.51 秒），含旧配置兼容、关闭持久化、无关设置保留和过期补丁拒绝。前端缓存补丁及既有设置队列 9/9 通过。历史缓存专项 2/2 通过（0.64 秒），验证重开磁盘命中、会话门禁、解析边界、配置/replace/worktree/仓库重建隔离；使用临时目录，不启动 Git。证据：cache-desktop-check.log、cache-typecheck.log、cache-settings-desktop-tests.log、cache-settings-frontend.log、cache-history-tests.log。
+- 当前状态仍未完成任务一至七：缓存尚缺已提交差异接入和 Release 性能证据，撤销发起/继续/中止及 UI 还未闭环，原生复验与页面截图仍待后续。未重新打包缓存版本，没有修改真实仓库、远端或提交/推送。没有以本轮针对性检查替代完整发布验收。
+- 本批收尾：`pnpm build`（包含类型检查）退出 0，保留既有大 chunk 提示；`pnpm format:check`、`cargo fmt --all -- --check` 和 `git diff --check` 通过。证据：cache-frontend-build.log、cache-format-check.log。构建成功不等于缓存页面已经完成原生交互验收。
+
+### 撤销执行与起点记录（2026-10-29，进行中）
+
+- 用户确认没有干净 Windows 环境且无需过多测试，本轮跳过干净系统、缺失 Git/WebView2 和对应离线安装场景。后续只做改动相关的定向检查。此前 Escape 中止界面控制后未再次操作电脑界面。
+- 临时仓库的 Git 原生命令探针通过：单提交范围 `target^..target` 在无冲突 `--no-commit` 成功后保留 REVERT_HEAD，但不保留 sequencer/head；冲突时才保留 sequencer。无冲突后 abort 保留原 HEAD。证据：target/m4/revert-sequence-probe.log。此探针不等于应用执行链通过。
+- 应用撤销起点记录两项测试通过（0.47 秒）：不覆盖现有记录、重新打开、相同内容替换使旧记录失效、损坏/超限/未知版本拒绝。证据：revert-anchor-tests.log。
+- 撤销发起测试先记录缺少接口的编译失败；接入后编译成功，但真实仓库测试在 `open_repository` 的 revParse 阶段 TIMEOUT（115.95 秒），尚未进入准备与写入。保留失败，不为取得通过而反复重跑。证据：revert-start-red.log、revert-start-green.log；文件名 green 不代表通过。
+- 私有公共目录的 HEAD 探针显示初始化引用前后都能解析原 HEAD，原分支保持不变。探针退出 1 是因“初始化前不可解析”的假设被证伪，已删除多余初始化代码。证据：revert-private-head-probe.log。
+- 前端补齐内部撤销操作类型后，类型检查通过（revert-start-typecheck-fixed.log）。尚未暴露撤销 UI/IPC；继续、明确中止和集成验收仍在实施，任务四未完成。
+- 完成撤销的核心接入后，起点校验 2/2 通过（1.57 秒），新增原 HEAD 和目标匹配断言；元数据清理专项 1/1 通过（2.11 秒），覆盖合并/撤销清理范围、相同内容的外部替换保护、保留无关文件与撤销记录最后清理。前端类型检查通过。证据：revert-finish-anchor.log、revert-finish-metadata.log、revert-finish-typecheck.log。
+- 发起到保存的集成用例首次运行 145.73 秒，实际发起撤销已返回成功，但因本机 Git 的 CRLF 转换与夹具 LF 预期不同而失败，未进入保存提交。已仅在临时仓库固定 core.autocrlf=false，生产换行行为不改。证据：revert-finish-integration.log；修正后的后续结果单列，不覆盖本次失败。
+- 固定换行后的集成运行仍失败（124.90 秒）：反向修改内容、无关文件、原 HEAD 与起点记录断言均通过，随后 `RevertSession::new` 的 gitQuery 返回 TIMEOUT，尚未进入 prepare_finish 或引用写入。证据：revert-finish-integration-eol.log。本轮停止重复 Git 集成运行；撤销发起已有真实执行证据，但最终单父提交、清理中断防重放及受影响合并完成流程的端到端回归仍未经本轮实测，不能宣称完成撤销已经验收。
+- 本批工程检查：`cargo check -p gitmaster-desktop --locked` 通过（27.37 秒）；`pnpm build`（含类型检查）、`pnpm format:check`、`cargo fmt --all -- --check` 和 `git diff --check` 通过。保留既有 Rust 警告与 Vite 大分块提示。证据：revert-finish-desktop-check.log、revert-finish-frontend-build.log、revert-finish-format-all.log。尚未重新生成包含本批代码的 Release 安装包，没有提交、推送或操作用户远端。
+
+### 撤销中止、桌面接口与界面接入（2026-10-29）
+
+- 中止撤销已接入私有 HEAD/索引和真实工作树的原生保护流程，确认时额外要求勾选丢弃冲突编辑及暂存修改；真实 HEAD、分支引用及索引分别持锁，最终核验后才发布索引和清理起点。中断状态允许缺少 REVERT_HEAD，但必须有有效的本应用起点记录，不接受外部 sequencer。
+- 首轮中止专项两项基础测试通过，真实仓库测试因把冲突索引路径误认为未跟踪碰撞而失败（UNTRACKED_COLLISION，46.01 秒）。修正碰撞判断后，该真实仓库用例通过（183.67 秒），验证预览只读、中止后 HEAD 不变、冲突恢复、无关编辑及未跟踪文件保留、起点清理。基础测试覆盖 linked worktree 锁归属、外部替换锁保留和中断标记边界。证据：target/m4/revert-abort-tests.log、revert-abort-conflict-fix.log。保留失败记录，不把此次通过解释为 Git 间歇超时已修复。
+- 桌面增加独立的撤销状态、文档和保存/完成端口；发起只接受当前历史已返回的 OID，中止仍核验当前快照和起点。序列化契约 1/1 通过（0.00 秒），验证 camelCase、撤销与合并请求互相拒绝；此前桌面检查通过（18.79 秒）。证据：revert-ipc-contract.log、revert-ipc-desktop-check.log。
+- 界面复用现有冲突编辑器，接入提交详情的发起预览、完成撤销及中止入口；清洁撤销也可从本地修改面板重新进入。撤销与合并使用不同会话 ID；草稿跨操作失效后保留编辑但禁止保存。补查修复提交详情未请求写入能力、导致撤销按钮无法启用的问题。
+- 前端针对性检查 20/20 通过；从 Git 已跟踪清单枚举的 TS/mjs 测试加新增本地撤销控制器测试共 109/109 通过，无失败或跳过。两组有重叠，不累加，也不包含此前全部本地临时用例。证据：revert-ui-controller-tests.log、revert-ui-frontend-tests.log。
+- 最新 `cargo check -p gitmaster-desktop --locked` 通过（15.65 秒），`pnpm build`（含类型检查）退出 0，保留既有 Rust 警告和 Vite 大分块提示。证据：revert-ui-desktop-check.log、revert-ui-build.log。格式初查发现新 Rust 代码未格式化，执行 cargo fmt 后，最终 `pnpm format:check`、`cargo fmt --all -- --check` 和 `git diff --check` 均退出 0；证据：revert-ui-format-check.log、revert-ui-rust-fmt.log。
+- 验收边界：没有恢复用户已停止的 Computer Use，没有重跑之前因 Git 超时中断的完成/保存集成用例；最终单父提交和最新原生界面仍待验证。撤销发起的冲突结果目前依赖刷新后状态进入编辑器，统一 needsResolution 结果契约仍待补齐。缓存已提交差异、性能证据、新版安装包及页面截图也尚未完成；不把本批工程检查写成任务一至七完成。干净系统、缺失 WebView2/Git 和相应断网安装继续按用户要求跳过，Mac 后续处理；未提交、推送或发布。
+
+### 撤销结果闭环与已提交差异缓存（2026-10-29）
+
+- 撤销发起改为复用刚核验的真实状态，移除正常结果路径的一次重复 Git 状态读取。冲突返回 needsResolution，摘要以 kind 区分 merge/revert；撤销只提供目标与冲突路径，读取独立会话后才能准备写入。没有实际冲突的异常退出仍归未知，不能当成成功。核心结果测试 1/1 和桌面序列化契约 1/1 通过（均 0.00 秒）；前端 typecheck 通过。证据：target/m4/revert-result-red.log、revert-result-green.log、revert-result-contract.log、revert-result-typecheck.log。
+- 修改执行结果路径后的无冲突集成测试通过（163.97 秒），实际覆盖准备只读、反向修改、原 HEAD 保留、完成后的单父提交、索引与无关草稿保留、元数据清理及重复完成拒绝。此次证据补齐上节“最终单父提交未验证”，不覆盖此前超时失败，也不证明超时根因已解决。证据：revert-result-integration.log。
+- 已提交文件列表（raw/numstat）和补丁接入现有全局 ContentCache。Git 2.43 及以上的普通完整仓库使用私有 bare 目录和固定提交属性，仅共享对象存储；旧 Git、浅克隆、替代对象/grafts/reftable 等情况沿用实时读取，不复用固定差异块。缓存不保存 fileId，列表重新签发 ID；失败或进程输出截断不落盘。
+- 真实差异测试先在替换为不存在 Git 可执行路径时失败（GIT_EXECUTION_FAILED，128.39 秒），证明原实现仍调用 Git；接入后通过（23.06 秒）。用例重开磁盘缓存，再使用不存在的 Git 路径，列表及补丁仍正确；旧 fileId 拒绝，清除后必须回到真实查询。另覆盖提交内二进制属性不被未提交属性或 info/attributes 覆盖、中文/特殊路径、真实仓库文件与索引不变。作用域降级测试 1/1 通过（2.08 秒）。证据：cache-diff-red.log、cache-diff-green.log、cache-diff-scope.log。
+- README 补入已验证的恢复与二次确认清理功能及数据覆盖提示，移除开发文档入口；GitHub 本地素材更新候选包状态和用户指定跳过的安装环境。没有更新远端页面或宣称最新代码已打包。
+- 历史差异四项受影响回归全部通过（249.90 秒），覆盖直接父/分页边界、重命名、编码、截断和根提交缓存读取；包含前述根提交专项，不重复累计为六项。证据：cache-diff-regression.log。
+- 撤销冲突保存到最终提交的真实临时仓库用例通过（243.28 秒）：保存预览只读、选中文件与索引一致、撤销标记和原 HEAD 保留；完成后新提交内容为解决结果，只有撤销前 HEAD 一个父节点，无关文件不变，REVERT_HEAD 和起点记录清理。此次补齐此前未进入保存阶段的验证缺口，未覆盖原失败日志。证据：revert-conflict-complete.log。
+- 最新桌面检查通过（16.92 秒），format:check、cargo fmt 检查及 git diff --check 均退出 0，保留既有 Rust 警告。证据：cache-diff-desktop-check.log、m4-followup-format-check.log、m4-followup-rust-fmt.log。
+- 最新版原生交互、Windows Release 性能、重新打包与截图尚未全部验收。已询问是否恢复上次由 Escape 停止的电脑控制；在收到明确回复前只继续源码、文档与命令行构建。后续结果在本节补充，不降低原验收门槛。
+
+### 最新 Windows 候选包（2026-10-29）
+
+- `pnpm tauri build --bundles nsis --config src-tauri/tauri.windows.conf.json` 完成前端 build/typecheck 和 Rust Release（9m42s），但首次打包在进入 makensis 前因 `io: unexpected end of file` 退出 1。未把旧安装包或中间产物列为本次成功。证据：target/m4/windows-nsis-m4-core.log。
+- 采用官方 `pnpm tauri bundle --bundles nsis --config src-tauri/tauri.windows.conf.json --no-sign --verbose` 单独诊断打包，没有重复编译或清理工具缓存。日志显示微软资源 HEAD 请求成功并复用现有 WebView2 离线资源，NSIS 最终输出 `Finished 1 bundle`，退出 0。首次 EOF 此次未重现，具体根因未确定，不能宣称已修复网络问题。证据：windows-nsis-m4-bundle-diagnostic.log。
+- 重打包提示未找到待替换的 bundle 标记；核验主程序中已有 `__TAURI_BUNDLE_TYPE_VAR_NSS`，没有 UNK 标记，与前一次打包已执行 NSIS patch 相符。未手改二进制或启用更新器。生成的 installer.nsi 明确包含离线 WebView2 安装器；缺失运行环境的实际部署仍按用户要求跳过。
+- 最新安装包 `target/release/bundle/nsis/GitMaster_0.1.0_x64-setup.exe` 为 221,775,009 字节，SHA-256 `C9BE71F2CD7C603DC29C75F5174CDD1EC2B8E13266C049DE89AD931E6E3C413D`，NotSigned。主程序 `target/release/gitmaster-desktop.exe` 为 9,482,752 字节，SHA-256 `997CE1FEBB5B64B58288D76EF883A02CF3CDC7BD8C0D646B508BB5E478D90FE0`，NotSigned。
+- 包包含本轮撤销、已提交差异缓存、缓存设置与此前恢复/清理修复。256 个构建源文件校验清单位于 windows-m4-core-sources.json，清单 SHA-256 为 `ED46AF2F318BEE627E3ED54B0430B8021690AC040B561800B2023FF5DC1BC3A3`；构建后逐项核对无变化。产物与检查结果见 windows-m4-core-artifacts.json。源码仍是未提交工作区，不能作为已冻结的发布提交。
+- 尚未安装、启动或操作这个最新候选包；旧包的原生证据不直接移植到新包。恢复电脑控制的请求仍待明确回复，原生功能、性能、升级/卸载和截图留待继续；本轮无提交、推送、发布或 macOS 构建。
+
+### 最终验收移交用户（2026-10-29）
+
+最新补充：用户曾临时允许电脑控制，当前候选主程序（SHA-256 `997CE1FEBB5B64B58288D76EF883A02CF3CDC7BD8C0D646B508BB5E478D90FE0`）已启动并展示既有 `target/m4/ui-release` 脱敏示例仓库；这仅证明该次启动和展示，不代表完整功能或安装验收。随后用户按 Escape 停止电脑控制，并明确功能测试和截图均跳过；用户进一步更正笔误，后续测试自行完成，不是接口开发。未保存截图，不继续采集、导出或测试；以下此前交接说明中待截图事项由本条取代。Git 间歇超时仍无根治结论。
+
+用户明确无需 Agent 继续完整功能测试，最终测试由用户完成，当前不提供电脑控制。此回复结束此前的控制授权询问；不再等待或再次索要电脑控制，不自动安装、启动或操作候选程序。保留已有工程检查及定向测试结果，未测项目保持未测。
+
+本轮收尾仅核对代码接入、README/页面文案、候选产物与源码清单，并整理交接，不重复功能套件、构建、性能采样或安装测试。最新安装包作为待用户验收候选交付。Git 间歇超时的根因及 Release 性能达标尚无结论；README 真机截图、社交预览与 GitHub 远端更新仍待真实材料和维护权限，Mac 继续在后续设备完成。

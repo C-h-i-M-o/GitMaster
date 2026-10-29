@@ -15,6 +15,115 @@ pub(crate) struct ConversionPolicy {
 }
 
 impl ConversionPolicy {
+    /// 在私有工作树恢复一个 blob，使用已冻结的换行和 ident 规则，不写真实索引。
+    pub(crate) fn restore_entry(
+        &self,
+        git: &GitExecutable,
+        repo: &RepositoryHandle,
+        entry: &IndexEntry,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, OperationError> {
+        let attributes = self
+            .attributes
+            .get(&entry.path)
+            .ok_or_else(|| OperationError::new("INVALID_INPUT"))?;
+        if !matches!(entry.mode.as_str(), "100644" | "100755") {
+            return Err(OperationError::new("UNSUPPORTED_RECOVERY_TARGET"));
+        }
+        let directory = tempfile::Builder::new()
+            .prefix("gitmaster-restore-")
+            .tempdir()
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        let captured = CapturedInputs {
+            directory,
+            policy: self.clone(),
+            paths: Vec::new(),
+        };
+        captured.query(
+            git,
+            repo,
+            &[
+                "init",
+                "--quiet",
+                "--template=",
+                &format!("--object-format={}", self.object_format),
+                ".",
+            ],
+            &[],
+            false,
+            deadline,
+        )?;
+        let mut rules = String::from("input");
+        for (key, value) in attributes {
+            rules.push(' ');
+            match value.as_str() {
+                "unspecified" => {
+                    rules.push('!');
+                    rules.push_str(key);
+                }
+                "unset" => {
+                    rules.push('-');
+                    rules.push_str(key);
+                }
+                "set" => rules.push_str(key),
+                _ => {
+                    rules.push_str(key);
+                    rules.push('=');
+                    rules.push_str(value);
+                }
+            }
+        }
+        rules.push('\n');
+        // 禁用模板的私有 init 不生成 info，显式创建本次拥有的属性目录。
+        fs::create_dir_all(captured.directory.path().join(".git/info"))
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        fs::write(
+            captured.directory.path().join(".git/info/attributes"),
+            rules,
+        )
+        .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        // 先限制对象大小，避免仅在检出后才发现超大 blob 已写满临时磁盘。
+        let size = captured.query(
+            git,
+            repo,
+            &["cat-file", "-s", &entry.oid],
+            &[],
+            true,
+            deadline,
+        )?;
+        let size = std::str::from_utf8(&size)
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .ok_or_else(|| OperationError::new("PARSE_FAILED"))?;
+        if size > 64 * 1024 * 1024 {
+            return Err(OperationError::new("OUTPUT_LIMIT"));
+        }
+        let record = format!("{} {}\tinput\0", entry.mode, entry.oid);
+        captured.query(
+            git,
+            repo,
+            &["update-index", "-z", "--index-info"],
+            record.as_bytes(),
+            true,
+            deadline,
+        )?;
+        captured.query(
+            git,
+            repo,
+            &["checkout-index", "--", "input"],
+            &[],
+            true,
+            deadline,
+        )?;
+        super::conflicts::read_regular(
+            captured.directory.path(),
+            "input",
+            64 * 1024 * 1024,
+            deadline,
+        )
+        .map(|file| file.bytes)
+    }
+
     /// 从同一次有效配置与属性查询结果固定选中文件的转换规则。
     pub(crate) fn capture(
         config: &BTreeMap<String, String>,
@@ -386,6 +495,37 @@ mod tests {
         write_guard,
     };
     use std::time::Duration;
+
+    /// 恢复使用冻结的内建转换规则，保持真实索引和当前工作文件不变。
+    #[test]
+    fn recovery_conversion_uses_captured_attributes_without_writing_repository() {
+        let f = Fixture::new();
+        f.write(".gitattributes", b"a text eol=crlf ident\n");
+        f.write("a", b"line\n$Id$\n");
+        f.command(&["add", "."]);
+        f.command(&["commit", "-m", "base"]);
+        f.write("a", b"user draft\n");
+        let (repo, _) = open_repository(&f.git, &f.root).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let expected =
+            write_guard::fingerprint(&f.git, &repo, &["a".into()], false, deadline).unwrap();
+        let entry = expected
+            .index
+            .iter()
+            .find(|entry| entry.path == "a")
+            .unwrap();
+        let index = fs::read(repo.git_dir.join("index")).unwrap();
+        let restored = expected
+            .conversion
+            .restore_entry(&f.git, &repo, entry, deadline)
+            .unwrap();
+        assert_eq!(
+            restored,
+            format!("line\r\n$Id: {} $\r\n", entry.oid).as_bytes()
+        );
+        assert_eq!(fs::read(repo.git_dir.join("index")).unwrap(), index);
+        assert_eq!(fs::read(f.root.join("a")).unwrap(), b"user draft\n");
+    }
 
     /// Git 内建 CRLF 和 ident 转换应在隔离目录执行，真实索引不参与写入。
     #[test]

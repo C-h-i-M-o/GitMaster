@@ -37,6 +37,13 @@ pub(crate) struct WriteFingerprint {
 }
 
 impl WriteFingerprint {
+    /// 缺失也是确认前提；不把未捕获路径当成可创建的文件。
+    pub(crate) fn file_is_missing(&self, path: &str) -> Result<bool, OperationError> {
+        self.files
+            .get(path)
+            .map(Option::is_none)
+            .ok_or_else(|| OperationError::new("INVALID_INPUT"))
+    }
     /// 冲突结果可能正是 .gitattributes；发布工作文件后仅核对仍应固定的仓库输入。
     pub(crate) fn same_repository_inputs(&self, other: &Self) -> bool {
         self.head == other.head
@@ -87,6 +94,22 @@ pub(crate) fn validate_path(path: &str) -> Result<(), OperationError> {
     Ok(())
 }
 
+/// 恢复和清理要求字面相对路径，Windows 不接受备用流、短名称别名和尾部规范化形式。
+pub(crate) fn validate_recovery_path(path: &str) -> Result<(), OperationError> {
+    validate_path(path)?;
+    if path
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(OperationError::new("UNSUPPORTED_RECOVERY_TARGET"));
+    }
+    #[cfg(windows)]
+    if path.contains(['\\', ':', '~']) || path.split('/').any(|part| part.ends_with(['.', ' '])) {
+        return Err(OperationError::new("UNSUPPORTED_RECOVERY_TARGET"));
+    }
+    Ok(())
+}
+
 /// 同一快照的选择只能用于原工作树和未改变的 M1 状态。
 pub(crate) fn validate_snapshot(
     git: &GitExecutable,
@@ -116,7 +139,7 @@ pub(crate) fn fingerprint(
     own_lock: bool,
     deadline: Instant,
 ) -> Result<WriteFingerprint, OperationError> {
-    fingerprint_with_head_policy(git, repo, paths, own_lock, false, false, deadline)
+    fingerprint_with_head_policy(git, repo, paths, own_lock, false, None, deadline)
 }
 
 /// 创建分支可从 detached HEAD 开始，其余配置与内容校验保持一致。
@@ -125,17 +148,32 @@ pub(crate) fn branch_fingerprint(
     repo: &RepositoryHandle,
     deadline: Instant,
 ) -> Result<WriteFingerprint, OperationError> {
-    fingerprint_with_head_policy(git, repo, &[], false, true, false, deadline)
+    fingerprint_with_head_policy(git, repo, &[], false, true, None, deadline)
 }
 
-/// 冲突专用入口允许真实 merge 和未合并 stage，原始索引仍完整参与指纹。
-pub(crate) fn merge_fingerprint(
+/// 冲突写入只能接受指定的一种原生操作，不允许 merge/revert 状态互换。
+pub(crate) fn conflict_fingerprint(
     git: &GitExecutable,
     repo: &RepositoryHandle,
     own_lock: bool,
+    operation: &'static str,
     deadline: Instant,
 ) -> Result<WriteFingerprint, OperationError> {
-    fingerprint_with_head_policy(git, repo, &[], own_lock, false, true, deadline)
+    if !matches!(operation, "merge" | "revert") {
+        return Err(OperationError::new("INVALID_INPUT"));
+    }
+    fingerprint_with_head_policy(git, repo, &[], own_lock, false, Some(operation), deadline)
+}
+
+/// 撤销起点落盘后仍核对同一批路径，不能因自己的进行中标记放宽内容校验。
+pub(crate) fn revert_worktree_fingerprint(
+    git: &GitExecutable,
+    repo: &RepositoryHandle,
+    paths: &[String],
+    own_lock: bool,
+    deadline: Instant,
+) -> Result<WriteFingerprint, OperationError> {
+    fingerprint_with_head_policy(git, repo, paths, own_lock, false, Some("revert"), deadline)
 }
 
 /// 按操作所需 HEAD 能力捕获相同的仓库前提。
@@ -145,7 +183,7 @@ fn fingerprint_with_head_policy(
     paths: &[String],
     own_lock: bool,
     allow_detached: bool,
-    allow_merge: bool,
+    operation: Option<&str>,
     deadline: Instant,
 ) -> Result<WriteFingerprint, OperationError> {
     check_time(deadline)?;
@@ -159,8 +197,9 @@ fn fingerprint_with_head_policy(
         return Err(OperationError::new("INDEX_LOCKED"));
     }
     let state = read_repository_state_until(git, repo, deadline)?;
-    if if allow_merge {
-        state.operations != ["merge"]
+    let allow_merge = operation.is_some();
+    if if let Some(operation) = operation {
+        state.operations != [operation]
     } else {
         !state.operations.is_empty()
     } {

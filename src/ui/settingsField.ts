@@ -9,6 +9,7 @@ export function settingsFieldLocation(
     { category: SettingsCategory; label: string }
   > = {
     gitPath: { category: "general", label: "Git 环境" },
+    diskCacheEnabled: { category: "cache", label: "缓存" },
     uiPreferences: { category: "appearance", label: "外观" },
     logLevel: { category: "logging", label: "诊断日志" },
     terminal: { category: "terminal", label: "终端" },

@@ -220,6 +220,11 @@ export function useSettingsForm(
     addArgument,
     removeArgument,
     gitPath: field((draft, value) => ({ ...draft, gitPath: value || null })),
+    /** 开关复用统一保存队列，失败时保留用户输入。 */
+    diskCacheEnabled: (event: ChangeEvent<HTMLInputElement>): void => {
+      const enabled = event.target.checked;
+      settings.edit((draft) => ({ ...draft, diskCacheEnabled: enabled }), true);
+    },
     elasticity: field((draft, value) => ({
       ...draft,
       uiPreferences: { ...draft.uiPreferences, elasticity: Number(value) },

@@ -5,6 +5,7 @@ import type {
   SettingsFieldError,
   SettingsSnapshot,
   SettingsPatch,
+  CacheUsage,
 } from "../types/settings";
 
 /** 保留设置专用字段错误，不把未知异常或命令参数展示到界面。 */
@@ -50,6 +51,16 @@ async function settingsCall<T>(
 /** 读取统一设置及其并发修改标识。 */
 export function readAppSettings(): Promise<SettingsSnapshot> {
   return settingsCall("read_app_settings");
+}
+
+/** 读取后端实际用量，浏览器预览不模拟本机缓存。 */
+export function readCacheUsage(): Promise<CacheUsage> {
+  return settingsCall("read_cache_usage");
+}
+
+/** 清除应用自己的可重建缓存，不传入路径。 */
+export function clearContentCache(): Promise<CacheUsage> {
+  return settingsCall("clear_content_cache");
 }
 
 /** 只打开原生选择器，取消返回空值；持久化仍由统一应用入口负责。 */

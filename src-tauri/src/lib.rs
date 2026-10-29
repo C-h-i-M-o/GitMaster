@@ -75,12 +75,18 @@ pub fn run() {
                 });
             }
         })
-        .setup(|app| logging::initialize(app.handle()))
+        .setup(|app| {
+            logging::initialize(app.handle())?;
+            commands::initialize_content_cache(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             commands::read_app_settings,
             commands::apply_app_settings,
             commands::apply_settings_patch,
+            commands::read_cache_usage,
+            commands::clear_content_cache,
             recent_projects::read_recent_projects,
             workspace_sessions::read_workspace_sessions,
             workspace_sessions::write_workspace_session,
@@ -107,6 +113,7 @@ pub fn run() {
             commands::read_commit_files,
             commands::read_commit_file_diff,
             commands::read_branches,
+            commands::prepare_restore_source,
             commands::read_project_files,
             commands::read_project_tree,
             commands::read_project_directory,
@@ -128,6 +135,7 @@ pub fn run() {
             commands::prepare_local_write,
             commands::prepare_remote_write,
             commands::prepare_conflict_write,
+            commands::prepare_revert_conflict_write,
             commands::execute_write,
             commands::choose_clone_parent,
             commands::prepare_clone,
@@ -138,6 +146,8 @@ pub fn run() {
             commands::read_sync_target,
             commands::assess_remote,
             commands::read_conflicts,
+            commands::read_revert_state,
+            commands::read_revert_conflict_document,
             commands::read_conflict_document,
             commands::read_ui_preferences,
             commands::set_ui_preferences,

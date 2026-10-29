@@ -279,7 +279,7 @@ impl MergePlan {
                 return Ok(Some(OperationResult::NeedsResolution {
                     operation_id: reporter.handle.operation_id.clone(),
                     kind: OperationKind::Integrate,
-                    conflict: ConflictSummary {
+                    conflict: ConflictSummary::Merge {
                         merge_session_id: conflicts.merge_session_id,
                         unresolved_count: conflicts.files.len() as u32,
                         paths: conflicts.files.into_iter().map(|file| file.path).collect(),

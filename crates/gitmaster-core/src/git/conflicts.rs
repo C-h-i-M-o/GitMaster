@@ -16,6 +16,46 @@ const MAX: usize = 1024 * 1024;
 const MAX_LINES: usize = 5000;
 const BUDGET: Duration = Duration::from_secs(120);
 
+/// 合并与撤销共享文本读取原语，但各自校验独立 Git 操作标记。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConflictKind {
+    Merge,
+    Revert,
+}
+impl ConflictKind {
+    /// 获取只允许本操作的写指纹，不放宽普通 Git 写入口的进行中操作限制。
+    fn fingerprint(
+        self,
+        git: &GitExecutable,
+        repo: &RepositoryHandle,
+        own_lock: bool,
+        deadline: Instant,
+    ) -> Result<guard::WriteFingerprint, OperationError> {
+        guard::conflict_fingerprint(git, repo, own_lock, self.operation(), deadline)
+    }
+    /// 冲突保存结果使用独立操作类型，避免前端把撤销标成合并。
+    fn save_kind(self) -> OperationKind {
+        match self {
+            Self::Merge => OperationKind::SaveConflict,
+            Self::Revert => OperationKind::SaveRevertConflict,
+        }
+    }
+    /// 返回状态快照中必须唯一匹配的操作类型。
+    pub(crate) fn operation(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Revert => "revert",
+        }
+    }
+    /// 返回不能与另一种操作互换的原生标记文件。
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Merge => "MERGE_HEAD",
+            Self::Revert => "REVERT_HEAD",
+        }
+    }
+}
+
 /// 索引中的普通或未合并 stage；不以工作区显示状态猜测三方内容。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Entry {
@@ -56,6 +96,7 @@ pub struct ConflictSession {
     repo: RepositoryHandle,
     snapshot: Snapshot,
     state: ConflictState,
+    kind: ConflictKind,
 }
 
 impl ConflictSession {
@@ -70,7 +111,25 @@ impl ConflictSession {
         repo: &RepositoryHandle,
         deadline: Instant,
     ) -> Result<Self, OperationError> {
-        let snapshot = snapshot(git, repo, deadline)?;
+        Self::new_kind(git, repo, ConflictKind::Merge, deadline)
+    }
+
+    /// 撤销入口独立签发会话，不能用普通合并构造器读取 REVERT_HEAD。
+    pub(crate) fn new_revert(
+        git: &GitExecutable,
+        repo: &RepositoryHandle,
+    ) -> Result<Self, OperationError> {
+        Self::new_kind(git, repo, ConflictKind::Revert, Instant::now() + BUDGET)
+    }
+
+    /// 复用文本能力判断并将操作类型纳入后续每次会话核验。
+    fn new_kind(
+        git: &GitExecutable,
+        repo: &RepositoryHandle,
+        kind: ConflictKind,
+        deadline: Instant,
+    ) -> Result<Self, OperationError> {
+        let snapshot = snapshot_for(git, repo, kind, deadline)?;
         let mut files = Vec::new();
         for (path, entries) in &snapshot.entries {
             guard::check_time(deadline)?;
@@ -98,7 +157,7 @@ impl ConflictSession {
                 editor_support: support,
             });
         }
-        validate_snapshot(git, repo, &snapshot.id, deadline)?;
+        validate_snapshot_for(git, repo, &snapshot.id, kind, deadline)?;
         let state = ConflictState {
             repository_id: repo.id.clone(),
             merge_session_id: snapshot.id.clone(),
@@ -111,6 +170,7 @@ impl ConflictSession {
             repo: repo.clone(),
             snapshot,
             state,
+            kind,
         })
     }
 
@@ -122,7 +182,13 @@ impl ConflictSession {
     /// 读取已签发文件 ID 的三方原文与最新草稿，读取前后核对合并代次。
     pub fn read_document(&self, conflict_id: &str) -> Result<ConflictDocument, OperationError> {
         let deadline = Instant::now() + BUDGET;
-        validate_snapshot(&self.git, &self.repo, &self.snapshot.id, deadline)?;
+        validate_snapshot_for(
+            &self.git,
+            &self.repo,
+            &self.snapshot.id,
+            self.kind,
+            deadline,
+        )?;
         let file = self
             .state
             .files
@@ -152,7 +218,13 @@ impl ConflictSession {
                 OperationError::new("UNSUPPORTED_CONFLICT")
             }
         })?;
-        validate_snapshot(&self.git, &self.repo, &self.snapshot.id, deadline)?;
+        validate_snapshot_for(
+            &self.git,
+            &self.repo,
+            &self.snapshot.id,
+            self.kind,
+            deadline,
+        )?;
         Ok(ConflictDocument {
             merge_session_id: self.snapshot.id.clone(),
             conflict_id: conflict_id.into(),
@@ -167,18 +239,19 @@ impl ConflictSession {
     }
 }
 
-/// 当前 HEAD 必须具名且只在 merge 中，MERGE_HEAD 与索引均按普通文件捕获。
-fn snapshot(
+/// 固定指定操作的原生标记和索引，混合操作或多提交撤销不能进入本会话。
+fn snapshot_for(
     git: &GitExecutable,
     repo: &RepositoryHandle,
+    kind: ConflictKind,
     deadline: Instant,
 ) -> Result<Snapshot, OperationError> {
     guard::check_time(deadline)?;
     // 先排除 FIFO/链接索引，再让 Git 读取状态，避免把特殊文件交给子进程。
-    let merge = read_regular(&repo.git_dir, "MERGE_HEAD", MAX, deadline)?;
+    let merge = read_regular(&repo.git_dir, kind.marker(), MAX, deadline)?;
     let index = read_regular(&repo.git_dir, "index", 8 * MAX, deadline)?;
     let state = read_repository_state_until(git, repo, deadline)?;
-    if state.operations != ["merge"] {
+    if state.operations != [kind.operation()] {
         return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
     }
     let (name, head) = match state.head {
@@ -188,7 +261,8 @@ fn snapshot(
     let text = std::str::from_utf8(&merge.bytes)
         .map_err(|_| OperationError::new("UNSUPPORTED_CONFLICT"))?;
     let merge_heads = text.lines().map(str::to_owned).collect::<Vec<_>>();
-    if merge_heads.is_empty()
+    if (kind == ConflictKind::Revert && merge_heads.len() != 1)
+        || merge_heads.is_empty()
         || merge_heads.len() > 1000
         || merge_heads
             .iter()
@@ -221,6 +295,7 @@ fn snapshot(
     }
     let entries = parse_index(&output.stdout)?;
     let id = digest(&[
+        kind.marker().as_bytes(),
         repo.id.as_bytes(),
         name.as_bytes(),
         head.as_bytes(),
@@ -236,14 +311,15 @@ fn snapshot(
     })
 }
 
-/// 状态消失、分支变化或索引变化均使旧冲突会话失效。
-fn validate_snapshot(
+/// 同类操作的标记、HEAD 或索引变化使旧能力失效，另一类操作也不能接管旧能力。
+fn validate_snapshot_for(
     git: &GitExecutable,
     repo: &RepositoryHandle,
     expected: &str,
+    kind: ConflictKind,
     deadline: Instant,
 ) -> Result<(), OperationError> {
-    match snapshot(git, repo, deadline) {
+    match snapshot_for(git, repo, kind, deadline) {
         Ok(actual) if actual.id == expected => Ok(()),
         Err(error) if error.code == "TIMEOUT" => Err(error),
         _ => Err(OperationError::new("STALE_CONFLICT")),
@@ -586,10 +662,12 @@ fn unsupported_reason(error: &OperationError) -> &'static str {
 mod tests;
 
 mod save;
+pub(crate) use save::prepare_revert_save;
 pub use save::prepare_save;
-pub(crate) use save::replace_regular;
-mod finish;
+pub(crate) use save::{create_regular, remove_regular, replace_regular};
+pub(crate) mod finish;
 pub use finish::prepare_finish;
+pub(crate) use finish::prepare_revert_finish;
 #[cfg(test)]
 mod finish_tests;
 #[cfg(test)]

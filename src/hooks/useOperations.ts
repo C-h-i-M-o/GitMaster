@@ -44,6 +44,7 @@ export function useOperations(
     runRemote: controller.runRemote,
     fetchAll: controller.fetchAll,
     prepareConflict: controller.prepareConflict,
+    prepareRevertConflict: controller.prepareRevertConflict,
     prepareClone: controller.prepareClone,
     confirm: controller.confirm,
     discardPreview: controller.discardPreview,

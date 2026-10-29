@@ -21,10 +21,39 @@ struct SavePlan {
     bytes: Vec<u8>,
     entries: BTreeMap<String, BTreeMap<u8, Entry>>,
     merge_file: FileBytes,
+    kind: ConflictKind,
 }
 
 /// 用户必须提交已展示文档的指纹；准备过程不修改用户文件或对象。
 pub fn prepare_save(
+    coordinator: &RepositoryCoordinator,
+    session: &ConflictSession,
+    conflict_id: &str,
+    fingerprint: &str,
+    content: &str,
+) -> Result<WritePreview, OperationError> {
+    if session.kind != ConflictKind::Merge {
+        return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
+    }
+    prepare_save_kind(coordinator, session, conflict_id, fingerprint, content)
+}
+
+/// 独立撤销保存入口拒绝合并会话，后续原子写入复用经过验证的通用流程。
+pub(crate) fn prepare_revert_save(
+    coordinator: &RepositoryCoordinator,
+    session: &ConflictSession,
+    conflict_id: &str,
+    fingerprint: &str,
+    content: &str,
+) -> Result<WritePreview, OperationError> {
+    if session.kind != ConflictKind::Revert {
+        return Err(OperationError::new("UNSUPPORTED_CONFLICT"));
+    }
+    prepare_save_kind(coordinator, session, conflict_id, fingerprint, content)
+}
+
+/// 指定操作的原生状态和内容都冻结后，才签发一次性保存计划。
+fn prepare_save_kind(
     coordinator: &RepositoryCoordinator,
     session: &ConflictSession,
     conflict_id: &str,
@@ -42,23 +71,25 @@ pub fn prepare_save(
         generation,
         Some(session.repo.id.clone()),
         key,
-        OperationKind::SaveConflict,
+        session.kind.save_kind(),
         move |reporter| plan.execute_with(reporter, || Ok(())),
     )?;
     let mut parents = vec![session.snapshot.head.clone()];
-    parents.extend(session.snapshot.merge_heads.clone());
+    if session.kind == ConflictKind::Merge {
+        parents.extend(session.snapshot.merge_heads.clone());
+    }
     Ok(WritePreview {
         plan_id: prepared.plan_id,
         repository_id: session.repo.id.clone(),
         snapshot_id: state.snapshot_id,
-        kind: OperationKind::SaveConflict,
+        kind: session.kind.save_kind(),
         head: state.head,
         parent_oids: parents,
         paths: vec![path],
         author: None,
         message: None,
         target: None,
-        warnings: vec!["请核对结果；保存并暂存不会自动创建合并提交。".into()],
+        warnings: vec!["请核对结果；保存并暂存不会自动创建提交。".into()],
         expires_at: prepared.expires_at,
     })
 }
@@ -71,7 +102,13 @@ fn capture_save(
     content: &str,
     deadline: Instant,
 ) -> Result<(SavePlan, RepositoryState), OperationError> {
-    validate_snapshot(&session.git, &session.repo, &session.snapshot.id, deadline)?;
+    validate_snapshot_for(
+        &session.git,
+        &session.repo,
+        &session.snapshot.id,
+        session.kind,
+        deadline,
+    )?;
     let file = session
         .state
         .files
@@ -102,12 +139,24 @@ fn capture_save(
     {
         return Err(OperationError::new("STALE_CONFLICT"));
     }
-    let captured = guard::merge_fingerprint(&session.git, &session.repo, false, deadline)?;
+    let captured = session
+        .kind
+        .fingerprint(&session.git, &session.repo, false, deadline)?;
     let (policy, width) = capture_policy(&session.git, &session.repo, &file.path, deadline)?;
     let bytes = encode(content, &current.result, width)?;
     let state = read_repository_state_until(&session.git, &session.repo, deadline)?;
-    validate_snapshot(&session.git, &session.repo, &session.snapshot.id, deadline)?;
-    if guard::merge_fingerprint(&session.git, &session.repo, false, deadline)? != captured {
+    validate_snapshot_for(
+        &session.git,
+        &session.repo,
+        &session.snapshot.id,
+        session.kind,
+        deadline,
+    )?;
+    if session
+        .kind
+        .fingerprint(&session.git, &session.repo, false, deadline)?
+        != captured
+    {
         return Err(OperationError::new("STALE_WRITE_PLAN"));
     }
     Ok((
@@ -121,7 +170,8 @@ fn capture_save(
             policy,
             bytes,
             entries: session.snapshot.entries.clone(),
-            merge_file: read_regular(&session.repo.git_dir, "MERGE_HEAD", MAX, deadline)?,
+            merge_file: read_regular(&session.repo.git_dir, session.kind.marker(), MAX, deadline)?,
+            kind: session.kind,
         },
         state,
     ))
@@ -253,9 +303,10 @@ impl SavePlan {
             replacement.publish(&self.repo.root, &self.path, &self.original, deadline)?;
             written = true;
             after_file()?;
-            validate_snapshot(&self.git, &self.repo, &self.session, deadline)?;
-            let after_file_inputs =
-                guard::merge_fingerprint(&self.git, &self.repo, true, deadline)?;
+            validate_snapshot_for(&self.git, &self.repo, &self.session, self.kind, deadline)?;
+            let after_file_inputs = self
+                .kind
+                .fingerprint(&self.git, &self.repo, true, deadline)?;
             if !after_file_inputs.same_repository_inputs(&self.fingerprint)
                 || read_regular(&self.repo.root, &self.path, MAX, deadline)?.bytes != self.bytes
             {
@@ -306,16 +357,19 @@ impl SavePlan {
                     return Err(OperationError::new("WRITE_OUTCOME_UNKNOWN"));
                 }
             }
-            validate_snapshot(&self.git, &self.repo, &self.session, deadline)?;
-            if guard::merge_fingerprint(&self.git, &self.repo, true, deadline)? != after_file_inputs
+            validate_snapshot_for(&self.git, &self.repo, &self.session, self.kind, deadline)?;
+            if self
+                .kind
+                .fingerprint(&self.git, &self.repo, true, deadline)?
+                != after_file_inputs
                 || read_regular(&self.repo.root, &self.path, MAX, deadline)?.bytes != self.bytes
             {
                 return Err(OperationError::new("STALE_CONFLICT"));
             }
             transaction.publish()?;
             reporter.report(OperationPhase::Verifying, None)?;
-            let actual = snapshot(&self.git, &self.repo, deadline)?;
-            let merge_file = read_regular(&self.repo.git_dir, "MERGE_HEAD", MAX, deadline)?;
+            let actual = snapshot_for(&self.git, &self.repo, self.kind, deadline)?;
+            let merge_file = read_regular(&self.repo.git_dir, self.kind.marker(), MAX, deadline)?;
             if actual.entries != expected
                 || actual.head != head_oid(&self.fingerprint.head)?
                 || merge_file.bytes != self.merge_file.bytes
@@ -333,8 +387,11 @@ impl SavePlan {
 
     /// 合并状态、转换前提和原字节都必须仍与用户确认时一致。
     fn revalidate(&self, own_lock: bool, deadline: Instant) -> Result<(), OperationError> {
-        validate_snapshot(&self.git, &self.repo, &self.session, deadline)?;
-        if guard::merge_fingerprint(&self.git, &self.repo, own_lock, deadline)? != self.fingerprint
+        validate_snapshot_for(&self.git, &self.repo, &self.session, self.kind, deadline)?;
+        if self
+            .kind
+            .fingerprint(&self.git, &self.repo, own_lock, deadline)?
+            != self.fingerprint
         {
             return Err(OperationError::new("STALE_WRITE_PLAN"));
         }
@@ -498,6 +555,149 @@ pub(crate) fn replace_regular(
         .publish_with_limit(root, path, original, limit, deadline)
 }
 
+/// 从同目录临时文件原子创建已删除的文件；硬链接发布保证不覆盖随后出现的目标。
+pub(crate) fn create_regular(
+    root: &Path,
+    path: &str,
+    bytes: &[u8],
+    limit: usize,
+    deadline: Instant,
+) -> Result<(), OperationError> {
+    guard::check_time(deadline)?;
+    if bytes.len() > limit {
+        return Err(OperationError::new("OUTPUT_LIMIT"));
+    }
+    let (dir, name) = parent_with_creation(root, path, true)?;
+    match dir.symlink_metadata(&name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Ok(_) => return Err(OperationError::new("FILE_CHANGED")),
+        Err(_) => return Err(OperationError::new("ACCESS_DENIED")),
+    }
+    let temporary = format!(".gitmaster-resolution-{}-{}", std::process::id(), next_id());
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let file = dir
+        .open_with(&temporary, &options)
+        .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+    let permissions = file
+        .metadata()
+        .map_err(|_| OperationError::new("ACCESS_DENIED"))?
+        .permissions();
+    let mut replacement = Replacement {
+        dir,
+        temporary,
+        file,
+        permissions,
+    };
+    replacement
+        .file
+        .write_all(bytes)
+        .and_then(|_| replacement.file.sync_all())
+        .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+    guard::check_time(deadline)?;
+    let (current, current_name) = parent(root, path)?;
+    let owned_meta = replacement
+        .dir
+        .dir_metadata()
+        .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+    let current_meta = current
+        .dir_metadata()
+        .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+    if !same_inode(&owned_meta, &current_meta)
+        || !replacement.owns_temporary()
+        || current_name != name
+    {
+        return Err(OperationError::new("FILE_CHANGED"));
+    }
+    replacement
+        .dir
+        .hard_link(&replacement.temporary, &current, &name)
+        .map_err(|error| {
+            OperationError::new(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "FILE_CHANGED"
+            } else {
+                "ACCESS_DENIED"
+            })
+        })
+}
+
+/// 只删除已确认普通文件；Windows 使用独占写/删除共享的原对象句柄，避免最终路径替换竞态。
+pub(crate) fn remove_regular(
+    root: &Path,
+    path: &str,
+    original: &FileBytes,
+    deadline: Instant,
+) -> Result<(), OperationError> {
+    guard::check_time(deadline)?;
+    guard::validate_recovery_path(path)?;
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        use std::{io::Read, os::windows::io::AsRawHandle};
+        use windows_sys::Win32::{Storage::FileSystem::*, System::SystemServices::GENERIC_READ};
+        let (dir, name) = parent(root, path)?;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options
+            .access_mode(GENERIC_READ | DELETE)
+            .share_mode(FILE_SHARE_READ);
+        crate::git::windows_fs::nofollow(&mut options);
+        let mut file = dir
+            .open_with(&name, &options)
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        let before = file
+            .metadata()
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        if !before.is_file()
+            || crate::git::windows_fs::is_reparse(&before)
+            || metadata_identity(&before) != original.identity
+        {
+            return Err(OperationError::new("FILE_CHANGED"));
+        }
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(original.bytes.len() as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        guard::check_time(deadline)?;
+        let after = file
+            .metadata()
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        if bytes != original.bytes
+            || metadata_identity(&after) != original.identity
+            || !same_inode(
+                &after,
+                &dir.symlink_metadata(&name)
+                    .map_err(|_| OperationError::new("FILE_CHANGED"))?,
+            )
+        {
+            return Err(OperationError::new("FILE_CHANGED"));
+        }
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle() as isize,
+                FileDispositionInfo,
+                (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(OperationError::new("ACCESS_DENIED"));
+        }
+        drop(file);
+        match dir.symlink_metadata(&name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(OperationError::new("WRITE_OUTCOME_UNKNOWN")),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Mac 设备阶段需验证其文件身份与原子删除机制；当前不退化为存在路径竞态的裸删除。
+        let _ = (root, original);
+        Err(OperationError::new("UNSUPPORTED_WRITE_CONFIGURATION"))
+    }
+}
+
 impl Drop for Replacement {
     /// 成功替换后临时路径已消失；失败只移除仍由本次创建的文件。
     fn drop(&mut self) {
@@ -509,6 +709,15 @@ impl Drop for Replacement {
 
 /// 不跟随任何祖先链接，返回当前父目录句柄和最终字面文件名。
 fn parent(root: &Path, path: &str) -> Result<(Dir, String), OperationError> {
+    parent_with_creation(root, path, false)
+}
+
+/// 仅恢复缺失文件时允许创建缺失父目录，每一级仍使用不跟随链接的目录能力。
+fn parent_with_creation(
+    root: &Path,
+    path: &str,
+    create: bool,
+) -> Result<(Dir, String), OperationError> {
     guard::validate_path(path)?;
     let mut dir = Dir::open_ambient_dir(root, cap_std::ambient_authority())
         .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
@@ -518,6 +727,19 @@ fn parent(root: &Path, path: &str) -> Result<(Dir, String), OperationError> {
         .ok_or_else(|| OperationError::new("INVALID_INPUT"))?
         .to_owned();
     for part in parts {
+        if create {
+            match dir.symlink_metadata(part) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match dir.create_dir(part) {
+                        Ok(()) => (),
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+                        Err(_) => return Err(OperationError::new("ACCESS_DENIED")),
+                    }
+                }
+                Err(_) => return Err(OperationError::new("ACCESS_DENIED")),
+                Ok(_) => (),
+            }
+        }
         #[cfg(unix)]
         {
             use cap_std::fs::OpenOptionsExt;
@@ -569,6 +791,63 @@ mod tests {
     use super::*;
     use crate::git::repository::{open_repository, tests::Fixture};
     use std::fs;
+
+    /// 精确删除核对原文件身份和字节，拒绝替换后的同名内容，不递归删除目录。
+    #[cfg(windows)]
+    #[test]
+    fn recovery_delete_requires_original_file_and_preserves_neighbours() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        fs::write(root.join("a"), b"original").unwrap();
+        fs::write(root.join("b"), b"keep").unwrap();
+        let original = read_regular(root, "a", 1024, deadline).unwrap();
+        fs::write(root.join("a"), b"external").unwrap();
+        assert!(remove_regular(root, "a", &original, deadline).is_err());
+        assert_eq!(fs::read(root.join("a")).unwrap(), b"external");
+        let original = read_regular(root, "a", 1024, deadline).unwrap();
+        remove_regular(root, "a", &original, deadline).unwrap();
+        assert!(!root.join("a").exists());
+        assert_eq!(fs::read(root.join("b")).unwrap(), b"keep");
+        fs::create_dir(root.join("directory")).unwrap();
+        assert!(remove_regular(root, "directory", &original, deadline).is_err());
+        assert!(root.join("directory").is_dir());
+    }
+
+    /// 已删除文件可以恢复，出现同路径新内容时绝不覆盖；数据包含零字节也无损。
+    #[test]
+    fn recovery_creates_missing_file_without_overwriting_late_collision() {
+        let temporary = tempfile::tempdir().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        create_regular(temporary.path(), "目录/恢复.bin", b"a\0b", 1024, deadline).unwrap();
+        assert_eq!(
+            fs::read(temporary.path().join("目录/恢复.bin")).unwrap(),
+            b"a\0b"
+        );
+        assert!(
+            create_regular(temporary.path(), "目录/恢复.bin", b"wrong", 1024, deadline).is_err()
+        );
+        assert_eq!(
+            fs::read(temporary.path().join("目录/恢复.bin")).unwrap(),
+            b"a\0b"
+        );
+        assert_eq!(
+            fs::read_dir(temporary.path().join("目录")).unwrap().count(),
+            1
+        );
+    }
+
+    /// 恢复不会越过嵌套仓库，超限输入不能先创建目标文件或目录。
+    #[test]
+    fn recovery_creation_rejects_nested_repository_and_oversized_input() {
+        let temporary = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temporary.path().join("nested/.git")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        assert!(create_regular(temporary.path(), "nested/a", b"x", 1024, deadline).is_err());
+        assert!(!temporary.path().join("nested/a").exists());
+        assert!(create_regular(temporary.path(), "new/a", b"xx", 1, deadline).is_err());
+        assert!(!temporary.path().join("new").exists());
+    }
 
     /// 同一个后台操作只执行一次，轮询其真实终态。
     fn execute(

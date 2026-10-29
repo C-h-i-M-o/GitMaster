@@ -1,4 +1,5 @@
 import { SettingsPanel } from "./SettingsPanel";
+import { RestoreFilesDialog } from "./RestoreFilesDialog";
 import { SyncSetupDialog } from "./SyncSetupDialog";
 import type { Workbench } from "../hooks/useWorkbench";
 import { useNativeDialog } from "../hooks/useNativeDialog";
@@ -187,6 +188,7 @@ export function WorkbenchDialogs({ workbench: w }: { workbench: Workbench }) {
   return (
     <>
       <SyncSetupDialog workbench={w} />
+      <RestoreFilesDialog w={w} />
       <dialog
         ref={refreshRemote.dialogRef}
         onCancel={refreshRemote.onCancel}

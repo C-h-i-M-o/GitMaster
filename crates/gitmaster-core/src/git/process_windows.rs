@@ -342,6 +342,7 @@ pub(super) fn run(
     network: bool,
     on_progress: &mut dyn FnMut(u64, u64),
 ) -> Result<ProcessOutput, OperationError> {
+    let prepare_started = Instant::now();
     if stdin.len() > STDIN_LIMIT {
         return Err(OperationError::new("INVALID_INPUT"));
     }
@@ -379,6 +380,7 @@ pub(super) fn run(
     startup.StartupInfo.hStdError = child_error.0;
     startup.lpAttributeList = attributes.pointer();
     let mut information: PROCESS_INFORMATION = unsafe { zeroed() };
+    crate::diagnostics::log_elapsed("git_process_prepare", prepare_started.elapsed());
     let create_started = Instant::now();
     let created = unsafe {
         CreateProcessW(
@@ -505,6 +507,8 @@ pub(super) fn run(
             thread::sleep(Duration::from_millis(2));
         }
     })();
+    // 超时时也记录运行等待，避免仅在正常退出时才有执行阶段证据。
+    crate::diagnostics::log_elapsed("git_process_wait", execution_started.elapsed());
     if let Some(observed) = exit_observed {
         crate::diagnostics::log_elapsed(
             "git_run_to_observed_exit",
@@ -548,6 +552,100 @@ pub(super) fn run(
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    /// 手工性能采样只输出阶段和耗时，不输出命令、路径、环境或 Git 正文。
+    #[test]
+    #[ignore = "Windows 性能采样需独占运行，避免与正常回归相互干扰"]
+    fn windows_git_process_timings() {
+        struct TimingLogger;
+        impl log::Log for TimingLogger {
+            /// 仅接受核心已有的脱敏诊断目标。
+            fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+                metadata.target() == "gitmaster::diagnostic"
+            }
+            /// 不将用户路径或 Git 输出添加到已有诊断中。
+            fn log(&self, record: &log::Record<'_>) {
+                if self.enabled(record.metadata()) {
+                    eprintln!("{}", record.args());
+                }
+            }
+            /// 本采样直接写入标准错误，不持有日志缓冲。
+            fn flush(&self) {}
+        }
+        static LOGGER: TimingLogger = TimingLogger;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Debug);
+        // 不先调用环境检测：此次正要测量的 --version 超时不能挡住对照采样本身。
+        let directory = tempfile::Builder::new()
+            .prefix("gitmaster-timing-")
+            .tempdir()
+            .unwrap();
+        let installed = std::path::PathBuf::from(std::env::var_os("ProgramFiles").unwrap())
+            .join("Git/cmd/git.exe");
+        let fixture = crate::git::repository::tests::Fixture {
+            root: directory.path().to_owned(),
+            git: crate::git::GitExecutable {
+                path: std::fs::canonicalize(installed).unwrap(),
+                version: String::new(),
+                source: "diagnostic".into(),
+            },
+        };
+        fixture.command(&["init", "--template=", "-b", "main"]);
+        let mut candidates = vec![("system", fixture.git.clone())];
+        if let Some(root) = fixture.git.path.parent().and_then(|dir| dir.parent()) {
+            let native = root.join("mingw64/bin/git.exe");
+            if native.is_file() && native != fixture.git.path {
+                let mut git = fixture.git.clone();
+                git.path = std::fs::canonicalize(native).unwrap();
+                candidates.push(("native", git));
+            }
+        }
+        for (candidate, git) in &candidates {
+            for sample in 0..20 {
+                let mut direct = super::super::command(git, &fixture.root);
+                direct.args(["rev-parse", "--is-inside-work-tree"]);
+                let started = Instant::now();
+                let result = direct.output().unwrap();
+                eprintln!(
+                    "直接读取 candidate={candidate} sample={sample} elapsed_ms={} success={}",
+                    started.elapsed().as_millis(),
+                    result.status.success()
+                );
+                let mut managed = super::super::command(git, &fixture.root);
+                managed.args(["rev-parse", "--is-inside-work-tree"]);
+                let started = Instant::now();
+                let result = run(
+                    managed,
+                    &[],
+                    4096,
+                    false,
+                    Duration::from_secs(10),
+                    false,
+                    &mut |_, _| {},
+                );
+                eprintln!(
+                    "受管读取 candidate={candidate} sample={sample} elapsed_ms={} result={}",
+                    started.elapsed().as_millis(),
+                    result
+                        .as_ref()
+                        .map(|result| if result.success { "OK" } else { "NONZERO" })
+                        .unwrap_or_else(|error| error.code.as_str())
+                );
+            }
+            for sample in 0..3 {
+                let started = Instant::now();
+                let result = crate::git::repository::open_repository(git, &fixture.root);
+                eprintln!(
+                    "完整打开 candidate={candidate} sample={sample} elapsed_ms={} result={}",
+                    started.elapsed().as_millis(),
+                    result
+                        .as_ref()
+                        .map(|_| "OK")
+                        .unwrap_or_else(|error| error.code.as_str())
+                );
+            }
+        }
+    }
 
     /// 仅测试进程通过环境变量选定固定行为，不作为应用命令入口。
     #[test]

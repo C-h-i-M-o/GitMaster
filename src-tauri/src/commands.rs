@@ -4,11 +4,13 @@ use gitmaster_core::git::{
     environment::{describe_git, resolve_git},
     *,
 };
+mod cache;
 mod diff;
 mod external;
 mod monitoring;
 mod operations;
 mod preferences;
+pub use cache::*;
 mod readonly;
 mod resources;
 mod terminal;
@@ -18,6 +20,8 @@ pub use monitoring::*;
 pub use operations::*;
 pub use preferences::*;
 pub use readonly::*;
+mod recovery;
+pub use recovery::*;
 pub use resources::*;
 pub use terminal::*;
 
@@ -50,6 +54,7 @@ pub struct RepositorySnapshot {
 /// 当前环境和工作树会话，不持久化仓库文件或凭据。
 #[derive(Default)]
 pub struct Session {
+    content_cache: Option<Arc<gitmaster_core::cache::ContentCache>>,
     environment_request: u64,
     repository_request: u64,
     /// 只读能力生命周期；普通状态刷新不递增，避免无关读取失效。
@@ -65,6 +70,8 @@ pub struct Session {
     coordinator: git::coordinator::RepositoryCoordinator,
     history: Option<Arc<Mutex<readonly::HistoryCache>>>,
     branches: Option<Arc<git::branches::BranchSession>>,
+    restore_source: Option<Arc<git::restore::RestoreSession>>,
+    restore_request: u64,
     project_files: Option<Arc<git::files::ProjectFilesSession>>,
     /// 编辑文档能力不依赖目录刷新，仅保留单文件映射及最近使用顺序。
     editor_files: VecDeque<(String, Arc<git::files::ProjectFilesSession>)>,
@@ -82,6 +89,7 @@ pub struct Session {
     remotes: Option<Arc<git::remote::RemoteSession>>,
     previous_remotes: Option<Arc<git::remote::RemoteSession>>,
     conflicts: Option<Arc<git::conflicts::ConflictSession>>,
+    revert: Option<Arc<git::revert::RevertSession>>,
     remotes_request: u64,
     conflicts_request: u64,
     clone_parent: Option<(String, PathBuf)>,
@@ -139,6 +147,8 @@ impl Session {
     }
     /// 清理全部只读槽；发布强制刷新时可跳过重复的对外版本递增。
     fn clear_readonly_full(&mut self, bump_versions: bool) {
+        self.restore_request += 1;
+        self.restore_source = None;
         self.readonly_request += 1;
         self.diff_request += 1;
         self.diff = None;
@@ -154,6 +164,7 @@ impl Session {
             self.previous_remotes = Some(remote);
         }
         self.conflicts = None;
+        self.revert = None;
         self.write_request += 1;
         self.preview = None;
         if bump_versions {

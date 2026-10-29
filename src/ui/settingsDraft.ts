@@ -8,6 +8,7 @@ import type {
 export function defaultSettings(): AppSettings {
   return {
     version: 4,
+    diskCacheEnabled: true,
     gitPath: null,
     logLevel: null,
     uiPreferences: { elasticity: 6, showLabels: true },
@@ -46,6 +47,8 @@ export function resetSettingsCategory(
 ): AppSettings {
   const defaults = defaultSettings();
   switch (category) {
+    case "cache":
+      return { ...draft, diskCacheEnabled: defaults.diskCacheEnabled };
     case "general":
       return { ...draft, gitPath: defaults.gitPath };
     case "appearance":
@@ -136,6 +139,7 @@ export function settingsDirty(saved: AppSettings, draft: AppSettings): boolean {
 function canonicalSettings(value: AppSettings): unknown {
   return [
     value.version,
+    value.diskCacheEnabled,
     value.gitPath,
     value.logLevel,
     value.uiPreferences.elasticity,

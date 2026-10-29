@@ -6,6 +6,8 @@
 
 ## 阅读顺序
 
+2026-10-28：M4 第 1—7 项已获授权在 Windows 实施，macOS 在后续设备验证。统一需求与实施步骤见 [spec-plan.md 第 29 节](spec-plan.md)，本地 GitHub 文案见[发布素材](github-release-materials.md)。旧 README 的研发叙述已迁至[历史归档](readme-development-history.md)，不再作为用户入口。
+
 2026-10-27 品牌资源接入、原始设计归档与暂存选择修复见[总计划第 25 节](spec-plan.md#25-gitmaster-品牌资源接入与-macos-验收2026-10-26)。[品牌资源说明](../assets/branding/production/README.md)包含图标生成命令。macOS Release 已构建，后续原生测试按用户本轮指示跳过；实际结果见[验证记录](verification.md)末尾。
 
 2026-10-23 最终审查的三项竞态修复见[总计划第 24 节](spec-plan.md#24-合并前竞态修复与完整验证2026-10-23)；回归覆盖、Rust 失败诊断及合并门槛见[验证记录](verification.md)末尾。前端通过不代表完整 Rust 或最新 Windows Release 已通过。
@@ -28,6 +30,8 @@
 8. [分阶段验收记录](verification.md)：分阶段记录实际执行结果及未验证项。
 
 ## 文档维护
+
+M4 当前候选包、已完成开发、已知限制与用户验收入口见 [开发交接](spec-plan.md#m4-handoff)。最终测试已由用户接手；历史测试矩阵不表示 Agent 仍需继续运行。
 
 终端、编辑与设置已实现；本轮即时设置、真实文件系统目录、自动暂存提交和保存方式以总计划第 15 节为准，覆盖补充计划中旧的“应用设置”、忽略开关等设计。第 16 节区分功能收尾、未测专项与后续开发；历史过程记录保留当时语境。
 

@@ -2,6 +2,7 @@ import type {
   ClonePreview,
   CloneRequest,
   ConflictWriteRequest,
+  RevertConflictWriteRequest,
   LocalWriteRequest,
   OperationError,
   OperationHandle,
@@ -21,6 +22,11 @@ import {
 } from "../ui/operationHistory.ts";
 
 export interface OperationsApi {
+  prepareRevertConflictWrite(
+    id: string,
+    session: string,
+    request: RevertConflictWriteRequest,
+  ): Promise<WritePreview>;
   prepareFileSave(
     id: string,
     snapshot: string,
@@ -244,7 +250,8 @@ export function createOperationsController(
         const nextHistory =
           failure &&
           failure.kind !== "saveFile" &&
-          failure.kind !== "saveConflict"
+          failure.kind !== "saveConflict" &&
+          failure.kind !== "saveRevertConflict"
             ? appendPreparationFailure(
                 beforeHistory,
                 failure.kind,
@@ -259,7 +266,8 @@ export function createOperationsController(
           error: normalized,
           ...(failure &&
           failure.kind !== "saveFile" &&
-          failure.kind !== "saveConflict"
+          failure.kind !== "saveConflict" &&
+          failure.kind !== "saveRevertConflict"
             ? {
                 history: nextHistory,
                 failureNotification: {
@@ -287,7 +295,7 @@ export function createOperationsController(
       }),
       false,
       {
-        kind: request.kind,
+        kind: request.kind === "revertCommit" ? "revert" : request.kind,
         target: repo.rootPath,
         repositoryId: repo.repositoryId,
       },
@@ -295,7 +303,17 @@ export function createOperationsController(
   }
   /** 页面明确范围后的低风险动作直接执行，仍经过原预检和一次性计划。 */
   function runLocal(
-    request: Exclude<LocalWriteRequest, { kind: "switchBranch" }>,
+    request: Exclude<
+      LocalWriteRequest,
+      {
+        kind:
+          | "switchBranch"
+          | "restoreFiles"
+          | "cleanUntracked"
+          | "revertCommit"
+          | "abortRevert";
+      }
+    >,
   ): Promise<void> {
     const repo = repository;
     if (!repo) return Promise.resolve();
@@ -499,6 +517,30 @@ export function createOperationsController(
       },
     );
   }
+  /** 撤销保存和完成必须经过独立会话接口与确认预览。 */
+  function prepareRevertConflict(
+    session: string,
+    request: RevertConflictWriteRequest,
+  ): Promise<void> {
+    const repo = repository;
+    if (!repo) return Promise.resolve();
+    return prepare(
+      async () => ({
+        type: "write",
+        value: await api.prepareRevertConflictWrite(
+          repo.repositoryId,
+          session,
+          request,
+        ),
+      }),
+      false,
+      {
+        kind: request.kind,
+        repositoryId: repo.repositoryId,
+        target: repo.rootPath,
+      },
+    );
+  }
   /** clone 无需已有仓库，仍要求已连接桌面 Git 环境。 */
   function prepareClone(request: CloneRequest): Promise<void> {
     return prepare(
@@ -584,6 +626,7 @@ export function createOperationsController(
         state.failureNotification?.id !== result.operationId &&
         result.kind !== "saveFile" &&
         result.kind !== "saveConflict" &&
+        result.kind !== "saveRevertConflict" &&
         (result.outcome === "failed" ||
           result.outcome === "unknown" ||
           result.refresh.status === "failed")
@@ -847,6 +890,7 @@ export function createOperationsController(
     runRemote,
     fetchAll,
     prepareConflict,
+    prepareRevertConflict,
     prepareClone,
     discardPreview,
     confirm,

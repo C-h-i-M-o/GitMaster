@@ -541,6 +541,7 @@ pub(crate) fn operation_result(
             kind,
             commit_oid,
             branch_name,
+            path_results: Vec::new(),
             clone_path: None,
             refresh,
         },
@@ -550,6 +551,7 @@ pub(crate) fn operation_result(
                 kind,
                 commit_oid,
                 branch_name,
+                path_results: Vec::new(),
                 clone_path: None,
                 refresh: WriteRefresh::Failed { error },
             }
@@ -559,6 +561,7 @@ pub(crate) fn operation_result(
                 operation_id,
                 kind,
                 error: OperationError::new("WRITE_OUTCOME_UNKNOWN"),
+                path_results: Vec::new(),
                 clone_recovery: None,
                 refresh,
             }
@@ -567,6 +570,7 @@ pub(crate) fn operation_result(
             operation_id,
             kind,
             error,
+            path_results: Vec::new(),
             clone_recovery: None,
             refresh,
         },

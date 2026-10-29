@@ -6,6 +6,7 @@ pub mod types;
 
 pub mod branches;
 pub mod capabilities;
+pub mod clean;
 pub mod conflicts;
 pub mod coordinator;
 pub mod diff;
@@ -14,6 +15,8 @@ pub mod history;
 pub mod merge;
 pub mod remote;
 pub mod repository;
+pub mod restore;
+pub mod revert;
 pub mod status;
 pub mod watcher;
 

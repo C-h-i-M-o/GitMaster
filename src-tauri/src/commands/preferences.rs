@@ -97,6 +97,9 @@ pub async fn apply_app_settings(
         let saved = crate::logging::save_with_level(level, || {
             settings::save_all(&path, &expected_revision, draft)
         })?;
+        if let Some(cache) = &session.content_cache {
+            cache.set_disk_enabled(saved.settings.disk_cache_enabled);
+        }
         if let Some(git) = resolved {
             session.install(git, true)?;
         }
@@ -158,14 +161,19 @@ pub async fn apply_settings_patch(
             session.install(git.flatten(), true)?;
             Ok(saved)
         } else {
+            // 设置保存与运行时开关更新使用同一锁，避免迟到请求覆盖新值。
+            let session = shared.lock()?;
             let level = match &patch {
                 SettingsPatch::Logging { log_level } => *log_level,
                 _ => current.settings.log_level,
             };
-            crate::logging::save_with_level(level, || {
+            let saved = crate::logging::save_with_level(level, || {
                 settings::save_patch(&path, &expected_revision, patch)
-            })
-            .map_err(Into::into)
+            })?;
+            if let Some(cache) = &session.content_cache {
+                cache.set_disk_enabled(saved.settings.disk_cache_enabled);
+            }
+            Ok(saved)
         }
     })
     .await

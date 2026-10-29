@@ -1,5 +1,28 @@
 # 测试与验收
 
+## M4 当前 Windows 检查入口
+
+本轮按总计划第 29 节执行，结果记入 verification.md。Windows 采用用户确认的未签名 NSIS 包；macOS 在后续设备单独构建和验收。
+
+```powershell
+# 已跟踪的前端测试与本地恢复专项分别枚举，避免把历史数量当作当前结果。
+$taskTests = @(git ls-files 'tests/*.test.ts' 'tests/*.test.mjs')
+node --experimental-strip-types --test @taskTests tests/restoreController.test.ts
+pnpm typecheck
+pnpm build
+pnpm format:check
+cargo fmt --all -- --check
+cargo test -p gitmaster-core --locked --offline -- --test-threads=1
+cargo check -p gitmaster-desktop --locked --offline
+pnpm tauri build --bundles nsis --config src-tauri/tauri.windows.conf.json
+```
+
+`tests/restoreController.test.ts` 当前仅本机保留，干净检出前应先核实文件是否存在。恢复与清理真实仓库专项分别使用 `cargo test -p gitmaster-core restore::tests -- --test-threads=1`、`cargo test -p gitmaster-core clean::tests -- --test-threads=1`；进程采样与其他编译、测试错开，不能把偶发超时通过重试隐藏。
+
+Windows 配置随包携带离线 WebView2 安装资源，不下载或安装 Git。包生成后分别记录安装包与应用的 SHA-256、`Get-AuthenticodeSignature` 结果、版本和构建日志；预期未签名状态为 `NotSigned`。实际安装、无开发服务器启动及干净 Windows 验收分别记录，构建成功不等于这些检查通过。
+
+本地原生交互使用 `target/m4/ui-release` 中明确创建的中文文件示例仓库。恢复前后对照文件字节和索引；清理必须先验证取消不删除，再确认仅所选文件消失，未选择项和忽略文件保留。不得把此目录的测试提交计入软件源码提交或发布记录。
+
 当前正式版验收以总计划第 12.9 节为准：真实 Tauri Release 在 Windows WebView2/macOS WKWebView 下分别测量 Git、IPC、渲染、缓存、大文件及安装；浏览器夹具不能替代桌面验收。内存包括应用所属 WebView/Worker 进程。未来原生版本另行验收，不作为 Tauri 发布前置条件；旧跳过许可不延续。
 
 ## M0 初始化验证
@@ -157,3 +180,22 @@ git diff --check
 - 已跟踪的 `supplement-history.test.ts` 增加分支取消恢复、连续取消最多三次、真实错误不重试及生命周期结束清理验证。
 - 本地 `save-readonly-harness.html` 与 `final-races.cjs` 使用真实工作台、Monaco 和内存 IPC，验证连续三轮保存、最近项目切换成功/失败，以及分支读取被保存取消后的恢复。夹具不接触用户仓库，不替代原生桌面测试。
 - Windows 核心测试使用 `cargo test -p gitmaster-core --locked -- --test-threads=1 --nocapture`，避免与前端构建、Release 编译或另一套 Git 集成测试并行。单项复跑通过不能覆盖整套测试失败；保留原始日志、退出码与中断记录，不改生产超时或安全断言来取得通过。
+
+## M4 当前设备的针对性验证（2026-10-29）
+
+最新分工：用户接手最终功能、性能及安装验收，Agent 不再执行完整测试或请求电脑控制。下列命令保留为开发验证与追溯入口，不表示仍需自动运行；候选包和简短自验参考见 [M4 开发交接](spec-plan.md#m4-handoff)。
+
+用户明确不扩展干净 Windows 环境和缺失依赖测试。本轮沿用临时仓库，按实际改动选择以下入口，串行执行 Git 集成测试；不要为了获得通过重复运行超时用例。结果、失败和跳过原因见 verification.md，命令清单本身不表示通过。
+
+```sh
+cargo test -p gitmaster-core --locked revert_start_previews_then_preserves_head_and_unrelated_content -- --test-threads=1
+cargo test -p gitmaster-core --locked revert_conflict_save_preserves_head_marker_and_unrelated_file -- --test-threads=1
+cargo test -p gitmaster-core --locked revert_abort_ -- --test-threads=1
+cargo test -p gitmaster-core --locked git::history::files::tests -- --test-threads=1
+cargo test -p gitmaster-core --locked diff_cache_scope_rejects -- --test-threads=1
+cargo test -p gitmaster-desktop --locked conflict_results_identify_merge_and_revert -- --test-threads=1
+```
+
+历史差异回归检查根提交、直接父/分页边界、重命名、二进制、截断与编码；固定历史视图还验证磁盘重开、旧文件 ID 失效、清除后恢复真实查询和属性隔离。Git 2.39—2.42 继续使用兼容实时查询，不宣称具有同样的固定差异缓存。
+
+新增 `tests/revertController.test.ts` 按当前约定仅保留本地；与已跟踪的 `tests/operationsController.failure.test.ts`、`tests/m2-m3/supplement-direct-actions.test.ts` 一起验证独立撤销会话、迟到结果拒绝及失败反馈。后续设备交接须单独携带此本地文件，不能假设普通 clone 已包含。日志、临时仓库和截图均留在 target/m4，不随发布包提供。

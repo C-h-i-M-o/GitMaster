@@ -19,6 +19,8 @@ static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
+    #[serde(default = "default_disk_cache_enabled")]
+    pub disk_cache_enabled: bool,
     #[serde(default)]
     pub log_level: Option<crate::logging::LogLevel>,
     pub version: u8,
@@ -55,6 +57,10 @@ fn default_elasticity() -> u8 {
 fn default_show_labels() -> bool {
     true
 }
+/// 旧配置沿用开启磁盘缓存的默认行为。
+fn default_disk_cache_enabled() -> bool {
+    true
+}
 /// 获取设置读改写使用的全局串行锁。
 fn lock() -> Result<std::sync::MutexGuard<'static, ()>, OperationError> {
     SETTINGS_LOCK
@@ -74,6 +80,8 @@ fn validate(p: &UiPreferences) -> Result<(), OperationError> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredSettings {
+    #[serde(default = "default_disk_cache_enabled")]
+    disk_cache_enabled: bool,
     #[serde(default)]
     log_level: Option<crate::logging::LogLevel>,
     version: u8,
@@ -94,6 +102,7 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Settings {
+                disk_cache_enabled: true,
                 version: 4,
                 log_level: None,
                 git_path: None,
@@ -116,6 +125,7 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
     };
     validate(&preferences)?;
     let settings = Settings {
+        disk_cache_enabled: stored.disk_cache_enabled,
         version: 4,
         log_level: stored.log_level,
         git_path: stored.git_path,
@@ -239,6 +249,7 @@ pub fn save_patch(
     }
     let mut next = current.settings;
     match patch {
+        SettingsPatch::Cache { disk_cache_enabled } => next.disk_cache_enabled = disk_cache_enabled,
         SettingsPatch::Git { git_path } => next.git_path = git_path,
         SettingsPatch::Logging { log_level } => next.log_level = log_level,
         SettingsPatch::Appearance {
@@ -391,6 +402,7 @@ pub fn save(path: &Path, git_path: Option<String>) -> Result<(), OperationError>
     write_unlocked(
         path,
         &Settings {
+            disk_cache_enabled: current.disk_cache_enabled,
             version: 4,
             log_level: current.log_level,
             git_path,
@@ -412,6 +424,7 @@ pub fn save_preferences(
     write_unlocked(
         path,
         &Settings {
+            disk_cache_enabled: current.disk_cache_enabled,
             version: 4,
             log_level: current.log_level,
             git_path: current.git_path,
@@ -427,6 +440,39 @@ pub fn save_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 旧配置只读补默认值，缓存补丁持久化后仍保留其他字段并拒绝旧 revision。
+    #[test]
+    fn disk_cache_migrates_and_persists_without_overwriting_other_settings() {
+        let p = path();
+        let mut value = serde_json::to_value(load(&p).unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("diskCacheEnabled");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, &bytes).unwrap();
+        let original = read_snapshot(&p).unwrap();
+        assert!(original.settings.disk_cache_enabled);
+        assert_eq!(fs::read(&p).unwrap(), bytes);
+        let patch = serde_json::from_str(r#"{"kind":"cache","diskCacheEnabled":false}"#).unwrap();
+        let saved = save_patch(&p, &original.revision, patch).unwrap();
+        assert!(!load(&p).unwrap().disk_cache_enabled);
+        assert_eq!(saved.settings.terminal, original.settings.terminal);
+        assert_eq!(saved.settings.editor, original.settings.editor);
+        let disabled = fs::read(&p).unwrap();
+        let error = save_patch(
+            &p,
+            &original.revision,
+            SettingsPatch::Cache {
+                disk_cache_enabled: true,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "STALE_SETTINGS");
+        assert_eq!(fs::read(&p).unwrap(), disabled);
+        save(&p, Some("/git".into())).unwrap();
+        save_preferences(&p, UiPreferences::default()).unwrap();
+        assert!(!load(&p).unwrap().disk_cache_enabled);
+        cleanup(&p);
+    }
     #[test]
     /// v3 读取补齐手动保存，首次按项保存才将配置升级为 v4。
     fn v3_migrates_manual_save_without_rewriting_on_read() {

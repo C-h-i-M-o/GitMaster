@@ -6,6 +6,42 @@ use crate::git::{
 };
 use std::{fs, time::Duration};
 
+/// 中止撤销锁定工作树 HEAD 与公共分支，释放时保留外部已有或替换的锁。
+#[test]
+fn revert_abort_reference_locks_respect_worktree_and_ownership() {
+    let directory = tempfile::tempdir().unwrap();
+    let common = directory.path().join("common");
+    let git_dir = directory.path().join("worktree");
+    fs::create_dir(&common).unwrap();
+    fs::create_dir(&git_dir).unwrap();
+    let repo = RepositoryHandle {
+        id: "locks".into(),
+        root: directory.path().into(),
+        git_dir,
+        common_dir: common,
+    };
+    let branch = ReferenceLock::acquire(&repo, "refs/heads/main").unwrap();
+    let head = ReferenceLock::acquire_head(&repo).unwrap();
+    assert!(repo.common_dir.join("refs/heads/main.lock").exists());
+    assert!(repo.git_dir.join("HEAD.lock").exists());
+    assert!(!repo.common_dir.join("HEAD.lock").exists());
+    assert!(ReferenceLock::acquire_head(&repo).is_err());
+    fs::rename(
+        repo.git_dir.join("HEAD.lock"),
+        repo.git_dir.join("old-head.lock"),
+    )
+    .unwrap();
+    fs::write(repo.git_dir.join("HEAD.lock"), b"external").unwrap();
+    assert!(!head.owns_lock());
+    drop(head);
+    drop(branch);
+    assert_eq!(
+        fs::read(repo.git_dir.join("HEAD.lock")).unwrap(),
+        b"external"
+    );
+    assert!(!repo.common_dir.join("refs/heads/main.lock").exists());
+}
+
 /// 读取切换不应改写的公共配置与分支引用字节。
 fn metadata_bytes(repo: &RepositoryHandle) -> Vec<(String, Vec<u8>)> {
     ["config"]

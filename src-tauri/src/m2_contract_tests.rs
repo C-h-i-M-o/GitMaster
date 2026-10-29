@@ -4,6 +4,73 @@ use gitmaster_core::git::types::{
     OperationResult, WriteTarget,
 };
 
+/// 结果摘要区分两种冲突，但撤销写能力仍必须通过读取会话获取。
+#[test]
+fn conflict_results_identify_merge_and_revert() {
+    use gitmaster_core::git::types::{ConflictSummary, WriteRefresh};
+    for (conflict, kind, field) in [
+        (
+            ConflictSummary::Merge {
+                merge_session_id: "session".into(),
+                unresolved_count: 1,
+                paths: vec!["file".into()],
+            },
+            "merge",
+            "mergeSessionId",
+        ),
+        (
+            ConflictSummary::Revert {
+                target_commit_oid: "target".into(),
+                unresolved_count: 1,
+                paths: vec!["file".into()],
+            },
+            "revert",
+            "targetCommitOid",
+        ),
+    ] {
+        let value = serde_json::to_value(OperationResult::NeedsResolution {
+            operation_id: "operation".into(),
+            kind: if kind == "merge" {
+                OperationKind::Integrate
+            } else {
+                OperationKind::Revert
+            },
+            conflict,
+            refresh: WriteRefresh::NotApplicable,
+        })
+        .unwrap();
+        assert_eq!(value["outcome"], "needsResolution");
+        assert_eq!(value["conflict"]["kind"], kind);
+        assert!(value["conflict"][field].is_string());
+        assert_eq!(value["conflict"]["unresolvedCount"], 1);
+    }
+}
+
+/// 撤销请求使用独立类型；旧合并接口不能接收撤销会话的保存与完成语义。
+#[test]
+fn revert_requests_are_distinct_and_use_camel_case() {
+    use gitmaster_core::git::RevertConflictWriteRequest;
+    let start: LocalWriteRequest =
+        serde_json::from_str(r#"{"kind":"revertCommit","commitOid":"abc"}"#).unwrap();
+    assert!(matches!(start, LocalWriteRequest::RevertCommit { commit_oid } if commit_oid == "abc"));
+    assert!(matches!(
+        serde_json::from_str::<LocalWriteRequest>(r#"{"kind":"abortRevert"}"#).unwrap(),
+        LocalWriteRequest::AbortRevert {}
+    ));
+    let save = r#"{"kind":"saveRevertConflict","conflictId":"file","fingerprint":"version","content":"正文"}"#;
+    assert!(
+        matches!(serde_json::from_str::<RevertConflictWriteRequest>(save).unwrap(), RevertConflictWriteRequest::SaveRevertConflict { conflict_id, fingerprint, .. } if conflict_id == "file" && fingerprint == "version")
+    );
+    assert!(serde_json::from_str::<ConflictWriteRequest>(save).is_err());
+    assert!(serde_json::from_str::<RevertConflictWriteRequest>(
+        r#"{"kind":"finishMerge","message":"错用"}"#
+    )
+    .is_err());
+    assert!(
+        matches!(serde_json::from_str::<RevertConflictWriteRequest>(r#"{"kind":"finishRevert","message":"撤销"}"#).unwrap(), RevertConflictWriteRequest::FinishRevert { message } if message == "撤销")
+    );
+}
+
 /// 前端的 camelCase 字段必须映射到真实请求参数。
 #[test]
 fn write_requests_use_camel_case_fields() {
@@ -53,6 +120,7 @@ fn operation_result_and_target_are_consumable() {
         operation_id: "op1".into(),
         kind: OperationKind::Fetch,
         error: gitmaster_core::git::error::OperationError::new("WRITE_OUTCOME_UNKNOWN"),
+        path_results: Vec::new(),
         clone_recovery: None,
         refresh: gitmaster_core::git::types::WriteRefresh::NotApplicable,
     };
@@ -71,6 +139,7 @@ fn clone_failure_serializes_recovery_context() {
         operation_id: "op-clone".into(),
         kind: OperationKind::Clone,
         error: gitmaster_core::git::error::OperationError::new("CHECKOUT_UNSUPPORTED"),
+        path_results: Vec::new(),
         clone_recovery: Some(CloneRecovery {
             path: "/tmp/example".into(),
             stage: CloneStage::Checkout,

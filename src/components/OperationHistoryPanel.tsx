@@ -2,6 +2,7 @@ import type { Workbench } from "../hooks/useWorkbench";
 import { useOperationHistory } from "../hooks/useOperationHistory";
 import {
   describeOperationKind,
+  describeRecoveryPathStatus,
   describeOperationPhase,
   formatOperationExpiry,
 } from "../ui/operationPresentation";
@@ -101,6 +102,26 @@ export function OperationHistoryPanel({
                 </p>
               )}
               {detail.commitOid && <code>{detail.commitOid}</code>}
+              {detail.pathResults && (
+                <section aria-label="逐文件结果">
+                  <h4>文件结果</h4>
+                  <ul>
+                    {detail.pathResults.map((file) => (
+                      <li key={file.path}>
+                        {file.path}：{describeRecoveryPathStatus(file.status)}
+                        {file.error && ` · ${describeGitError(file.error)}`}
+                      </li>
+                    ))}
+                  </ul>
+                  {(detail.pathResultCount ?? 0) >
+                    detail.pathResults.length && (
+                    <p>
+                      共 {detail.pathResultCount} 项，此处保留前 100
+                      项；请核对仓库实际状态。
+                    </p>
+                  )}
+                </section>
+              )}
               {detail.recoveryPath && <p>保留目录：{detail.recoveryPath}</p>}
               {detail.unresolvedCount !== null && (
                 <p>还有 {detail.unresolvedCount} 个冲突，请在合并流程处理。</p>

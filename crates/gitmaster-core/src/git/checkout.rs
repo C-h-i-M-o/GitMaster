@@ -160,6 +160,34 @@ impl CapturedCheckout {
 }
 
 impl CapturedTree {
+    /// 中止只让 Git 更新真实工作树；HEAD 和索引留在私有目录，真实索引由调用方发布。
+    pub(crate) fn reset_for_abort(
+        &self,
+        git: &GitExecutable,
+        repo: &RepositoryHandle,
+        index: &Path,
+        head: &str,
+        deadline: Instant,
+    ) -> Result<(), OperationError> {
+        let private = self.directory.path().join(".git");
+        fs::write(private.join("HEAD"), format!("{head}\n"))
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        fs::copy(index, private.join("index")).map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        let mut isolated = repo.clone();
+        isolated.git_dir = private.clone();
+        // common_dir 保留原对象目录；run() 单独将配置和引用目录固定到私有目录。
+        let args = ["-c", "submodule.recurse=false", "reset", "--merge", head].map(OsString::from);
+        let output = self.run(git, &isolated, &args, deadline)?;
+        if !output.success {
+            return Err(OperationError::new("GIT_EXECUTION_FAILED"));
+        }
+        let directory = cap_std::fs::Dir::open_ambient_dir(&private, cap_std::ambient_authority())
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+        let bytes = guard::read_index_file(&directory, "index")?
+            .ok_or_else(|| OperationError::new("WRITE_OUTCOME_UNKNOWN"))?;
+        fs::write(index, bytes).map_err(|_| OperationError::new("ACCESS_DENIED"))
+    }
+
     /// 解析目标树并捕获内建设置，所有中间文件位于应用私有目录。
     pub(crate) fn capture(
         git: &GitExecutable,
@@ -450,7 +478,7 @@ fn capture_attribute_file(path: &Path, deadline: Instant) -> Result<Vec<u8>, Ope
 }
 
 /// 只锁住已确认的源/目标引用，原生 switch 不更新这两个已有分支的 OID。
-struct ReferenceLock {
+pub(crate) struct ReferenceLock {
     directory: cap_std::fs::Dir,
     name: String,
     file: cap_std::fs::File,
@@ -458,10 +486,22 @@ struct ReferenceLock {
 
 impl ReferenceLock {
     /// 沿普通目录打开引用父目录，以 create_new 遵守 Git 已有锁协议。
-    fn acquire(repo: &RepositoryHandle, reference: &str) -> Result<Self, OperationError> {
-        let mut directory =
-            cap_std::fs::Dir::open_ambient_dir(&repo.common_dir, cap_std::ambient_authority())
-                .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
+    pub(crate) fn acquire(
+        repo: &RepositoryHandle,
+        reference: &str,
+    ) -> Result<Self, OperationError> {
+        Self::acquire_in(&repo.common_dir, reference)
+    }
+
+    /// HEAD 属于当前工作树，linked worktree 不能锁到公共仓库的 HEAD。
+    pub(crate) fn acquire_head(repo: &RepositoryHandle) -> Result<Self, OperationError> {
+        Self::acquire_in(&repo.git_dir, "HEAD")
+    }
+
+    /// 沿指定 Git 目录获取单个引用锁，已有或被替换的锁始终保留。
+    fn acquire_in(base: &Path, reference: &str) -> Result<Self, OperationError> {
+        let mut directory = cap_std::fs::Dir::open_ambient_dir(base, cap_std::ambient_authority())
+            .map_err(|_| OperationError::new("ACCESS_DENIED"))?;
         guard::validate_path(reference)?;
         let components = reference.split('/').collect::<Vec<_>>();
         for component in &components[..components.len() - 1] {
@@ -503,7 +543,7 @@ impl ReferenceLock {
     }
 
     /// 外部替换锁路径后不能把别人的文件当作自己仍持有的锁。
-    fn owns_lock(&self) -> bool {
+    pub(crate) fn owns_lock(&self) -> bool {
         #[cfg(unix)]
         {
             use cap_std::fs::MetadataExt;

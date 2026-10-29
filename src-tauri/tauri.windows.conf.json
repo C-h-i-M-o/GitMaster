@@ -1,3 +1,10 @@
 {
-  "bundle": { "targets": ["nsis"] }
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": {
+      "certificateThumbprint": null,
+      "signCommand": null,
+      "webviewInstallMode": { "type": "offlineInstaller", "silent": true }
+    }
+  }
 }

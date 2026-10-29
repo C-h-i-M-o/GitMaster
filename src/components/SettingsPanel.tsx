@@ -5,6 +5,7 @@ import { describeGitError } from "../ui/gitPresentation";
 import type { SettingsCategory } from "../types/settings";
 import { settingsFieldLocation } from "../ui/settingsField";
 import { shortcutLabel } from "../ui/shortcuts";
+import { CacheSettingsPanel } from "./CacheSettingsPanel";
 
 const categories: { id: SettingsCategory; label: string }[] = [
   { id: "general", label: "Git 环境" },
@@ -13,9 +14,10 @@ const categories: { id: SettingsCategory; label: string }[] = [
   { id: "terminal", label: "终端" },
   { id: "editor", label: "文件编辑器" },
   { id: "externalOpen", label: "外部打开" },
+  { id: "cache", label: "缓存" },
 ];
 
-/** 六类设置共享草稿与应用入口，输入控件只负责呈现。 */
+/** 设置分类共享草稿与应用入口，输入控件只负责呈现。 */
 export function SettingsPanel({ w }: { w: Workbench }) {
   const s = w.appSettings;
   const f = useSettingsForm(s, w.settingsCategory, w.selectSettings);
@@ -43,6 +45,9 @@ export function SettingsPanel({ w }: { w: Workbench }) {
         {w.preview && <p role="status">请在桌面应用中配置设置。</p>}
         {s.activity === "loading" && <p role="status">正在读取设置…</p>}
         <fieldset className="settings-fields" disabled={!s.editable}>
+          {w.settingsCategory === "cache" && (
+            <CacheSettingsPanel settings={s} form={f} />
+          )}
           {w.settingsCategory === "general" && (
             <section>
               <h3>Git 环境</h3>

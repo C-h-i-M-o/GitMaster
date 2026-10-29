@@ -1,7 +1,13 @@
 import type { LogLevel, UiPreferences } from "./git";
 
 export type SettingsCategory =
-  "general" | "appearance" | "logging" | "terminal" | "editor" | "externalOpen";
+  | "general"
+  | "appearance"
+  | "logging"
+  | "terminal"
+  | "editor"
+  | "externalOpen"
+  | "cache";
 export type TerminalDirectory =
   { kind: "project" } | { kind: "home" } | { kind: "fixed"; path: string };
 export interface TerminalProfile {
@@ -28,6 +34,7 @@ export interface EditorPreferences {
   saveMode: "manual" | "auto";
 }
 export interface AppSettings {
+  diskCacheEnabled: boolean;
   version: 4;
   gitPath: string | null;
   logLevel: LogLevel | null;
@@ -37,6 +44,7 @@ export interface AppSettings {
   externalOpen: { defaultAppId: "fileManager" | "vsCode" | "terminal" };
 }
 export type SettingsPatch =
+  | { kind: "cache"; diskCacheEnabled: boolean }
   | { kind: "git"; gitPath: string | null }
   | { kind: "logging"; logLevel: LogLevel | null }
   | ({ kind: "appearance" } & Partial<UiPreferences>)
@@ -60,6 +68,12 @@ export type SettingsPatch =
 export interface SettingsSnapshot {
   settings: AppSettings;
   revision: string;
+}
+export interface CacheUsage {
+  diskBytes: number;
+  memoryBytes: number;
+  limitBytes: number;
+  enabled: boolean;
 }
 export interface SettingsFieldError {
   field: string;

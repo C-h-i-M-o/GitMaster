@@ -32,6 +32,9 @@ function fixture(): {
     prepareConflictWrite: async () => {
       throw error;
     },
+    prepareRevertConflictWrite: async () => {
+      throw error;
+    },
     prepareClone: async () => {
       throw error;
     },
@@ -48,7 +51,7 @@ function fixture(): {
   return { controller, api };
 }
 
-test("准备失败为本地、远端、clone、finishMerge写入摘要并通知", async () => {
+test("准备失败为本地、远端、clone、完成合并或撤销写入摘要并通知", async () => {
   for (const action of [
     (c: ReturnType<typeof createOperationsController>) =>
       c.prepareLocal({ kind: "stage", changeIds: [] }),
@@ -61,6 +64,8 @@ test("准备失败为本地、远端、clone、finishMerge写入摘要并通知"
       }),
     (c: ReturnType<typeof createOperationsController>) =>
       c.prepareConflict("session", { kind: "finishMerge", message: "完成" }),
+    (c: ReturnType<typeof createOperationsController>) =>
+      c.prepareRevertConflict("revert-session", { kind: "finishRevert", message: "完成撤销" }),
   ]) {
     const { controller } = fixture();
     await action(controller);
@@ -71,7 +76,7 @@ test("准备失败为本地、远端、clone、finishMerge写入摘要并通知"
   }
 });
 
-test("saveFile和saveConflict准备失败不进入历史或通知", async () => {
+test("文件、合并冲突和撤销冲突保存准备失败不进入历史或通知", async () => {
   const { controller } = fixture();
   await controller.saveFile("file", "v", "内容");
   assert.equal(controller.getSnapshot().operationScope?.kind, "saveFile");
@@ -79,6 +84,14 @@ test("saveFile和saveConflict准备失败不进入历史或通知", async () => 
   assert.equal(controller.getSnapshot().failureNotification, null);
   await controller.prepareConflict("session", {
     kind: "saveConflict",
+    conflictId: "c",
+    fingerprint: "f",
+    content: "内容",
+  });
+  assert.equal(controller.getSnapshot().history.length, 0);
+  assert.equal(controller.getSnapshot().failureNotification, null);
+  await controller.prepareRevertConflict("revert-session", {
+    kind: "saveRevertConflict",
     conflictId: "c",
     fingerprint: "f",
     content: "内容",
