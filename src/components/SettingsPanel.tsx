@@ -1,3 +1,5 @@
+import { AgentSettingsPanel } from "./AgentSettingsPanel";
+import { DeviceStoragePanel } from "./DeviceStoragePanel";
 import { SettingsAdvanced } from "./SettingsAdvanced";
 import { logLevelLabel } from "../ui/settingsDisclosure";
 import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
@@ -54,6 +56,12 @@ export function SettingsPanel({ w }: { w: Workbench }) {
       >
         {w.preview && <p role="status">请在桌面应用中配置设置。</p>}
         {s.activity === "loading" && <p role="status">正在读取设置…</p>}
+        {w.settingsCategory === "general" && (
+          <>
+            <AgentSettingsPanel s={w.agent.settings} />
+            <DeviceStoragePanel s={w.agent.settings} />
+          </>
+        )}
         <fieldset className="settings-fields" disabled={!s.editable}>
           {w.settingsCategory === "git" && (
             <section>

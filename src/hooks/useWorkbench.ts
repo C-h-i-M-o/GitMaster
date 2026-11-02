@@ -1,3 +1,4 @@
+import { useAgent } from "./useAgent";
 import { useAppearance } from "./useAppearance";
 import { useEditorAutosave } from "./useEditorAutosave";
 import { useRestoreFiles } from "./useRestoreFiles";
@@ -39,7 +40,8 @@ import type {
   WriteContext,
 } from "../types/git";
 
-export type Drawer = "changes" | "files" | "detail" | "conflicts" | null;
+export type Drawer =
+  "changes" | "files" | "detail" | "conflicts" | "agent" | null;
 export type Modal = "clone" | "branch" | "remote" | "settings" | null;
 type Field =
   | "message"
@@ -53,6 +55,11 @@ export function useWorkbench() {
   const workspace = useWorkspace();
   const { repo, operations, conflicts } = workspace;
   const repository = repo.repository;
+  const agent = useAgent(
+    !workspace.preview,
+    repository?.rootPath ?? null,
+    repo.refresh,
+  );
   // 选择和草稿更新不重新过滤整个仓库的变更清单。
   const changeGroups = useMemo(
     () => groupChanges(repository?.changes ?? []),
@@ -1537,6 +1544,7 @@ export function useWorkbench() {
   );
   return {
     ...workspace,
+    agent,
     restoreFiles,
     prepareClean,
     cleanSelectionCount:

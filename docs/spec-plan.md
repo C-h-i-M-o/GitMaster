@@ -2224,3 +2224,141 @@ Codex 注册表另有截图未要求的 Codex 和 Proof，本任务不擅自加�
 审查范围为本轮设置、主题、缓存、品牌展示及对应契约和兼容性。发现桌面并发测试仍将写任务取消旧读取的结果视为成功；现有协调器在写任务排队时标记取消，并在读闭包返回后检查令牌，因此应明确断言 REQUEST_CANCELLED。仅修正测试预期，保留写任务期间禁止环境切换、任务成功完成与旧结果不能切换仓库的断言，不改变生产接口或数据结构。
 
 执行顺序：修正上述断言；运行前端类型、构建、格式、现有单元回归及 Rust 格式、核心/桌面单元测试与桌面 check；将结果写入 verification.md；检查暂存差异，提交并推送 origin/main，再核对本地与远端提交一致。既有忽略项、构建警告与未验收的平台范围如实保留。
+
+## 33. 基础 AI Agent（2026-11-02，已批准实施）
+
+**目标：** 在独立 `ai-agent` 分支交付可用的本地 Agent：三协议接入、对话历史、基础 Git/文件工具、开发总结工具、三级权限及设置管理。
+
+**执行：** 用户已批准本节方案及其中所需依赖下载。需求、计划、执行进度在本节合并维护；主 Agent 按 executing-plans 与测试先行逐项实施。不提交、推送或发布。当前任务授权不扩展到无关文件、用户其他仓库和远端。
+
+### 33.1 已确认输入与实现边界
+
+- 用户所说的三种格式按 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种 API 协议处理，不增加 Gemini 或配置文件导入格式。
+- 首次启动没有有效配置时展示配置向导；填写协议、API Base URL、模型 ID 和 API Key。配置完成前不能发送 AI 请求，后续可在设置中新增、编辑、删除和切换配置。模型 ID 由用户填写，不硬编码为某个最新模型。
+- 新增 AI 对话入口、文本对话、工具调用过程、停止生成、新建/继续聊天、重命名、归档和删除；保留模型返回的必要协议上下文以支持重启后续聊。首版不包含图片输入、子 Agent、插件市场、定时任务或后台自主运行。
+- 设置保持现有“通用 / 外观 / Git 环境”顶层分类。在通用内新增“AI 配置”“AI 权限”“此设备”分区；本地聊天历史在“此设备”提供管理入口，在对话界面也可直接访问。
+- “此设备”参考用户截图：显示实际总占用、分类比例条、各类容量、刷新和真实目录。统计聊天、已归档聊天、现有内容缓存及应用日志/配置等其他应用数据；只统计应用自有目录，不把用户仓库、系统密钥库或外部工作树计入。尚未实现的子 Agent/工作树不显示虚构用量。保留现有缓存始终开启、不设总量配额的规则。
+- Git 开发总结以用户提供的 `git-development-summary` 为转换来源。它按指定提交生成开发汇报，不是生成提交说明，也不授权本次开发对真实仓库自动提交。
+
+### 33.2 方案选择与架构
+
+推荐沿用 Tauri 2/React/TypeScript 与独立 Rust 核心。核心负责会话模型、协议映射、Agent 循环、工具定义、权限判定和本地历史；桌面适配层负责应用目录、系统密钥存储、事件投递与现有 Git 会话衔接。前端仅展示状态与提交明确的用户操作，不能决定权限是否通过。
+
+备选是完整集成 DeepSeek Harness：可复用其插件体系，但需要额外 Node 运行时、进程通信与分发管理，超出首版基础 Agent 所需规模。另一备选是前端直接执行 Agent 循环，实现较快但密钥、恢复和工具权限边界较弱，不推荐。
+
+参考 DeepSeek Harness 的模型适配器、工具注册/执行管线、Agent 循环、持久会话事件分层；只实现当前需要的具体模块，不移植动态插件系统。核心不得依赖 Tauri 或窗口生命周期。
+
+一次运行的数据流：用户消息持久化 → 读取会话的配置/权限快照 → 发起模型请求 → 展示并保存响应 → 校验工具名/参数 → 后端权限判定 → 必要时等待用户批准 → 执行并记录工具结果 → 回传模型 → 最终答复。所有工具结果包括拒绝、失败、取消，都要与原始调用 ID 配对。
+
+每个聊天同时只允许一个运行；同仓库写操作复用现有协调器。默认每轮最多 20 次模型请求，达到上限显示原因并允许用户主动继续；取消后不再启动后续工具。已完成副作用如实记录，不声称取消等于回滚。关闭或崩溃后的未完成运行标记为中断，重启不自动重放写操作。
+
+### 33.3 配置、协议与密钥
+
+- `ProviderProtocol = chatCompletions | responses | anthropicMessages`。
+- `ProviderProfile = { id, name, protocol, baseUrl, model, credentialId }`；普通配置仅保存密钥引用。向界面返回 `hasApiKey`，不返回已保存的明文密钥。
+- `AgentPreferences = { activeProfileId, defaultPermissionMode }`；聊天固定本轮使用的配置与权限，运行中修改设置不改变已经发出的调用。
+- API Key 由桌面层存入 macOS Keychain / Windows Credential Manager；不得写入日志、普通 JSON、聊天记录或 localStorage。保存失败应明确报错，不回退明文文件。前端输入值提交后清空。
+- Base URL 支持兼容服务及本地服务；清晰展示最终请求端点，拒绝带用户名/密码或密钥查询参数的 URL。HTTPS 为默认，本地回环 HTTP 可用于本地服务与测试；重定向不能携带密钥跨站跳转。
+- Chat Completions 使用 messages、function tool 与 tool_call_id；Responses 使用 input/output items、function_call/function_call_output 与 call_id，并保留续轮所需的全部 output items；Anthropic 使用 assistant tool_use 和紧随其后的 user tool_result，保留必要内容块。
+- 三种协议各自适配流式响应与工具参数分片；完整工具参数通过校验前不得执行。Responses/Chat Completions 使用 `store: false`，本地历史为应用侧事实来源，不依赖云端 conversation ID。数据仍会发送到用户选择的模型服务，本地保存不等于离线推理。
+- 使用已有或成熟 Rust HTTP、异步和密钥存储库，优先评估 reqwest、tokio、keyring；本机缺失依赖需用户允许下载后再安装。不手写 TLS、系统密钥加密或平台凭据库替代品。
+
+### 33.4 权限语义（已批准）
+
+权限名称采用截图原文。默认“请求批准”。这是一套后端工具执行策略，不宣传为操作系统级沙箱，也不依赖模型自己遵守提示词。
+
+| 操作                                                      | 请求批准 | 帮我批准                        | 完全访问权限 |
+| --------------------------------------------------------- | -------- | ------------------------------- | ------------ |
+| 当前项目普通文件/Git 读取                                 | 自动     | 自动                            | 自动         |
+| 当前项目普通文本写入、暂存/取消暂存、本地提交和新建分支   | 自动     | 自动                            | 自动         |
+| 项目外普通文件读取或写入                                  | 询问     | 低风险自动，敏感路径询问        | 自动         |
+| 网络读取、Git fetch                                       | 询问     | 公开目标自动，本地/私网目标询问 | 自动         |
+| Git push、pull/合并、分支切换等影响远端或工作树状态的操作 | 询问     | 询问                            | 自动         |
+| 覆盖/删除现有数据、敏感路径写入                           | 询问     | 询问                            | 自动         |
+
+“自动”仅表示已实现工具在权限允许时无需逐次确认，不增加任意 shell、任意 Git 参数或系统提权。完全访问允许基础文件工具操作当前系统账号可访问的项目外文件，不能暗中仍限制为项目内访问。首版不提供 reset --hard、clean、强推、任意命令执行等破坏性工具。
+
+用户主动保存 API 配置并发送消息，视为授权向该端点发送本轮模型上下文；这是模型通信，不重复弹出每次模型请求审批。模型自行要求的网络工具/Git 网络操作仍按上表处理。更换端点由用户在设置里操作，仓库文本不能修改端点或取出已保存的 API Key。
+
+风险判定由固定、可测的规则完成：路径是否越出当前项目、解析符号链接后的真实目标、是否为 `.git`/凭据/系统配置路径、网络是否属于回环/私网、操作是否写入远端或替换工作树。无法明确分类时“帮我批准”进入询问，不用第二个模型模糊裁决。
+
+批准请求绑定 `runId + callId + 参数摘要 + 仓库身份/文件版本`，展示操作、目标、影响及批准/拒绝按钮。更改参数、仓库切换、运行终止后旧批准无效。文件内容版本变化必须重新读取，不拿过期预览覆盖用户编辑。权限切换仅作用于下一轮运行。
+
+### 33.5 基础工具与 Git 开发总结
+
+- `list_files`：指定目录的有界列表；`read_file`：有界文本读取，明确截断/非文本；`write_file`：新建或修改文本，已有文件要求版本匹配并返回结果。通过权限策略支持项目内外路径，后端校验真实路径、符号链接与版本。
+- `git_status`、`git_log`、`git_diff`、`git_show`：只读仓库事实；`git_stage`、`git_unstage`、`git_commit`、`git_create_branch`、`git_switch_branch`、`git_fetch`、`git_pull`、`git_push`：复用已有核心能力与协调器。工具只接受类型化参数，不接受 shell 命令字符串。写后重新读取真实状态并通知工作台刷新。
+- `fetch_url`：有界 HTTP(S) 文本读取，逐个检查重定向目标与权限，不携带模型密钥，不执行返回页面脚本。用于落实截图中的联网权限，不增加搜索引擎或浏览器自动化。
+- `git_development_summary`：输入 `{ repositoryId, commitIds, audience? }`，产生指定提交的证据和五节 Markdown 报告。只读采集与文字生成分开；生成步骤禁用其他写工具、可取消、受同一运行预算约束，不启动递归 Agent。
+
+总结工具转换要求：
+
+1. 每个短/完整 SHA 必须解析到当前仓库提交；无效/歧义 ID 返回准确错误，不替换为相似 SHA。记录完整 SHA、父提交、时间、标题及实际补丁。根提交对空树比较；合并提交默认对第一父提交比较，并明确报告口径。
+2. 检查指定提交中的关键实现、入口、测试及相关开发文档；不能只看提交标题/文件名。从提交对象读取文件，不能拿当前工作区版本替代。多个不连续提交分别保留变化边界，不能用首尾 diff 把未指定提交混入。
+3. 证据优先级为提交代码/测试 → 直接相关文档 → 可访问开发对话 → 明确标注的推断。仅使用 GitMaster 自有且属于同项目的可访问聊天，不扫描 Codex 私有历史或用户其他应用数据；没有相关对话/记忆时注明边界继续生成。
+4. 合并为 1～3 个功能主题，反映指定提交中的后续修正。报告固定包含“整体做了什么功能、设计思路、核心代码流程、重要问题点、防御与兜底措施”，默认约 700～1200 中文字符；复杂范围可略增。
+5. 不能把存在测试文件写成已运行通过，不能把计划写成实现。输出附提交范围，必要时说明缺失证据、特殊合并口径和截断。补丁/文件采集超过预算时明确报告不完整，不能宣称完整核验。
+6. 默认在对话中返回完整报告并随聊天保存；导出到用户指定文件是单独文件写操作，适用相同权限规则。
+
+### 33.6 持久化与前后端接口
+
+不引入数据库。使用应用数据目录内的版本化 JSON/JSONL：配置采用原子替换，会话采用独立追加日志；每个聊天单独保存，单文件损坏不阻断其他聊天。日志读取只修复/忽略未完整落盘的末尾记录，遇到中段损坏明确报错，不伪造成功历史。删除/归档使用不透明聊天 ID，不接受前端任意路径。
+
+- `ChatSession = { version, id, title, repositoryPath?, profileId, permissionMode, archived, createdAt, updatedAt }`；仓库 ID 在每次运行时由桌面当前仓库签发并核验，不跨重启保存会过期的能力标识。
+- `AgentEvent = { version, sequence, sessionId, runId, timestamp, kind, ...事件字段 }`；kind 至少包含 userMessage、assistantMessage、toolCall、approvalRequested、approvalDecided、toolResult、runEnded。协议原始上下文保留在后端有类型的适配数据中，不混入 API Key。
+- `RunState = idle | requesting | executingTool | awaitingApproval | completed | cancelled | failed | interrupted`。
+- `DeviceUsage = { totalBytes, categories: [{ id, label, bytes }], locations }`；读取失败显示错误，不能把未知用量展示为 0；同一目录不能重复累计。
+- Tauri IPC：`agent_read_settings`、`agent_save_profile`、`agent_delete_profile`、`agent_select_profile`、`agent_set_permission`、`agent_test_connection`；密钥写入参数只用于保存，不序列化进读取结果。
+- 聊天 IPC：`agent_list_chats`、`agent_create_chat`、`agent_read_chat`、`agent_update_chat`、`agent_delete_chat`、`agent_send_message`、`agent_cancel_run`、`agent_resolve_approval`、`agent_read_device_usage`。运行事件经 `agent:event` 推送，前端按 sessionId/runId/sequence 过滤和恢复。
+- 错误返回中文用户提示及稳定错误码，涵盖认证失败、限流、超时、无效工具参数、拒绝、文件冲突、存储失败和取消。错误消息与日志不包含 API Key/鉴权头/完整含密钥请求。
+
+### 33.7 实施计划与验证顺序
+
+先运行针对性失败用例，再实现对应最小能力并验证通过；临时测试保留在本地，长期测试纳入版本管理依项目约定处理。不执行用户真实仓库的写操作来测试 Agent。
+
+- [x] 核对现有分支/设置/Git 协调器、参考截图、三种协议及用户提供的 skill；创建 `ai-agent` 分支。
+- [x] 方案与依赖下载授权确认：用户已确认本节方案，批准包含 HTTP/密钥存储缺失依赖下载。
+- [x] 配置与持久化：新增 `crates/gitmaster-core/src/agent/{mod,models,store}.rs`、`src-tauri/src/agent_credentials.rs`、`src/types/agent.ts`。接口围绕 `ProviderProfile`、`ChatSession`、`AgentEvent`、`DeviceUsage`；验证密钥不落普通文件、旧设置兼容、聊天重启回读、归档/删除实际占用变化、损坏尾记录恢复及跨聊天隔离。
+- [x] 三协议适配与循环：新增 `crates/gitmaster-core/src/agent/{provider,runtime}.rs`，提供按协议构造请求、解析增量/最终回复与回传工具结果的能力；输入配置/完整会话事件，输出 AgentEvent。使用本地 mock HTTP 服务逐一验证三协议完整工具往返、SSE 分片、多个工具、Responses 上下文保留、Anthropic 配对顺序、认证/限流/中断、取消和 20 步上限；不得仅测 URL 或文本响应就宣称兼容。
+- [x] 权限和基础工具：新增 `crates/gitmaster-core/src/agent/{policy,tools}.rs`，策略消费当前会话模式、工具参数和实际目标，输出 allow/ask/reject；工具执行使用现有 Git 核心和文件版本机制。临时仓库验证 stage/unstage/commit/分支及临时 bare remote 上的 fetch/pull/push、写后工作台刷新；临时文件验证项目外批准、符号链接、版本冲突、取消/重复/过期批准及三档权限矩阵。网络用本地受控服务器验证批准、重定向和输出限制。
+- [x] 开发总结：新增 `crates/gitmaster-core/src/agent/summary.rs`，实现证据采集和专用生成请求。用根/普通/合并/不连续提交、无效 SHA、脏工作区、后续修正及缺失上下文样本验收；对照五节模板人工检查报告，确保实际工具完成模型生成，不能仅返回提示词冒充总结。
+- [x] 桌面适配：新增 `src-tauri/src/commands/agent.rs` 并在 `commands.rs`、`lib.rs` 注册，输入以上 IPC 类型，注入真实应用目录/密钥库/Git 会话；验证仓库切换、窗口关闭、重启中断、并发写入协调、事件隔离及敏感错误脱敏。
+- [x] 前端接入：新增 `src/services/agent.ts`、`src/hooks/useAgent.ts`、`src/hooks/useAgentSettings.ts`、`src/components/AgentPanel.tsx`、`AgentSetupDialog.tsx`、`AgentSettingsPanel.tsx`、`DeviceStoragePanel.tsx`；最小修改 `useWorkbench.ts`、`App.tsx`、`SettingsPanel.tsx`、相关类型及样式。TSX 仅展示，事件/副作用放 TS；验证首次配置、三协议切换、后续管理、聊天恢复、工具批准/拒绝/取消、历史管理、真实容量刷新、深浅主题及最小窗口/键盘操作。
+- [x] 集成验收：执行 `pnpm typecheck`、`pnpm build`、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo test -p gitmaster-core`、`cargo check -p gitmaster-desktop`；补充桌面适配测试和 `pnpm tauri build --no-bundle`。在 macOS 桌面运行首配→对话→工具执行→批准→重启续聊闭环；使用真实服务密钥的冒烟验证仅在用户通过应用配置后执行，不在聊天或命令行索要密钥。
+- [x] 更新 README 与 `docs/verification.md`，逐项记录实际通过/失败/未验证范围。缺少真实服务凭据、Windows 设备或平台工具链时如实标明，不能将 mock 或浏览器测试写成真实 API/双平台验收通过。
+
+重点审查五类问题：配置删除/密钥保存失败是否破坏其他配置；流中断是否留下未配对工具；批准后文件或仓库变化是否导致误写；大补丁或非连续提交是否导致总结越界；归档/删除/损坏记录是否使历史和磁盘统计失真。分别由配置、协议、权限、总结和存储任务承担验证。
+
+### 33.8 资料与完成口径
+
+- 用户附件 `git-development-summary/SKILL.md` 为总结行为来源；已读取完整内容。保留其证据与报告规则，不将附件里的工作流当作本次执行 Git 操作的授权。
+- [DeepSeek Harness 官方架构](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md)：参考模型适配、工具管线、循环及会话事件的职责边界，不宣称本项目直接集成 Harness。
+- [OpenAI 协议迁移与工具映射](https://developers.openai.com/api/docs/guides/migrate-to-responses)、[本地管理对话状态](https://developers.openai.com/api/docs/guides/conversation-state)：核对两种 OpenAI 协议的不同格式及 Responses 上下文回放。
+- [Anthropic 官方工具调用示例](https://github.com/anthropics/anthropic-sdk-typescript/blob/main/examples/tools.ts)：核对 tool_use/tool_result 的配对方式。
+
+完成需上述五项用户需求全部有可运行实现及对应证据；单独创建分支、保存方案、界面占位、单协议成功或编译通过均不代表整个目标完成。
+
+### 33.9 实施记录
+
+用户批准后在原 `ai-agent` 分支执行，不新建工作树、不提交。按项目“单一 spec-plan”要求，本节兼作执行记录；不另建重复方案或使用技能默认的自动提交步骤。预检确认配置/会话类型由核心导出，桌面平台凭据通过 CredentialVault 注入，前端不接触已保存 Key；现有 Git 协调器继续作为写操作边界。
+
+- 已下载 reqwest 0.13.5、keyring 3.6.3 及必要异步/流式依赖，锁定两项直接版本。平台密钥库仅启用 macOS/Windows 原生实现；其他平台明确报不可用，不能落入 keyring 的内存 mock 回退。
+- 已实现核心模型、JSON/JSONL 本地存储、原子配置替换、操作级系统文件锁、归档/删除/真实容量统计与损坏尾记录恢复。ProfileService 以新凭据 ID 完成密钥轮换，保存失败保留旧配置，平台通过 SystemCredentialVault 适配。
+- 已实现三协议请求投影、完整响应解析、SSE 累积、HTTP 请求取消、响应上限和错误脱敏。跨模型/端点切换不回放旧模型不透明推理数据；同模型 Responses 保留完整 output items。eventsource-stream 处理 SSE 字节/UTF-8 分片，不自行实现 SSE 协议解析。
+- 已实现权限判定矩阵及基础文件工具。文件读写复用现有 Git 核心的能力目录、版本检查和原子创建/替换；文件写操作可接入现有仓库协调器。此时尚未接入运行循环和 UI，不能宣称 Agent 已可用。
+- 已实现 Git 状态/历史/差异/指定对象读取，以及暂存、取消暂存、提交、新建/切换分支、fetch/push/pull 的现有核心封装。pull 限定当前上游的 fetch + 快进，快进前复验本地分支和上游；远端操作仍待专项验证。已实现开发总结的提交对象证据采集与禁用工具的单次报告生成函数，尚未接入运行循环。
+- 已通过针对性测试：存储 5 项、配置/密钥事务 3 项、三协议 7 项、权限矩阵 2 项、文件工具 4 项、Git 工具 4 项、总结证据 3 项，共 28 项。首次缺失模块/接口的失败记录及后续通过日志保存在 `/tmp/gitmaster-agent-*.log`。UTF-8 截断用例先复现误报二进制，再修正为保留最后一个完整字符。
+- 完整核心回归 `cargo test -p gitmaster-core --offline`：既有 288 项 + 新增 28 项通过，既有 4 项忽略，0 失败；`cargo fmt --all -- --check` 和 `git diff --check` 通过。桌面 check 已通过初次新增依赖与平台适配编译，但实际系统密钥保存、真实 API 和桌面对话尚未验证。
+- 本阶段当时的下一步为网络工具/工具注册表、权限审批与持久运行循环、Tauri IPC、首配/聊天/设置界面，最后执行完整验收。待集成审查重点：工具结果和日志的敏感内容边界、运行中仓库切换、取消后的在途 Git 写结果、流中断后工具配对恢复。当前没有活动构建进程；核心测试完整日志为 `/tmp/gitmaster-agent-core-suite.log`。
+
+### 33.10 已接入能力与实现边界（2026-11-02）
+
+- 运行循环已连接工具注册表、三协议 HTTP、一次性审批、取消、20 次共用模型预算、持久事件、重启中断恢复与单实例运行锁。Git 写启动后等待核心真实终态；恢复缺失结果时标为未知，不重放写操作。普通工作台刷新不改变 Agent 的项目代次，切换项目才使旧环境失效。
+- `fetch_url` 固定准备时解析的 DNS 地址，禁用代理和自动重定向，不发送 Cookie 或模型 Key。重定向返回新 URL，下一次调用重新判定权限。仅接受最多 512 KiB 的 UTF-8 文本。
+- 原始流片段只作内存展示；完整响应、用户输入、工具参数/结果和总结证据在持久化前检查当前 Key 与已知凭据模式。明显敏感文本明确拒绝，不能用脱敏后的全文覆盖原文件；并不宣称能识别所有秘密或提供操作系统沙箱。
+- 总结专用请求实际执行并计入外层预算，禁用工具；提交证据和有限的 GitMaster 同项目聊天作为独立事件保存，完整报告直接显示在聊天中。没有外部应用历史或项目记忆时注明边界。
+- Tauri 已注册全部第 33.6 节 IPC，凭据操作移到阻塞线程。前端接入首配/编辑、配置选择/删除/连接测试、权限选择、聊天流、批准/拒绝/停止、标题/归档/删除、真实设备容量。保留设置的通用/外观/Git 三分类。
+- macOS 独立验收标识 `dev.gitmaster.agent-smoke` 已完成首次弹窗、Keychain 保存/重启回读、本机 mock 连接、发送→批准项目外读取→工具结果→模型回答、历史重开与归档分类容量变化。使用测试 Key 和临时文件；未使用真实服务凭据或用户仓库写入。
+- 默认并行核心回归出现既有缓存锁测试间歇失败，单项复查通过；完整串行回归通过。未修改无关缓存实现。最终命令、数量及未验证范围以 `docs/verification.md` 本次完成记录为准。
+
+最终前端、Rust、桌面构建与原生闭环证据已写入 `docs/verification.md` 的“AI Agent 基础版集成验收”；真实服务凭据与 Windows 实机缺失已明确列为未验证，不扩大完成声明。

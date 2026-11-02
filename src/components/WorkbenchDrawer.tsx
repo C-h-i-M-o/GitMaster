@@ -1,3 +1,4 @@
+import { AgentPanel } from "./AgentPanel";
 import { EditorDialogs } from "./EditorDialogs";
 import { ProjectFilesPanel } from "./ProjectFilesPanel";
 import { useConflictScroll } from "../hooks/useConflictScroll";
@@ -402,17 +403,21 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
         ref={w.changeDetailFocus.list}
         inert={w.changeDetailFocus.covered}
         hidden={!w.drawer}
-        className={`workbench-drawer ${w.drawer === "conflicts" ? "merge-drawer" : w.drawer === "files" ? "files-drawer" : ""}`}
+        className={`workbench-drawer ${w.drawer === "agent" ? "agent-drawer" : w.drawer === "conflicts" ? "merge-drawer" : w.drawer === "files" ? "files-drawer" : ""}`}
         aria-label={
           {
             changes: "本地修改",
             files: "项目文件",
             detail: "提交详情",
             conflicts: "冲突处理",
+            agent: "AI Agent",
           }[w.drawer ?? "files"]
         }
       >
-        <header className="drawer-header" hidden={w.drawer === "files"}>
+        <header
+          className="drawer-header"
+          hidden={w.drawer === "files" || w.drawer === "agent"}
+        >
           <h2>
             {
               {
@@ -420,6 +425,7 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
                 files: "项目文件",
                 detail: "提交详情",
                 conflicts: "冲突处理",
+                agent: "AI Agent",
               }[w.drawer ?? "files"]
             }
           </h2>
@@ -431,7 +437,9 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
             <Icon name="close" />
           </button>
         </header>
-        {w.drawer === "changes" ? (
+        {w.drawer === "agent" ? (
+          <AgentPanel a={w.agent} />
+        ) : w.drawer === "changes" ? (
           <Changes w={w} />
         ) : w.drawer === "detail" ? (
           <CommitDetails w={w} />

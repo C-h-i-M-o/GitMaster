@@ -1,3 +1,4 @@
+mod agent_credentials;
 mod commands;
 mod logging;
 #[cfg(test)]
@@ -67,6 +68,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle().clone();
+                commands::stop_agent(&app);
                 let owner = window.label().to_owned();
                 tauri::async_runtime::spawn_blocking(move || {
                     if let Ok(mut registry) = app.state::<commands::TerminalState>().0.lock() {
@@ -78,10 +80,26 @@ pub fn run() {
         .setup(|app| {
             logging::initialize(app.handle())?;
             commands::initialize_content_cache(app.handle());
+            commands::initialize_agent(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_app_info,
+            commands::agent_read_settings,
+            commands::agent_save_profile,
+            commands::agent_delete_profile,
+            commands::agent_select_profile,
+            commands::agent_set_permission,
+            commands::agent_test_connection,
+            commands::agent_list_chats,
+            commands::agent_create_chat,
+            commands::agent_read_chat,
+            commands::agent_update_chat,
+            commands::agent_delete_chat,
+            commands::agent_send_message,
+            commands::agent_cancel_run,
+            commands::agent_resolve_approval,
+            commands::agent_read_device_usage,
             commands::read_app_settings,
             commands::apply_app_settings,
             commands::apply_settings_patch,

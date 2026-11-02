@@ -2068,3 +2068,74 @@ Windows 桌面自动化通过 @oai/sky 读取窗口两次超时，备用 cua.get
 - 保留既有 Vite 大分块提示及 Rust 未使用变量/方法警告。日志位于本机 /tmp/gitmaster-review-*.log；浏览器功能证据沿用上文，本轮审查仅修正测试断言，没有重跑已通过的 UI 用例。
 
 当前分支已经是 main，无需额外合并提交。本次集成不恢复 Windows 打包，也不新增安装、签名、双平台 Release 验收声明。新增本地测试脚本和截图继续按仓库约定不纳入提交，已有受版本管理的回归夹具随功能更新。
+
+## AI Agent 实施前基线（2026-11-02）
+
+对应 spec-plan.md 第 33 节。已创建并切换到 `ai-agent`，当前只有方案及本记录的文档改动，功能代码尚未实现；方案确认和新增依赖下载授权仍待用户答复。
+
+- 使用本机现有 TypeScript 执行 `./node_modules/.bin/tsc --noEmit` 和 `./node_modules/.bin/tsc --noEmit -p tsconfig.node.json`，均以退出码 0 通过。
+- `cargo metadata --locked --offline --no-deps --format-version 1` 通过，仅验证现有工作区清单可读取，不代表依赖全部就绪或 Rust 编译通过。未下载依赖、修改依赖清单或锁文件。
+- 方案文档已由本机 Prettier 格式化，`git diff --check` 通过。尚未运行任何新增 Agent 的功能、真实 API 或原生桌面验证，不将既有基线结果作为新功能验收。
+
+## AI Agent 后端基础阶段（2026-11-02，尚未整体交付）
+
+用户已批准方案与依赖下载。本阶段实现配置/会话存储、密钥事务与平台适配、三协议 HTTP/SSE、权限判定、基础文件/Git 工具及指定提交总结的证据采集和生成函数。尚无运行循环、审批 IPC 和界面接入，因此还不是可使用的完整 Agent。
+
+- `cargo test -p gitmaster-core --offline`：316 通过（既有 288 + 新增 28）、4 项既有忽略、0 失败。日志 `/tmp/gitmaster-agent-core-suite.log`。
+- 新增验证覆盖 JSON/JSONL 重启回读、归档/删除实际容量、坏尾恢复/中段损坏隔离、符号链接拒绝、密钥更新失败保留原配置、成功轮换与删除、三协议工具结果映射、真实回环 HTTP/SSE 分片、认证错误不回显服务内容、取消在途请求、模式切换不发送旧不透明推理、权限矩阵、项目外文件批准、文件版本冲突、临时仓库 stage/unstage/commit/分支操作、过期分支切换拒绝及 Git 文本截断。
+- 总结证据使用临时仓库实测根提交、合并提交第一父比较、多个不连续指定提交、无效 SHA，以及排除脏工作区内容；未调用真实模型评价生成报告的事实准确性。
+- `cargo fmt --all -- --check`、`git diff --check` 通过；初次依赖/密钥适配接入后的 `cargo check -p gitmaster-desktop --offline` 通过。保留既有协调器未使用方法警告；密钥适配尚未注册 IPC，当前产生未使用警告，后续接入消除。
+- 远端 fetch/push/pull 工具、完整运行循环和真实系统密钥读写尚未验收；前端尚未改动，没有本轮原生窗口、Windows、真实 API 或安装包通过声明。后续阶段继续验证，不将本阶段结果视为整个目标完成。
+
+## AI Agent 基础版集成验收（2026-11-02）
+
+分支 `ai-agent`，基于 `b2e7974`，本次没有提交、推送、发布或修改真实用户仓库来验证 Git 写入。需求与实现方案统一在 `docs/spec-plan.md` 第 33 节。先前“尚未接入运行循环/UI”的记录是中间状态，当前已完成核心、桌面 IPC 与前端接入。
+
+### 功能与自动化证据
+
+- 三种协议均使用真实本地 HTTP socket 验证模型工具调用→审批→文件读取→工具结果回传→模型最终回答；另覆盖 SSE 碎片、Responses 原始上下文、Anthropic 工具配对、跨模型回放、认证错误及请求取消。
+- 后端覆盖一次性批准、错误运行 ID、重复批准、拒绝、取消等待、20 次请求上限、重启补齐缺失工具结果且不重放写操作、运行目录独占锁。Git 审批展示核心计划预览；普通仓库刷新与切换项目使用不同代次，避免刷新误停运行。
+- 文件覆盖路径边界、符号链接、版本冲突、原子创建/替换及保护目录。Git 覆盖状态/差异/对象读取、暂存/取消暂存、提交、新建/切换分支以及临时 bare 上的 fetch/push/pull 快进。网络传输仅在测试替身中将固定 HTTPS 测试主机映射到临时 bare，生产 URL/认证校验未放宽。
+- 网络文本工具覆盖私网批准、禁止带凭据 URL、无鉴权头/无 Cookie、重定向重新请求，以及特殊 IPv6 地址的保守批准判定。HTTP 读取有字节上限与取消，API Key 仅送往用户配置的模型端点。
+- 总结覆盖根提交、合并第一父提交、不连续提交、无效 SHA、脏工作区排除；运行循环测试实际执行禁用工具的专用模型请求，保存证据及完整五节报告。mock 返回固定报告只证明流程与合同，不证明真实模型的报告质量。
+- 配置覆盖系统密钥库抽象的保存/删除失败事务、密钥轮换、空白编辑保留原 Key，以及普通字段粘贴凭据被拒绝；持久存储覆盖损坏尾记录、中段损坏、未知版本/字段、归档/删除用量和符号链接拒绝。已知敏感内容检测并不等同于完整秘密识别。
+
+| 检查                                                                  | 实际结果与日志                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm typecheck`                                                      | 通过，`/tmp/gitmaster-agent-final-typecheck.log`                                                                                                                                                                                               |
+| `pnpm build`                                                          | 通过；Tauri 构建前再次执行该脚本。仍有既有大 chunk 提示，未做无关拆包。                                                                                                                                                                        |
+| `pnpm format:check`                                                   | 通过，`/tmp/gitmaster-agent-final-format.log`                                                                                                                                                                                                  |
+| `cargo fmt --all -- --check`、`git diff --check`                      | 通过                                                                                                                                                                                                                                           |
+| `cargo test -p gitmaster-core --offline -- --test-threads=1`          | 327 项通过、4 项既有忽略、0 失败，`/tmp/gitmaster-agent-core-verified.log`。最后一次特殊 IPv6 判定调整后另跑 Git 5 项与网络 3 项全部通过，其中新增 IPv6 用例 1 项：`/tmp/gitmaster-agent-network-final.log`。当前核心累计覆盖 328 个通过用例。 |
+| `cargo test -p gitmaster-desktop --offline --lib -- --test-threads=1` | 57 项通过、0 失败，含设备容量去重与 Agent 刷新代次用例，`/tmp/gitmaster-agent-desktop-verified.log`                                                                                                                                            |
+| `cargo check -p gitmaster-desktop --offline`                          | 通过，`/tmp/gitmaster-agent-final-desktop-check.log`；仅保留既有未使用变量/方法警告。                                                                                                                                                          |
+| `pnpm tauri build --no-bundle`                                        | macOS Release 成功生成 `target/release/gitmaster-desktop`；最终日志 `/tmp/gitmaster-agent-native-verified-build.log`。这是本地构建，不代表签名、公证、安装包或 Windows 已通过。                                                                |
+
+默认并行 `cargo test -p gitmaster-core --offline` 曾在既有 `cache::tests` 的缓存锁用例间歇失败（`WouldBlock` 或 put 返回 false）；单项复查通过，完整串行回归通过。另一次回归发现新增 Git 截断读取错误：输出超限主动终止 Git 后退出码非成功；已修正为按 `truncated` 标识保留有界文本并通过回归。没有为了掩盖失败而更改无关缓存代码。早期失败日志保留在 `/tmp/gitmaster-agent-core-suite*.log` 与 `/tmp/gitmaster-agent-core-final.log`。
+
+### macOS 原生与界面验收
+
+使用独立应用标识 `dev.gitmaster.agent-smoke`、本机 `127.0.0.1:18764` mock 服务、测试 Key 和临时文件；原有 `dev.gitmaster.desktop` 配置未用于此次原生操作。应用由 Tauri Release 构建并封装为本地验收 `.app`，真实页面 URL 为 `tauri://localhost`。
+
+已在原生窗口操作并观察：
+
+1. 首次自动显示 API 配置弹窗；填写 Chat Completions / Base URL / 模型 / 测试 Key 后成功保存。设置显示“密钥已保存”，连接测试成功；Key 从系统 Keychain 读取，不依赖前端明文回填。
+2. 打开 AI Agent，用 `Cmd+Enter` 发送消息；项目外文件调用显示真实 canonical 路径及“批准一次/拒绝”。批准后显示工具结果、最终模型回答和“已完成”，输入重新可用。
+3. 退出后重新打开，仍可选择原聊天，读到用户消息、工具调用、批准记录、结果及最终回答；已保存配置仍显示 Key 可用。
+4. 归档聊天后禁止继续发送；设置“此设备”从聊天类别转为“已归档聊天 3.6 KB”，总量约 4.0 KB；修改测试外观后普通设置容量同步计入，总量约 4.8 KB，没有与 Agent 目录重复统计。
+5. 检查原生深色窗口视觉呈现及浅色模式切换、设置保存。浏览器仅用于补充 860×620 布局检查，AI 面板和输入框均在视口内，没有横向溢出；没有将浏览器冒充原生能力验证。浏览器 Playwright 专用运行时缺失，未额外下载，改用已可用浏览器工具预览；原生操作使用 Computer Use。
+6. 检查独立测试应用的普通配置、聊天和日志文件，未发现测试 Key 字符串。测试聊天中只保留配置引用，不含 API Key。
+
+未验证：真实 OpenAI/Anthropic/兼容服务的账号额度、模型质量和所有服务商差异；Windows 实机、Windows Credential Manager、Windows 安装包；发布签名/公证/干净系统。没有真实服务凭据，未在聊天或命令行索要 Key。以上范围不属于已通过项，首版使用者需通过应用填写自己的配置验证服务连接。
+
+本机验收完成后已停止独立测试应用与 mock 服务，删除本次测试 Keychain 条目并清理隔离标识的数据/缓存/日志目录；普通应用配置未修改。脱敏后的验收配置与聊天证据保留在 `/tmp/gitmaster-agent-native-evidence`，构建/测试日志保留在上述 `/tmp` 路径。
+
+## AI Agent 推送前代码审查（2026-11-03）
+
+用户要求先审查、完整记录问题后推送 `ai-agent`，本轮不修复功能。审查范围、7 项问题、触发条件、证据、未验证范围和 Git 交付记录见 [审查文档](code-review-ai-agent-2026-11-03.md)。其中排队文件写入在停止后仍执行已用临时仓库复现，属于待修复 P1；推送不表示问题关闭或发布验收通过。
+
+- `pnpm typecheck`、`pnpm build`、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop --offline` 通过。保留前端大 chunk 和桌面既有未使用参数警告。
+- 默认并行核心测试：285 通过、3 失败、4 忽略。缓存两项、历史文件一项失败，详情写入审查文档；完整串行复核 328 通过、0 失败、4 既有忽略。并行失败原因未定位，不用串行通过覆盖失败记录。
+- 桌面串行回归：57 通过、0 失败。排队取消专项：1 项复现通过，断言停止后仍写入，不是修复验证。
+- 临时复现入口已从 Cargo 集成测试目录移出，夹具仅在被忽略的根 `tests/` 本地保留。产品代码未因审查修改。
+- 本轮未重做真实服务、原生 UI、Windows、安装包或签名验收。日志路径为 `/tmp/gitmaster-review-*.log`，本地日志不随提交上传。

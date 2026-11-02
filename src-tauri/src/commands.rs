@@ -4,6 +4,8 @@ use gitmaster_core::git::{
     environment::{describe_git, resolve_git},
     *,
 };
+mod agent;
+pub use agent::*;
 mod cache;
 mod diff;
 mod external;
@@ -57,6 +59,8 @@ pub struct Session {
     content_cache: Option<Arc<gitmaster_core::cache::ContentCache>>,
     environment_request: u64,
     repository_request: u64,
+    /// Agent 只在切换项目时失效，普通刷新不能终止其运行。
+    agent_repository_request: u64,
     /// 只读能力生命周期；普通状态刷新不递增，避免无关读取失效。
     readonly_request: u64,
     /// 上一次已消费的监听域版本。
@@ -435,6 +439,7 @@ pub async fn open_repository(
             .clone()
             .ok_or_else(|| OperationError::new("GIT_NOT_FOUND"))?;
         s.begin_repository_request()?;
+        s.agent_repository_request += 1;
         (git, s.epoch, s.repository_request)
     };
     blocking("open_repository", move || {

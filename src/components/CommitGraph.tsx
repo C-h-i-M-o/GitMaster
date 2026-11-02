@@ -18,7 +18,7 @@ export function CommitGraph({ workbench: w }: { workbench: Workbench }) {
     w.preferences.saved?.elasticity ?? 6,
   );
   return (
-    <div className="graph-canvas" ref={graph.root}>
+    <div className="graph-canvas" inert={w.drawer === "agent"} ref={graph.root}>
       <div className="graph-heading">
         <span className="eyebrow">COMMIT HISTORY</span>
       </div>

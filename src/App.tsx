@@ -1,3 +1,4 @@
+import { AgentSetupDialog } from "./components/AgentSetupDialog";
 import { useWorkbench } from "./hooks/useWorkbench";
 import { WorkspaceToolbar } from "./components/WorkspaceToolbar";
 import { Icon } from "./components/Icon";
@@ -63,6 +64,13 @@ export default function App() {
                 <span>合并与冲突</span>
               </button>
             )}
+            <button
+              className={w.drawer === "agent" ? "active" : ""}
+              onClick={w.openDrawer("agent")}
+            >
+              <span className="agent-nav-mark">AI</span>
+              <span>AI Agent</span>
+            </button>
           </nav>
           <section className="branches">
             <div className="section-heading">
@@ -160,6 +168,7 @@ export default function App() {
       </footer>
       <WorkbenchDialogs workbench={w} />
       <WriteConfirmation workbench={w} />
+      <AgentSetupDialog s={w.agent.settings} />
     </div>
   );
 }
