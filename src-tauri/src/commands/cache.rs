@@ -1,5 +1,5 @@
 //! 应用缓存的目录和 IPC 适配；前端不能选择缓存路径。
-use super::{blocking, settings_path, DesktopState, OperationError};
+use super::{blocking, DesktopState, OperationError};
 use gitmaster_core::cache::{CacheUsage, ContentCache};
 use std::sync::Arc;
 use tauri::{Manager, State};
@@ -12,11 +12,6 @@ pub fn initialize_content_cache(app: &tauri::AppHandle) {
         .ok()
         .and_then(|path| ContentCache::new(&path.join("content-v1")).ok());
     if let Some(cache) = cache {
-        let enabled = settings_path(app)
-            .and_then(|path| crate::settings::load(&path))
-            .map(|settings| settings.disk_cache_enabled)
-            .unwrap_or(false);
-        cache.set_disk_enabled(enabled);
         if let Ok(mut session) = app.state::<DesktopState>().lock() {
             session.content_cache = Some(Arc::new(cache));
         }
@@ -32,7 +27,7 @@ fn content_cache(state: &DesktopState) -> Result<Arc<ContentCache>, OperationErr
         .ok_or_else(|| OperationError::new("CACHE_UNAVAILABLE"))
 }
 
-/// 从实际目录及内存读取用量，不持有桌面会话锁进行文件操作。
+/// 从实际目录读取磁盘用量，不持有桌面会话锁进行文件操作。
 #[tauri::command]
 pub async fn read_cache_usage(
     state: State<'_, DesktopState>,

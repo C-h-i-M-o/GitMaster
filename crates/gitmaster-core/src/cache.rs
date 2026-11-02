@@ -1,4 +1,4 @@
-//! 有界展示缓存；不保存工作区正文、草稿、一次性计划或会话授权。
+//! 内存有界、磁盘无总量配额的展示缓存；不保存工作区正文、草稿、一次性计划或会话授权。
 
 use cap_std::fs::{Dir, OpenOptions};
 use serde::{Deserialize, Serialize};
@@ -7,34 +7,27 @@ use std::{
     collections::BTreeMap,
     io::{self, Read, Write},
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
-    },
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const DISK_LIMIT: u64 = 1_000_000_000;
 pub const MEMORY_LIMIT: usize = 128 * 1024 * 1024;
 const BLOCK_LIMIT: usize = 8 * 1024 * 1024;
 const MANIFEST_LIMIT: usize = 4 * 1024 * 1024;
 const MANIFEST: &str = "manifest.json";
 
-/// 用量来自真实文件与内存，不把读取失败伪装成零占用。
+/// 用量来自真实文件，不把读取失败伪装成零占用。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheUsage {
     pub disk_bytes: u64,
-    pub memory_bytes: usize,
-    pub limit_bytes: u64,
-    pub enabled: bool,
+    pub content_bytes: u64,
 }
 
 /// 平台无关的两级内容缓存，调用方必须把仓库身份和查询语义纳入键。
 pub struct ContentCache {
     disk: DiskStore,
     memory: Mutex<Memory>,
-    enabled: AtomicBool,
 }
 
 #[derive(Default)]
@@ -46,13 +39,13 @@ struct Memory {
 }
 
 impl ContentCache {
-    /// 在平台提供的专用缓存目录创建全局配额，不访问任何仓库。
+    /// 在平台提供的专用缓存目录创建始终启用的缓存，不访问任何仓库。
     pub fn new(root: &Path) -> io::Result<Self> {
-        Self::with_limits(root, DISK_LIMIT, MEMORY_LIMIT)
+        Self::with_memory_limit(root, MEMORY_LIMIT)
     }
 
-    /// 小配额入口仅供模块内验证复用生产算法。
-    fn with_limits(root: &Path, disk_limit: u64, memory_limit: usize) -> io::Result<Self> {
+    /// 内存预算可缩小以验证淘汰；磁盘没有总量配额。
+    fn with_memory_limit(root: &Path, memory_limit: usize) -> io::Result<Self> {
         std::fs::create_dir_all(root)?;
         if !std::fs::symlink_metadata(root)?.file_type().is_dir() {
             return Err(io::Error::other("缓存目录不是普通目录"));
@@ -60,13 +53,11 @@ impl ContentCache {
         Ok(Self {
             disk: DiskStore {
                 dir: Dir::open_ambient_dir(root, cap_std::ambient_authority())?,
-                limit: disk_limit,
             },
             memory: Mutex::new(Memory {
                 limit: memory_limit,
                 ..Memory::default()
             }),
-            enabled: AtomicBool::new(true),
         })
     }
 
@@ -80,9 +71,6 @@ impl ContentCache {
                 *used = tick;
                 return Some(bytes.clone());
             }
-        }
-        if !self.enabled.load(Ordering::Relaxed) {
-            return None;
         }
         let value = self.disk.get(&key).ok().flatten()?;
         if let Ok(mut memory) = self.memory.try_lock() {
@@ -102,24 +90,17 @@ impl ContentCache {
             .try_lock()
             .map(|mut memory| memory.insert(key.clone(), value))
             .unwrap_or(false);
-        let disk_saved = self.enabled.load(Ordering::Relaxed) && self.disk.put(&key, value).is_ok();
+        let disk_saved = self.disk.put(&key, value).is_ok();
         memory_saved || disk_saved
     }
 
-    /// 关闭仅影响磁盘读写，当前有界内存仍可服务展示；持久偏好由平台层保存。
-    pub fn set_disk_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Relaxed);
-    }
-
-    /// 返回全局占用，锁竞争明确报错而不是等待另一个进程。
+    /// 扫描真实磁盘占用和数据块占用，不把读取失败伪装成零。
     pub fn usage(&self) -> io::Result<CacheUsage> {
         let _lock = self.disk.lock()?;
-        let memory = self.memory.try_lock().map_err(|_| busy())?;
+        let (disk_bytes, content_bytes) = self.disk.bytes()?;
         Ok(CacheUsage {
-            disk_bytes: self.disk.bytes()?,
-            memory_bytes: memory.bytes,
-            limit_bytes: self.disk.limit,
-            enabled: self.enabled.load(Ordering::Relaxed),
+            disk_bytes,
+            content_bytes,
         })
     }
 
@@ -174,7 +155,6 @@ impl Memory {
 
 struct DiskStore {
     dir: Dir,
-    limit: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,18 +197,30 @@ impl DiskStore {
     }
 
     /// 真实目录占用包含清单、锁及中断留下的临时文件，特殊目录项不参与缓存写入。
-    fn bytes(&self) -> io::Result<u64> {
+    fn bytes(&self) -> io::Result<(u64, u64)> {
         let mut total = 0u64;
+        let mut content = 0u64;
         for entry in self.dir.entries()? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 return Err(io::Error::other("缓存含非普通文件"));
             }
+            let size = entry.metadata()?.len();
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".block"))
+                .is_some_and(valid_hash)
+            {
+                content = content
+                    .checked_add(size)
+                    .ok_or_else(|| io::Error::other("缓存大小超限"))?;
+            }
             total = total
-                .checked_add(entry.metadata()?.len())
+                .checked_add(size)
                 .ok_or_else(|| io::Error::other("缓存大小超限"))?;
         }
-        Ok(total)
+        Ok((total, content))
     }
 
     /// 读取有界清单并验证全部文件名和大小，缓存内容不能指定目录或执行对象。
@@ -288,12 +280,10 @@ impl DiskStore {
             let _ = self.save_manifest(&manifest);
             return Ok(None);
         }
-        entry.used = timestamp();
-        let _ = self.save_manifest(&manifest);
         Ok(Some(value))
     }
 
-    /// 写前预留块与临时清单全部空间，淘汰后才创建数据文件。
+    /// 写入新块并原子更新索引；不因磁盘总量淘汰已有内容。
     fn put(&self, key: &str, value: &[u8]) -> io::Result<()> {
         let _lock = self.lock()?;
         let mut manifest = self.manifest();
@@ -314,32 +304,16 @@ impl DiskStore {
         if manifest.entries.remove(key).is_some() {
             self.remove_block(key)?;
         }
-        loop {
-            manifest.entries.insert(
-                key.into(),
-                Entry {
-                    bytes: value.len() as u64,
-                    sha256: digest(value),
-                    used: timestamp(),
-                },
-            );
-            let encoded = encode(&manifest)?;
-            let needed = value.len() as u64 + encoded.len() as u64;
-            if self.bytes()?.saturating_add(needed) <= self.limit {
-                break;
-            }
-            let oldest = manifest
-                .entries
-                .iter()
-                .filter(|(candidate, _)| candidate.as_str() != key)
-                .min_by_key(|(_, entry)| entry.used)
-                .map(|(key, _)| key.clone());
-            let Some(oldest) = oldest else {
-                return Err(io::Error::other("缓存配额不足"));
-            };
-            manifest.entries.remove(&oldest);
-            self.remove_block(&oldest)?;
-        }
+        manifest.entries.insert(
+            key.into(),
+            Entry {
+                bytes: value.len() as u64,
+                sha256: digest(value),
+                used: timestamp(),
+            },
+        );
+        // 写块前检查清单可编码；单次内存解析保护与磁盘总容量无关。
+        encode(&manifest)?;
         self.atomic_write("block.tmp", &block_name(key), value)?;
         self.save_manifest(&manifest)
     }
@@ -352,12 +326,9 @@ impl DiskStore {
         }
     }
 
-    /// 清单采用同目录临时文件替换，临时副本也计入硬配额。
+    /// 清单采用同目录临时文件替换，实际空间不足时由文件系统报告错误。
     fn save_manifest(&self, manifest: &Manifest) -> io::Result<()> {
         let bytes = encode(manifest)?;
-        if self.bytes()?.saturating_add(bytes.len() as u64) > self.limit {
-            return Err(io::Error::other("缓存配额不足"));
-        }
         self.atomic_write("manifest.tmp", MANIFEST, &bytes)
     }
 
@@ -405,7 +376,7 @@ fn owned_file(name: &str) -> bool {
     matches!(name, MANIFEST | "block.tmp" | "manifest.tmp")
         || name.strip_suffix(".block").is_some_and(valid_hash)
 }
-/// 跨进程最近使用时间；系统时间回拨只影响淘汰次序，不影响内容正确性。
+/// 保留旧缓存清单格式的写入时间字段，不用于磁盘配额淘汰。
 fn timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

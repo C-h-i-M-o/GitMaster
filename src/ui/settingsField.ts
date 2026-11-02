@@ -8,13 +8,12 @@ export function settingsFieldLocation(
     string,
     { category: SettingsCategory; label: string }
   > = {
-    gitPath: { category: "general", label: "Git 环境" },
-    diskCacheEnabled: { category: "cache", label: "缓存" },
+    gitPath: { category: "git", label: "Git 环境" },
     uiPreferences: { category: "appearance", label: "外观" },
-    logLevel: { category: "logging", label: "诊断日志" },
-    terminal: { category: "terminal", label: "终端" },
-    editor: { category: "editor", label: "文件编辑器" },
-    externalOpen: { category: "externalOpen", label: "外部打开" },
+    logLevel: { category: "general", label: "诊断日志" },
+    terminal: { category: "general", label: "终端" },
+    editor: { category: "general", label: "文件编辑器" },
+    externalOpen: { category: "general", label: "外部打开" },
   };
   const key = field.split(".")[0] ?? "";
   const base = Object.hasOwn(categories, key) ? categories[key] : undefined;

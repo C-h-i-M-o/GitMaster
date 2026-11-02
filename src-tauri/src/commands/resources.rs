@@ -430,6 +430,7 @@ pub async fn set_ui_preferences(
             UiPreferences {
                 elasticity,
                 show_labels,
+                ..UiPreferences::default()
             },
         )
     })

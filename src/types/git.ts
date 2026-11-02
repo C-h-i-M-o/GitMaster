@@ -1,3 +1,4 @@
+import type { ColorMode, LightTheme, DarkTheme } from "./appearance";
 export interface OperationError {
   code: string;
   retryable: boolean;
@@ -309,6 +310,9 @@ export interface OperationRecord {
   result: OperationResult | null;
 }
 export interface UiPreferences {
+  colorMode: ColorMode;
+  lightTheme: LightTheme;
+  darkTheme: DarkTheme;
   elasticity: number;
   showLabels: boolean;
 }

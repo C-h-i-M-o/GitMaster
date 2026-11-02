@@ -22,7 +22,7 @@ export function OperationFeedback({
               cy="99"
               rx="51"
               ry="6"
-              fill="#dedacb"
+              fill="var(--line)"
               opacity=".35"
             />
             <rect
@@ -31,25 +31,25 @@ export function OperationFeedback({
               width="91"
               height="65"
               rx="10"
-              fill="#eef3ea"
-              stroke="#c5d5c4"
+              fill="var(--surface)"
+              stroke="var(--line)"
               transform="rotate(7 78 50)"
             />
             <path
               d="M26 37a8 8 0 0 1 8-8h25l10 10h52a8 8 0 0 1 8 8v38a8 8 0 0 1-8 8H34a8 8 0 0 1-8-8Z"
-              fill="#faf7ed"
-              stroke="#c6b28e"
+              fill="var(--paper)"
+              stroke="var(--warning)"
               strokeWidth="1.5"
             />
             <path
               d="M48 72h15m22 0h17"
-              stroke="#819d8c"
+              stroke="var(--muted)"
               strokeWidth="2"
               strokeLinecap="round"
             />
             <path
               d="m68 67 4 5-4 5m11-10-4 5 4 5"
-              stroke="#ac8752"
+              stroke="var(--warning)"
               strokeWidth="1.5"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -58,22 +58,28 @@ export function OperationFeedback({
               cx="46"
               cy="72"
               r="4"
-              fill="#f9fbf5"
-              stroke="#6d9883"
+              fill="var(--surface)"
+              stroke="var(--success)"
               strokeWidth="1.5"
             />
             <circle
               cx="104"
               cy="72"
               r="4"
-              fill="#f9fbf5"
-              stroke="#6d9883"
+              fill="var(--surface)"
+              stroke="var(--success)"
               strokeWidth="1.5"
             />
-            <circle cx="126" cy="37" r="14" fill="#f3e7ce" stroke="#ceb27c" />
+            <circle
+              cx="126"
+              cy="37"
+              r="14"
+              fill="var(--warning-wash)"
+              stroke="var(--warning)"
+            />
             <path
               d="M126 30v8m0 5v.1"
-              stroke="#966c31"
+              stroke="var(--warning)"
               strokeWidth="2"
               strokeLinecap="round"
             />
@@ -109,8 +115,8 @@ export function OperationFeedback({
               cx="112"
               cy="28"
               r="13"
-              fill="#eef6ef"
-              stroke="#6a9d8d"
+              fill="var(--success-wash)"
+              stroke="var(--success)"
               strokeWidth="1.4"
             />
             <circle className="feedback-core" cx="112" cy="28" r="7" />

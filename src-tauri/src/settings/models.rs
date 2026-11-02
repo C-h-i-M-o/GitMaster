@@ -104,9 +104,6 @@ impl Default for SaveMode {
     deny_unknown_fields
 )]
 pub enum SettingsPatch {
-    Cache {
-        disk_cache_enabled: bool,
-    },
     Git {
         git_path: Option<String>,
     },
@@ -114,6 +111,9 @@ pub enum SettingsPatch {
         log_level: Option<crate::logging::LogLevel>,
     },
     Appearance {
+        color_mode: Option<super::appearance::ColorMode>,
+        light_theme: Option<super::appearance::LightTheme>,
+        dark_theme: Option<super::appearance::DarkTheme>,
         elasticity: Option<u8>,
         show_labels: Option<bool>,
     },

@@ -8,10 +8,15 @@ import type {
 export function defaultSettings(): AppSettings {
   return {
     version: 4,
-    diskCacheEnabled: true,
     gitPath: null,
     logLevel: null,
-    uiPreferences: { elasticity: 6, showLabels: true },
+    uiPreferences: {
+      elasticity: 6,
+      showLabels: true,
+      colorMode: "system",
+      lightTheme: "github",
+      darkTheme: "github",
+    },
     terminal: {
       defaultProfileId: "system",
       profiles: [
@@ -47,20 +52,17 @@ export function resetSettingsCategory(
 ): AppSettings {
   const defaults = defaultSettings();
   switch (category) {
-    case "cache":
-      return { ...draft, diskCacheEnabled: defaults.diskCacheEnabled };
-    case "general":
+    case "git":
       return { ...draft, gitPath: defaults.gitPath };
     case "appearance":
       return { ...draft, uiPreferences: defaults.uiPreferences };
-    case "logging":
-      return { ...draft, logLevel: defaults.logLevel };
-    case "terminal":
-      return restoreTerminalDefaults(draft, defaults);
-    case "editor":
-      return { ...draft, editor: defaults.editor };
-    case "externalOpen":
-      return { ...draft, externalOpen: defaults.externalOpen };
+    case "general":
+      return {
+        ...restoreTerminalDefaults(draft, defaults),
+        logLevel: defaults.logLevel,
+        editor: defaults.editor,
+        externalOpen: defaults.externalOpen,
+      };
   }
 }
 
@@ -139,11 +141,13 @@ export function settingsDirty(saved: AppSettings, draft: AppSettings): boolean {
 function canonicalSettings(value: AppSettings): unknown {
   return [
     value.version,
-    value.diskCacheEnabled,
     value.gitPath,
     value.logLevel,
     value.uiPreferences.elasticity,
     value.uiPreferences.showLabels,
+    value.uiPreferences.colorMode,
+    value.uiPreferences.lightTheme,
+    value.uiPreferences.darkTheme,
     value.terminal.defaultProfileId,
     value.terminal.fontFamily,
     value.terminal.fontSize,

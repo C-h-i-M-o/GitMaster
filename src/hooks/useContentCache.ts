@@ -3,10 +3,7 @@ import { clearContentCache, readCacheUsage } from "../services/settings";
 import type { CacheUsage } from "../types/settings";
 
 /** 缓存面板按需读取用量；离开或更新设置后丢弃晚到结果。 */
-export function useContentCache(
-  enabled: boolean,
-  revision: string | undefined,
-) {
+export function useContentCache(enabled: boolean) {
   const [usage, setUsage] = useState<CacheUsage | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,24 +44,38 @@ export function useContentCache(
     setUsage(null);
     setBusy(false);
     setError(null);
-    if (enabled) void run(false);
+    /** 进入面板及窗口激活时更新真实用量，无需额外刷新按钮。 */
+    const refresh = (): void => {
+      if (enabled) void run(false);
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
     return () => {
       ++generation.current;
+      window.removeEventListener("focus", refresh);
     };
-  }, [enabled, revision, run]);
+  }, [enabled, run]);
 
-  /** 用户主动刷新当前用量。 */
-  function reload(): void {
-    void run(false);
-  }
   /** 只请求清除后端固定的专用缓存目录。 */
   function clear(): void {
     void run(true);
   }
-  return { usage, busy, error, reload, clear };
+  return { usage, busy, error, clear };
 }
 
-/** 用十进制单位对应 1GB 的产品配额，始终保留精确字节值。 */
+/** 按实际大小选择十进制单位，零和小缓存也保留可辨识的数值。 */
 export function cacheSize(bytes: number): string {
-  return `${(bytes / 1_000_000).toFixed(2)} MB（${bytes.toLocaleString("zh-CN")} 字节）`;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(
+    bytes > 0 ? Math.floor(Math.log10(bytes) / 3) : 0,
+    units.length - 1,
+  );
+  return `${(bytes / 1000 ** index).toLocaleString("zh-CN", { maximumFractionDigits: index === 0 ? 0 : 2 })} ${units[index]}`;
+}
+
+/** 用量条显示已占空间的构成，不暗示容量上限。 */
+export function cacheContentWidth(usage: CacheUsage): { width: string } {
+  return {
+    width: `${usage.diskBytes === 0 ? 0 : (usage.contentBytes / usage.diskBytes) * 100}%`,
+  };
 }

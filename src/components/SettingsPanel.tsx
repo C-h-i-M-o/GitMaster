@@ -1,3 +1,6 @@
+import { SettingsAdvanced } from "./SettingsAdvanced";
+import { logLevelLabel } from "../ui/settingsDisclosure";
+import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
 import { SettingsFieldError } from "./SettingsFieldError";
 import type { Workbench } from "../hooks/useWorkbench";
 import { useSettingsForm } from "../hooks/useSettingsForm";
@@ -8,13 +11,9 @@ import { shortcutLabel } from "../ui/shortcuts";
 import { CacheSettingsPanel } from "./CacheSettingsPanel";
 
 const categories: { id: SettingsCategory; label: string }[] = [
-  { id: "general", label: "Git 环境" },
+  { id: "general", label: "通用" },
   { id: "appearance", label: "外观" },
-  { id: "logging", label: "诊断日志" },
-  { id: "terminal", label: "终端" },
-  { id: "editor", label: "文件编辑器" },
-  { id: "externalOpen", label: "外部打开" },
-  { id: "cache", label: "缓存" },
+  { id: "git", label: "Git 环境" },
 ];
 
 /** 设置分类共享草稿与应用入口，输入控件只负责呈现。 */
@@ -30,10 +29,16 @@ export function SettingsPanel({ w }: { w: Workbench }) {
       onCompositionStart={s.compositionStart}
       onCompositionEnd={s.compositionEnd}
     >
-      <nav aria-label="设置分类">
+      <nav aria-label="设置分类" role="tablist" aria-orientation="vertical">
         {categories.map((category) => (
           <button
             key={category.id}
+            id={`settings-tab-${category.id}`}
+            role="tab"
+            aria-selected={w.settingsCategory === category.id}
+            aria-controls="settings-panel"
+            tabIndex={w.settingsCategory === category.id ? 0 : -1}
+            onKeyDown={f.categoryKeyDown}
             className={w.settingsCategory === category.id ? "active" : ""}
             onClick={w.selectSettings(category.id)}
           >
@@ -41,47 +46,29 @@ export function SettingsPanel({ w }: { w: Workbench }) {
           </button>
         ))}
       </nav>
-      <div className="settings-content">
+      <div
+        className="settings-content"
+        id="settings-panel"
+        role="tabpanel"
+        aria-labelledby={`settings-tab-${w.settingsCategory}`}
+      >
         {w.preview && <p role="status">请在桌面应用中配置设置。</p>}
         {s.activity === "loading" && <p role="status">正在读取设置…</p>}
         <fieldset className="settings-fields" disabled={!s.editable}>
-          {w.settingsCategory === "cache" && (
-            <CacheSettingsPanel settings={s} form={f} />
-          )}
-          {w.settingsCategory === "general" && (
+          {w.settingsCategory === "git" && (
             <section>
               <h3>Git 环境</h3>
-              <label>
-                Git 可执行文件
-                <input
-                  data-settings-field="gitPath"
-                  value={d.gitPath ?? ""}
-                  onChange={f.gitPath}
-                  placeholder="留空自动检测系统 Git"
-                  spellCheck={false}
-                />
-                <SettingsFieldError error={s.error} field="gitPath" />
-              </label>
-              <div className="button-row">
-                <button className="secondary" onClick={f.chooseGit}>
-                  选择 Git
-                </button>
-                <button className="secondary" onClick={w.git.refresh}>
-                  重新检测
-                </button>
-                <button className="secondary" onClick={w.install}>
-                  安装官网
-                </button>
-              </div>
-              <p className="muted small">更换后需重新打开项目</p>
+              <p className="settings-description">
+                通常会自动找到电脑上已安装的 Git。
+              </p>
               {w.git.environment?.status === "ready" && (
                 <div className="git-ready">
-                  <strong>Git {w.git.environment.version}</strong>
-                  <code>{w.git.environment.executablePath}</code>
+                  <strong>Git 已就绪</strong>
+                  <span>{w.git.environment.version}</span>
                   <small>
                     {w.git.environment.source === "manual"
-                      ? "手动设置"
-                      : "自动检测"}
+                      ? "使用自定义路径"
+                      : "已自动检测"}
                   </small>
                 </div>
               )}
@@ -89,75 +76,164 @@ export function SettingsPanel({ w }: { w: Workbench }) {
               {w.git.error && (
                 <p role="alert">{describeGitError(w.git.error)}</p>
               )}
-              {f.pickerError && <p role="alert">{f.pickerError}</p>}
+              <div className="button-row">
+                <button className="secondary" onClick={w.git.refresh}>
+                  重新检测
+                </button>
+                {w.git.environment?.status !== "ready" && (
+                  <button className="secondary" onClick={w.install}>
+                    前往 Git 官网
+                  </button>
+                )}
+              </div>
+              <SettingsAdvanced description="自定义 Git 程序路径">
+                <p className="settings-description">
+                  安装了多个版本，或自动检测失败时，再指定 Git 程序。
+                </p>
+                <label>
+                  Git 可执行文件
+                  <input
+                    data-settings-field="gitPath"
+                    value={d.gitPath ?? ""}
+                    onChange={f.gitPath}
+                    placeholder="留空自动检测系统 Git"
+                    spellCheck={false}
+                  />
+                  <SettingsFieldError error={s.error} field="gitPath" />
+                </label>
+                <button className="secondary" onClick={f.chooseGit}>
+                  选择 Git 程序
+                </button>
+                <p className="muted small">更换后需重新打开项目。</p>
+                {w.git.environment?.status === "ready" && (
+                  <p className="settings-path">
+                    当前使用：{w.git.environment.executablePath}
+                  </p>
+                )}
+                {f.pickerError && <p role="alert">{f.pickerError}</p>}
+              </SettingsAdvanced>
             </section>
           )}
           {w.settingsCategory === "appearance" && (
-            <section>
-              <h3>提交图</h3>
-              <label>
-                节点弹性：{d.uiPreferences.elasticity}
-                <input
-                  type="range"
-                  data-settings-field="uiPreferences.elasticity"
-                  min={1}
-                  max={10}
-                  value={d.uiPreferences.elasticity}
-                  onChange={f.elasticity}
-                />
-                <SettingsFieldError
-                  error={s.error}
-                  field="uiPreferences.elasticity"
-                />
-              </label>
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={d.uiPreferences.showLabels}
-                  onChange={f.labels}
-                />
-                显示提交说明（分支头始终显示）
-              </label>
-            </section>
+            <>
+              <AppearanceSettingsPanel settings={s} form={f} />
+              <section>
+                <SettingsAdvanced description="提交图布局与说明显示">
+                  <h3>提交图</h3>
+                  <label>
+                    节点弹性：{d.uiPreferences.elasticity}
+                    <input
+                      type="range"
+                      data-settings-field="uiPreferences.elasticity"
+                      min={1}
+                      max={10}
+                      value={d.uiPreferences.elasticity}
+                      onChange={f.elasticity}
+                    />
+                    <SettingsFieldError
+                      error={s.error}
+                      field="uiPreferences.elasticity"
+                    />
+                  </label>
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      data-settings-field="uiPreferences.showLabels"
+                      checked={d.uiPreferences.showLabels}
+                      onChange={f.labels}
+                    />
+                    显示提交说明（分支头始终显示）
+                  </label>
+                </SettingsAdvanced>
+              </section>
+            </>
           )}
-          {w.settingsCategory === "logging" && (
+          {w.settingsCategory === "general" && (
             <section>
-              <h3>诊断日志</h3>
-              <label>
-                日志级别
-                <select value={d.logLevel ?? "auto"} onChange={f.logLevel}>
-                  <option value="auto">自动</option>
-                  <option value="error">错误</option>
-                  <option value="warn">警告</option>
-                  <option value="info">信息</option>
-                  <option value="debug">调试</option>
-                  <option value="trace">详细追踪</option>
+              <h3>文件编辑器</h3>
+              <p className="settings-description">
+                调整阅读与编辑文件时的习惯。
+              </p>
+              <label className="settings-row">
+                文件保存方式
+                <select
+                  data-settings-field="editor.saveMode"
+                  value={d.editor.saveMode}
+                  onChange={f.saveMode}
+                >
+                  <option value="manual">手动保存</option>
+                  <option value="auto">自动保存</option>
                 </select>
               </label>
-              <p>
-                当前生效：{w.logSettings.settings?.effectiveLevel ?? "尚未读取"}
+              <label className="settings-row">
+                自动换行
+                <select
+                  data-settings-field="editor.wordWrap"
+                  value={d.editor.wordWrap}
+                  onChange={f.wordWrap}
+                >
+                  <option value="off">关闭</option>
+                  <option value="on">开启</option>
+                </select>
+              </label>
+              <label className="settings-row">
+                字体大小
+                <span className="settings-number">
+                  <input
+                    type="number"
+                    min={10}
+                    max={32}
+                    value={d.editor.fontSize}
+                    data-settings-field="editor.fontSize"
+                    onChange={f.displayField("editor", "fontSize")}
+                  />
+                  <span aria-hidden="true">px</span>
+                </span>
+                <SettingsFieldError error={s.error} field="editor.fontSize" />
+              </label>
+
+              <p className="muted small">
+                {d.editor.saveMode === "manual"
+                  ? `修改后按 ${shortcutLabel("S")} 保存文件。`
+                  : "停止输入后自动保存，失败时会保留草稿。"}
               </p>
-              <p className="settings-path">
-                {w.logSettings.settings?.directory}
-              </p>
-              <button
-                className="secondary"
-                disabled={w.logSettings.busy}
-                onClick={w.logSettings.openDirectory}
-              >
-                打开日志目录
-              </button>
-              {w.logSettings.error && (
-                <p role="alert">{describeGitError(w.logSettings.error)}</p>
-              )}
+              <SettingsAdvanced description="字体名称与缩进宽度">
+                <label>
+                  字体名称
+                  <input
+                    value={d.editor.fontFamily}
+                    data-settings-field="editor.fontFamily"
+                    onChange={f.displayField("editor", "fontFamily")}
+                  />
+                  <SettingsFieldError
+                    error={s.error}
+                    field="editor.fontFamily"
+                  />
+                </label>
+                <label>
+                  缩进宽度
+                  <select
+                    data-settings-field="editor.tabSize"
+                    value={d.editor.tabSize}
+                    onChange={f.tabSize}
+                  >
+                    <option value="2">2 个空格</option>
+                    <option value="4">4 个空格</option>
+                    <option value="8">8 个空格</option>
+                  </select>
+                  <SettingsFieldError error={s.error} field="editor.tabSize" />
+                </label>
+              </SettingsAdvanced>
             </section>
           )}
-          {w.settingsCategory === "terminal" && (
-            <section data-settings-field="terminal.profiles" tabIndex={-1}>
+          {w.settingsCategory === "general" && (
+            <section>
               <h3>终端</h3>
-              {f.pickerError && <p role="alert">{f.pickerError}</p>}
-              <label>
-                默认配置
+              <p className="settings-description">
+                选择新建终端时使用的配置和文字大小。
+              </p>
+              <label className="settings-row">
+                默认终端
                 <select
                   data-settings-field="terminal.defaultProfileId"
                   value={d.terminal.defaultProfileId}
@@ -174,272 +250,242 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   field="terminal.defaultProfileId"
                 />
               </label>
-              {d.terminal.profiles.map((p, profileIndex) => (
-                <fieldset
-                  className="terminal-profile"
-                  key={p.profileId}
-                  data-settings-field={`terminal.profiles.${profileIndex}.profileId`}
-                  tabIndex={-1}
-                >
-                  <legend>{p.name || "未命名配置"}</legend>
-                  <label>
-                    名称
-                    <input
-                      data-settings-field={`terminal.profiles.${profileIndex}.name`}
-                      value={p.name}
-                      onChange={f.profileField(p.profileId, "name")}
-                    />
-                    <SettingsFieldError
-                      error={s.error}
-                      field={`terminal.profiles.${profileIndex}.name`}
-                    />
-                  </label>
-                  <label>
-                    Shell 程序路径
-                    <input
-                      data-settings-field={`terminal.profiles.${profileIndex}.executablePath`}
-                      value={p.executablePath ?? ""}
-                      onChange={f.profileField(p.profileId, "executablePath")}
-                      placeholder="留空使用系统默认 Shell"
-                      spellCheck={false}
-                    />
-                    <SettingsFieldError
-                      error={s.error}
-                      field={`terminal.profiles.${profileIndex}.executablePath`}
-                    />
-                  </label>
-                  <button
-                    className="secondary"
-                    onClick={f.chooseProfilePath(p.profileId, "shell")}
-                  >
-                    选择 Shell 程序
-                  </button>
-                  <label>
-                    启动目录
-                    <select
-                      value={p.cwd.kind}
-                      onChange={f.profileField(p.profileId, "directory")}
+              <label className="settings-row">
+                字体大小
+                <span className="settings-number">
+                  <input
+                    type="number"
+                    min={10}
+                    max={32}
+                    value={d.terminal.fontSize}
+                    data-settings-field="terminal.fontSize"
+                    onChange={f.displayField("terminal", "fontSize")}
+                  />
+                  <span aria-hidden="true">px</span>
+                </span>
+                <SettingsFieldError error={s.error} field="terminal.fontSize" />
+              </label>
+              <SettingsAdvanced description="Shell 配置、字体与终端行为">
+                <div data-settings-field="terminal.profiles" tabIndex={-1}>
+                  {f.pickerError && <p role="alert">{f.pickerError}</p>}
+                  {d.terminal.profiles.map((p, profileIndex) => (
+                    <fieldset
+                      className="terminal-profile"
+                      key={p.profileId}
+                      data-settings-field={`terminal.profiles.${profileIndex}.profileId`}
+                      tabIndex={-1}
                     >
-                      <option value="project">当前项目</option>
-                      <option value="home">用户主目录</option>
-                      <option value="fixed">指定目录</option>
-                    </select>
-                  </label>
-                  {p.cwd.kind === "fixed" && (
-                    <div>
+                      <legend>{p.name || "未命名配置"}</legend>
                       <label>
-                        指定目录
+                        名称
                         <input
-                          data-settings-field={`terminal.profiles.${profileIndex}.cwd`}
-                          value={p.cwd.path}
-                          onChange={f.profileField(p.profileId, "path")}
+                          data-settings-field={`terminal.profiles.${profileIndex}.name`}
+                          value={p.name}
+                          onChange={f.profileField(p.profileId, "name")}
                         />
                         <SettingsFieldError
                           error={s.error}
-                          field={`terminal.profiles.${profileIndex}.cwd`}
+                          field={`terminal.profiles.${profileIndex}.name`}
                         />
                       </label>
-                      <button
-                        className="secondary"
-                        onClick={f.chooseProfilePath(p.profileId, "directory")}
-                      >
-                        选择起始目录
-                      </button>
-                    </div>
-                  )}
-                  {p.args.map((arg, index) => (
-                    <div className="input-action" key={index}>
                       <label>
-                        参数 {index + 1}
+                        Shell 程序路径
                         <input
-                          data-settings-field={
-                            index === 0
-                              ? `terminal.profiles.${profileIndex}.args`
-                              : undefined
-                          }
-                          value={arg}
-                          onChange={f.argument(p.profileId, index)}
+                          data-settings-field={`terminal.profiles.${profileIndex}.executablePath`}
+                          value={p.executablePath ?? ""}
+                          onChange={f.profileField(
+                            p.profileId,
+                            "executablePath",
+                          )}
+                          placeholder="留空使用系统默认 Shell"
                           spellCheck={false}
                         />
                         <SettingsFieldError
                           error={s.error}
-                          field={
-                            index === 0
-                              ? `terminal.profiles.${profileIndex}.args`
-                              : undefined
-                          }
+                          field={`terminal.profiles.${profileIndex}.executablePath`}
                         />
                       </label>
                       <button
                         className="secondary"
-                        onClick={f.removeArgument(p.profileId, index)}
+                        onClick={f.chooseProfilePath(p.profileId, "shell")}
                       >
-                        删除参数 {index + 1}
+                        选择 Shell 程序
                       </button>
-                    </div>
+                      <label>
+                        启动目录
+                        <select
+                          data-settings-field={
+                            p.cwd.kind === "fixed"
+                              ? undefined
+                              : `terminal.profiles.${profileIndex}.cwd`
+                          }
+                          value={p.cwd.kind}
+                          onChange={f.profileField(p.profileId, "directory")}
+                        >
+                          <option value="project">当前项目</option>
+                          <option value="home">用户主目录</option>
+                          <option value="fixed">指定目录</option>
+                        </select>
+                      </label>
+                      {p.cwd.kind === "fixed" && (
+                        <div>
+                          <label>
+                            指定目录
+                            <input
+                              data-settings-field={`terminal.profiles.${profileIndex}.cwd`}
+                              value={p.cwd.path}
+                              onChange={f.profileField(p.profileId, "path")}
+                            />
+                            <SettingsFieldError
+                              error={s.error}
+                              field={`terminal.profiles.${profileIndex}.cwd`}
+                            />
+                          </label>
+                          <button
+                            className="secondary"
+                            onClick={f.chooseProfilePath(
+                              p.profileId,
+                              "directory",
+                            )}
+                          >
+                            选择起始目录
+                          </button>
+                        </div>
+                      )}
+                      {p.args.map((arg, index) => (
+                        <div className="input-action" key={index}>
+                          <label>
+                            参数 {index + 1}
+                            <input
+                              data-settings-field={
+                                index === 0
+                                  ? `terminal.profiles.${profileIndex}.args`
+                                  : undefined
+                              }
+                              value={arg}
+                              onChange={f.argument(p.profileId, index)}
+                              spellCheck={false}
+                            />
+                            <SettingsFieldError
+                              error={s.error}
+                              field={
+                                index === 0
+                                  ? `terminal.profiles.${profileIndex}.args`
+                                  : undefined
+                              }
+                            />
+                          </label>
+                          <button
+                            className="secondary"
+                            onClick={f.removeArgument(p.profileId, index)}
+                          >
+                            删除参数 {index + 1}
+                          </button>
+                        </div>
+                      ))}
+                      <div className="button-row">
+                        <button
+                          className="secondary"
+                          data-settings-field={
+                            p.args.length === 0
+                              ? `terminal.profiles.${profileIndex}.args`
+                              : undefined
+                          }
+                          disabled={p.args.length >= 64}
+                          onClick={f.addArgument(p.profileId)}
+                        >
+                          添加参数
+                        </button>
+                        <button
+                          className="secondary"
+                          disabled={
+                            d.terminal.profiles.length === 1 ||
+                            d.terminal.defaultProfileId === p.profileId
+                          }
+                          onClick={f.removeProfile(p.profileId)}
+                        >
+                          删除配置
+                        </button>
+                      </div>
+                      {d.terminal.defaultProfileId === p.profileId && (
+                        <p className="muted small">
+                          删除此配置前，请先选择其他默认配置。
+                        </p>
+                      )}
+                    </fieldset>
                   ))}
-                  <div className="button-row">
-                    <button
-                      className="secondary"
-                      data-settings-field={
-                        p.args.length === 0
-                          ? `terminal.profiles.${profileIndex}.args`
-                          : undefined
-                      }
-                      disabled={p.args.length >= 64}
-                      onClick={f.addArgument(p.profileId)}
+                  <button
+                    className="secondary"
+                    disabled={d.terminal.profiles.length >= 32}
+                    onClick={f.addProfile}
+                  >
+                    新增终端配置
+                  </button>
+                  <label>
+                    字体名称
+                    <input
+                      data-settings-field="terminal.fontFamily"
+                      value={d.terminal.fontFamily}
+                      onChange={f.displayField("terminal", "fontFamily")}
+                    />
+                    <SettingsFieldError
+                      error={s.error}
+                      field="terminal.fontFamily"
+                    />
+                  </label>
+                  <label>
+                    光标
+                    <select
+                      data-settings-field="terminal.cursorStyle"
+                      value={d.terminal.cursorStyle}
+                      onChange={f.cursorStyle}
                     >
-                      添加参数
-                    </button>
-                    <button
-                      className="secondary"
-                      disabled={
-                        d.terminal.profiles.length === 1 ||
-                        d.terminal.defaultProfileId === p.profileId
-                      }
-                      onClick={f.removeProfile(p.profileId)}
-                    >
-                      删除配置
-                    </button>
-                  </div>
-                  {d.terminal.defaultProfileId === p.profileId && (
-                    <p className="muted small">
-                      删除此配置前，请先选择其他默认配置。
-                    </p>
-                  )}
-                </fieldset>
-              ))}
-              <button
-                className="secondary"
-                disabled={d.terminal.profiles.length >= 32}
-                onClick={f.addProfile}
-              >
-                新增终端配置
-              </button>
-              <label>
-                字体
-                <input
-                  data-settings-field="terminal.fontFamily"
-                  value={d.terminal.fontFamily}
-                  onChange={f.displayField("terminal", "fontFamily")}
-                />
-                <SettingsFieldError
-                  error={s.error}
-                  field="terminal.fontFamily"
-                />
-              </label>
-              <label>
-                字号
-                <input
-                  type="number"
-                  min={10}
-                  max={32}
-                  value={d.terminal.fontSize}
-                  data-settings-field="terminal.fontSize"
-                  onChange={f.displayField("terminal", "fontSize")}
-                />
-                <SettingsFieldError error={s.error} field="terminal.fontSize" />
-              </label>
-              <label>
-                光标
-                <select value={d.terminal.cursorStyle} onChange={f.cursorStyle}>
-                  <option value="block">方块</option>
-                  <option value="bar">竖线</option>
-                  <option value="underline">下划线</option>
-                </select>
-              </label>
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={d.terminal.cursorBlink}
-                  onChange={f.cursorBlink}
-                />
-                光标闪烁
-              </label>
-              <label>
-                回滚行数
-                <input
-                  type="number"
-                  min={1000}
-                  max={50000}
-                  value={d.terminal.scrollbackLines}
-                  data-settings-field="terminal.scrollbackLines"
-                  onChange={f.displayField("terminal", "scrollbackLines")}
-                />
-                <SettingsFieldError
-                  error={s.error}
-                  field="terminal.scrollbackLines"
-                />
-              </label>
-              <p className="muted small">
-                每项参数单独填写，无需额外引号；程序、参数和目录仅对新会话生效。
-              </p>
+                      <option value="block">方块</option>
+                      <option value="bar">竖线</option>
+                      <option value="underline">下划线</option>
+                    </select>
+                  </label>
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      data-settings-field="terminal.cursorBlink"
+                      checked={d.terminal.cursorBlink}
+                      onChange={f.cursorBlink}
+                    />
+                    光标闪烁
+                  </label>
+                  <label>
+                    保留的历史输出行数
+                    <input
+                      type="number"
+                      min={1000}
+                      max={50000}
+                      value={d.terminal.scrollbackLines}
+                      data-settings-field="terminal.scrollbackLines"
+                      onChange={f.displayField("terminal", "scrollbackLines")}
+                    />
+                    <SettingsFieldError
+                      error={s.error}
+                      field="terminal.scrollbackLines"
+                    />
+                  </label>
+                  <p className="muted small">
+                    每项参数单独填写，无需额外引号；程序、参数和目录仅对新会话生效。
+                  </p>
+                </div>
+              </SettingsAdvanced>
             </section>
           )}
-          {w.settingsCategory === "editor" && (
-            <section>
-              <h3>文件编辑器</h3>
-              <label>
-                字体
-                <input
-                  value={d.editor.fontFamily}
-                  data-settings-field="editor.fontFamily"
-                  onChange={f.displayField("editor", "fontFamily")}
-                />
-                <SettingsFieldError error={s.error} field="editor.fontFamily" />
-              </label>
-              <label>
-                字号
-                <input
-                  type="number"
-                  min={10}
-                  max={32}
-                  value={d.editor.fontSize}
-                  data-settings-field="editor.fontSize"
-                  onChange={f.displayField("editor", "fontSize")}
-                />
-                <SettingsFieldError error={s.error} field="editor.fontSize" />
-              </label>
-              <label>
-                Tab 宽度
-                <select
-                  data-settings-field="editor.tabSize"
-                  value={d.editor.tabSize}
-                  onChange={f.tabSize}
-                >
-                  <option value="2">2</option>
-                  <option value="4">4</option>
-                  <option value="8">8</option>
-                </select>
-                <SettingsFieldError error={s.error} field="editor.tabSize" />
-              </label>
-              <label>
-                自动折行
-                <select value={d.editor.wordWrap} onChange={f.wordWrap}>
-                  <option value="off">关闭</option>
-                  <option value="on">开启</option>
-                </select>
-              </label>
-              <label>
-                文件保存方式
-                <select value={d.editor.saveMode} onChange={f.saveMode}>
-                  <option value="manual">手动保存</option>
-                  <option value="auto">自动保存</option>
-                </select>
-              </label>
-              <p className="muted small">
-                {d.editor.saveMode === "manual"
-                  ? `${shortcutLabel("S")} 保存`
-                  : "停止输入后自动保存"}
-              </p>
-            </section>
-          )}
-          {w.settingsCategory === "externalOpen" && (
+          {w.settingsCategory === "general" && (
             <section>
               <h3>外部打开</h3>
-              <label>
+              <p className="settings-description">
+                从工作台打开项目文件夹时使用的应用。
+              </p>
+              <label className="settings-row">
                 默认打开方式
                 <select
+                  data-settings-field="externalOpen.defaultAppId"
                   value={d.externalOpen.defaultAppId}
                   onChange={f.externalApp}
                 >
@@ -448,7 +494,52 @@ export function SettingsPanel({ w }: { w: Workbench }) {
                   <option value="terminal">系统终端</option>
                 </select>
               </label>
-              <p className="muted small">打开当前项目文件夹</p>
+            </section>
+          )}
+          {w.settingsCategory === "general" && (
+            <CacheSettingsPanel enabled={s.editable} />
+          )}
+          {w.settingsCategory === "general" && (
+            <section>
+              <h3>诊断与排查</h3>
+              <p className="settings-description">
+                遇到问题时，可在这里查看日志并协助排查。
+              </p>
+              <SettingsAdvanced description="日志详细程度与存放位置">
+                <label>
+                  日志级别
+                  <select
+                    data-settings-field="logLevel"
+                    value={d.logLevel ?? "auto"}
+                    onChange={f.logLevel}
+                  >
+                    <option value="auto">自动（推荐）</option>
+                    <option value="error">仅错误</option>
+                    <option value="warn">警告及错误</option>
+                    <option value="info">常规信息</option>
+                    <option value="debug">调试信息</option>
+                    <option value="trace">详细追踪</option>
+                  </select>
+                  <SettingsFieldError error={s.error} field="logLevel" />
+                </label>
+                <p>
+                  当前生效：
+                  {logLevelLabel(w.logSettings.settings?.effectiveLevel)}
+                </p>
+                <p className="settings-path">
+                  {w.logSettings.settings?.directory}
+                </p>
+                <button
+                  className="secondary"
+                  disabled={w.logSettings.busy}
+                  onClick={w.logSettings.openDirectory}
+                >
+                  打开日志目录
+                </button>
+                {w.logSettings.error && (
+                  <p role="alert">{describeGitError(w.logSettings.error)}</p>
+                )}
+              </SettingsAdvanced>
             </section>
           )}
         </fieldset>

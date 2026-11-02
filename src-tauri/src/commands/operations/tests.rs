@@ -361,7 +361,11 @@ fn queued_write_blocks_environment_and_old_result_cannot_switch_repository() {
     let handle = execute(&f.shared, Some(&f.id), &preview.plan_id).unwrap();
     let error = f.shared.lock().unwrap().install(None, true).unwrap_err();
     release_tx.send(()).unwrap();
-    blocker.join().unwrap().unwrap();
+    // 写任务预留位置时取消旧读取，释放读槽后写任务仍应顺利完成。
+    assert_eq!(
+        blocker.join().unwrap().unwrap_err().code,
+        "REQUEST_CANCELLED"
+    );
     assert_eq!(error.code, "OPERATION_IN_PROGRESS");
     assert!(matches!(
         f.finish(&handle).result.unwrap(),

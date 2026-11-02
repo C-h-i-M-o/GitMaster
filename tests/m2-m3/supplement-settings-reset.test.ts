@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultSettings, resetSettingsCategory } from "../../src/ui/settingsDraft.ts";
 
-test("恢复终端默认保留用户配置与其他分类草稿", () => {
+test("恢复通用默认保留终端配置与外观草稿", () => {
   const draft = defaultSettings();
   draft.terminal.profiles.push({
     profileId: "custom",
@@ -14,14 +14,16 @@ test("恢复终端默认保留用户配置与其他分类草稿", () => {
   draft.terminal.defaultProfileId = "custom";
   draft.terminal.fontSize = 28;
   draft.editor.fontSize = 22;
+  draft.uiPreferences.darkTheme = "og";
   const before = structuredClone(draft);
-  const restored = resetSettingsCategory(draft, "terminal");
+  const restored = resetSettingsCategory(draft, "general");
   assert.deepEqual(restored.terminal.profiles, before.terminal.profiles);
   assert.equal(restored.terminal.defaultProfileId, "system");
   assert.equal(restored.terminal.fontSize, 14);
-  assert.equal(restored.editor.fontSize, 22);
+  assert.equal(restored.editor.fontSize, 14);
+  assert.equal(restored.uiPreferences.darkTheme, "og");
   assert.deepEqual(draft, before);
-  assert.deepEqual(resetSettingsCategory(restored, "terminal"), restored);
+  assert.deepEqual(resetSettingsCategory(restored, "general"), restored);
 });
 
 test("系统标识已用于自定义程序时不覆盖，新增自动检测项后重复恢复不增殖", () => {
@@ -35,7 +37,7 @@ test("系统标识已用于自定义程序时不覆盖，新增自动检测项�
     cwd: { kind: "home" },
   });
   const before = structuredClone(draft.terminal.profiles);
-  const restored = resetSettingsCategory(draft, "terminal");
+  const restored = resetSettingsCategory(draft, "general");
   assert.deepEqual(restored.terminal.profiles.slice(0, 2), before);
   const selected = restored.terminal.profiles.find(
     (p) => p.profileId === restored.terminal.defaultProfileId,
@@ -45,7 +47,7 @@ test("系统标识已用于自定义程序时不覆盖，新增自动检测项�
   assert.deepEqual(selected.args, []);
   assert.deepEqual(selected.cwd, { kind: "project" });
   assert.equal(new Set(restored.terminal.profiles.map((p) => p.profileId)).size, 3);
-  assert.deepEqual(resetSettingsCategory(restored, "terminal"), restored);
+  assert.deepEqual(resetSettingsCategory(restored, "general"), restored);
 });
 
 test("配置已满且没有自动检测项时保持草稿，不能删除配置腾位置", () => {
@@ -59,5 +61,5 @@ test("配置已满且没有自动检测项时保持草稿，不能删除配置�
   }));
   draft.terminal.defaultProfileId = "custom-0";
   draft.terminal.fontSize = 25;
-  assert.deepEqual(resetSettingsCategory(draft, "terminal"), draft);
+  assert.deepEqual(resetSettingsCategory(draft, "general"), draft);
 });

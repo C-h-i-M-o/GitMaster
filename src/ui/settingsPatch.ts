@@ -7,12 +7,6 @@ export function mergeSettingsPatch(
 ): AppSettings {
   const { kind, ...values } = patch;
   switch (kind) {
-    case "cache":
-      return {
-        ...settings,
-        diskCacheEnabled: (patch as Extract<SettingsPatch, { kind: "cache" }>)
-          .diskCacheEnabled,
-      };
     case "git":
       return {
         ...settings,
@@ -50,13 +44,17 @@ export function changedSettingsPatches(
   next: AppSettings,
 ): SettingsPatch[] {
   const patches: SettingsPatch[] = [];
-  if (old.diskCacheEnabled !== next.diskCacheEnabled)
-    patches.push({ kind: "cache", diskCacheEnabled: next.diskCacheEnabled });
   if (old.gitPath !== next.gitPath)
     patches.push({ kind: "git", gitPath: next.gitPath });
   if (old.logLevel !== next.logLevel)
     patches.push({ kind: "logging", logLevel: next.logLevel });
-  for (const field of ["elasticity", "showLabels"] as const) {
+  for (const field of [
+    "elasticity",
+    "showLabels",
+    "colorMode",
+    "lightTheme",
+    "darkTheme",
+  ] as const) {
     if (old.uiPreferences[field] !== next.uiPreferences[field])
       patches.push({ kind: "appearance", [field]: next.uiPreferences[field] });
   }
@@ -108,7 +106,6 @@ export function settingsPatchKey(patch: SettingsPatch): string {
 
 /** 补丁队列键映射为设置表单中的稳定字段定位。 */
 export function settingsPatchField(patch: SettingsPatch): string {
-  if (patch.kind === "cache") return "diskCacheEnabled";
   if (patch.kind === "git") return "gitPath";
   if (patch.kind === "logging") return "logLevel";
   if (patch.kind === "terminalProfiles") return "terminal.profiles";

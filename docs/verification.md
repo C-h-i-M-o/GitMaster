@@ -2019,3 +2019,52 @@ Windows 桌面自动化通过 @oai/sky 读取窗口两次超时，备用 cua.get
 用户明确无需 Agent 继续完整功能测试，最终测试由用户完成，当前不提供电脑控制。此回复结束此前的控制授权询问；不再等待或再次索要电脑控制，不自动安装、启动或操作候选程序。保留已有工程检查及定向测试结果，未测项目保持未测。
 
 本轮收尾仅核对代码接入、README/页面文案、候选产物与源码清单，并整理交接，不重复功能套件、构建、性能采样或安装测试。最新安装包作为待用户验收候选交付。Git 间歇超时的根因及 Release 性能达标尚无结论；README 真机截图、社交预览与 GitHub 远端更新仍待真实材料和维护权限，Mac 继续在后续设备完成。
+
+## 设置、Codex 主题与无配额缓存（2026-11-02）
+
+本轮在 `6fd4c42483904f4aec835af74a446ae0cd60268c` 工作区上实现，未提交或推送；Windows 打包继续按用户要求暂停。
+
+- 设置顶层顺序为通用、外观、Git 环境。通用包含诊断日志、终端、文件编辑器、外部打开、缓存；分类键盘方向键与 Home/End 已验证。
+- 27 个主题家族共 41 变体（14 浅色、27 深色），参考及许可位于 public/theme-licenses.txt。40 个 GitHub 变体的 1191 个存储色值与本轮获取的参考逐值一致；OG 使用本机 Codex 已核验资源。工作台语义映射、对比度回退和 Monaco 语法角色是 GitMaster 适配，不宣称等同于 Codex 完整 CSS 或 TextMate 规则。
+- 浏览器真实 React 控件配合隔离的 Tauri IPC 夹具：三分类顺序、通用五分区、全部 41 变体切换后有效 CSS、独立主题保存、系统浅→深→浅、手动模式忽略系统变化、保存失败保留草稿与重试、缓存失败不显示假零及清除成功、860×620 窗口和键盘分类均通过，无 pageerror。用例为 tests/theme-appearance-check.mjs；截图位于 tests/appearance-output。
+- 真实 Monaco/xterm 前端组件验证：切换多种主题后两个文档模型未重建，编辑正文与撤销记录保留；终端 DOM、输出、唯一会话保留，OG 背景实际更新为 rgb(52,53,65)。用例为 tests/appearance-retention-check.mjs。此处 PTY 通过 IPC 夹具模拟，不是原生 shell 主题切换验收。
+- 深色 Logo 改用独立透明图片，实测 RGBA、2172×724、alpha 范围 0—255、边角透明，实际工具栏渲染无白底块，蓝色书签提亮。浅色保留原品牌图。左侧 WORKSPACE 标题下方路径行已删除，顶部项目切换器仍显示路径。
+- 缓存始终启用，旧 diskCacheEnabled=false 兼容读取但不再生效；取消磁盘总量配额。用量条是缓存目录内容/索引与其他文件的构成，不是整盘容量百分比，也不包含应用安装包和用户项目。仍保留单块、单次清单解析和内存保护。真实临时目录超过旧 1 GB 后仍可写入并重新打开读取；清除保留未知文件、隔离仓库与损坏块降级的核心用例通过。
+
+本轮命令结果：
+
+| 检查                                                                                | 结果                                                                                                                                                                                                   |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| pnpm typecheck、pnpm build                                                          | 通过；保留既有 Vite 大分块提示                                                                                                                                                                         |
+| pnpm format:check、cargo fmt --all -- --check、git diff --check                     | 通过                                                                                                                                                                                                   |
+| 设置 TS 回归（settingsAppearance、settingsAutosaveController、picker、reset）       | 19 通过，0 失败；覆盖快速连续主题修改、失败重试、IME、旧草稿边界                                                                                                                                       |
+| cargo test -p gitmaster-core --offline                                              | 288 通过、4 忽略、0 失败；忽略项不作为通过                                                                                                                                                             |
+| cargo test -p gitmaster-desktop --offline --lib settings::tests -- --test-threads=1 | 15 通过；含旧配置默认补齐、主题持久化回读、非法浅色组合拒绝、旧接口保留外观                                                                                                                            |
+| cargo check -p gitmaster-desktop --offline                                          | 通过；保留既有未使用变量/方法警告                                                                                                                                                                      |
+| cargo test -p gitmaster-desktop --offline --lib -- --test-threads=1                 | 54 通过、1 失败：queued_write_blocks_environment_and_old_result_cannot_switch_repository 在 operations/tests.rs:364 对 REQUEST_CANCELLED 调用 unwrap；单独重跑仍失败，未修改该并发逻辑，不报告全量通过 |
+
+本轮日志保留于 tests/appearance-output（本地测试产物不新增暂存）。当前 macOS Tauri dev 进程与 1420 开发服务仍运行，用户截图已呈现当前开发界面；上述自动浏览器检查不等同于原生系统主题切换或双平台 Release 验收。未操作系统外观设置，未验收原生重启、Windows、安装器、签名或发布；没有恢复 exe 打包。
+
+## 设置常用项与高级选项（2026-11-02，续）
+
+对应 spec-plan.md 第 31 节。本轮仅调整前端设置展示及字段错误定位，不修改 Rust 或配置存储结构。
+
+- 通用顺序改为文件编辑器、终端、外部打开、缓存、诊断与排查。保存方式、自动换行、字号、默认终端等直接显示；字体名称/缩进、Shell 配置及终端细节、日志使用各分区独立的“高级选项”，默认收起。外观页提交图微调、Git 页手动路径也默认收起。
+- SettingsAdvanced 使用原生 details/summary；折叠不卸载子控件或重置草稿。revealSettingsField 先展开错误字段的折叠祖先，自动展开不抢焦点；显式“定位”才滚动和聚焦。补全日志、终端行为、目录及外部打开的字段定位标记。
+- tests/settings-advanced-check.mjs 通过：默认可见项和三个通用折叠、Enter 展开、关闭折叠期间保存、草稿保留、晚到字段错误自动展开且不抢焦点、跨分类错误定位、失败后重试、中文日志状态、Git 状态常显/路径收起、860×620 深色无横向溢出；浏览器无 pageerror。人工查看 general-simplified-light.png 和 general-simplified-dark-860.png，确认标签/控件对齐及折叠摘要可读。
+- 19 项设置 TypeScript 回归通过；既有 theme-appearance-check 再次通过，包括 41 变体、系统模式、缓存成功/失败、分类键盘导航。pnpm typecheck、pnpm build、pnpm format:check、git diff --check 通过，保留既有 Vite 大分块提示。日志和截图位于 tests/appearance-output。
+- 当前 dev 已热更新。未运行新的原生系统/Windows 验收，未重复无关 Rust 全量测试；上一节记录的并发取消用例失败状态没有改变。未提交、推送或恢复打包。
+
+## 代码审查与集成检查（2026-11-02）
+
+用户确认功能测试全部通过，并授权提交、集成 main 和推送远端。本轮由主 Agent 审查设置分类与折叠、字段错误定位、主题契约及迁移、全局配色与编辑器/终端生命周期、缓存目录边界、品牌资源及对应文档，未发现剩余阻断问题。
+
+修正一项旧测试断言：queued_write_blocks_environment_and_old_result_cannot_switch_repository 中，排队写任务会取消旧读取，旧断言却对读取结果 unwrap。现改为精确断言 REQUEST_CANCELLED，保留环境切换受阻、写任务完成与旧结果隔离验证；未修改协调器生产逻辑。本次全量重跑通过，取代上文该项仍失败的当前状态，历史执行结果保留。
+
+- 前端已跟踪 Node 单元测试 107 项通过；本地 settingsAppearance 5 项通过，合计 112 项、0 失败。
+- cargo test -p gitmaster-core --offline：288 通过、4 项原有忽略、0 失败。
+- cargo test -p gitmaster-desktop --offline --lib -- --test-threads=1：55 通过、0 失败。
+- pnpm typecheck、pnpm build、pnpm format:check、cargo fmt --all -- --check、cargo check -p gitmaster-desktop --offline、git diff --check 均通过。
+- 保留既有 Vite 大分块提示及 Rust 未使用变量/方法警告。日志位于本机 /tmp/gitmaster-review-*.log；浏览器功能证据沿用上文，本轮审查仅修正测试断言，没有重跑已通过的 UI 用例。
+
+当前分支已经是 main，无需额外合并提交。本次集成不恢复 Windows 打包，也不新增安装、签名、双平台 Release 验收声明。新增本地测试脚本和截图继续按仓库约定不纳入提交，已有受版本管理的回归夹具随功能更新。

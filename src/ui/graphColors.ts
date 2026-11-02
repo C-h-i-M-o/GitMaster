@@ -6,19 +6,19 @@ type GraphLaneStyle = CSSProperties & {
   "--graph-border": string;
 };
 
-// 深色线条和浅色标签成组维护，与纸色背景及系统青绿色协调。
+// 通道颜色来自当前主题，CSS 变量更新无需重建图形布局。
 const tones = [
-  ["#2f7468", "#eaf3ef"],
-  ["#466f96", "#edf2f8"],
-  ["#8c602a", "#f8f1e6"],
-  ["#80608e", "#f3eef6"],
-  ["#a0546d", "#f8edf1"],
-  ["#596f39", "#eff3e8"],
+  "--green",
+  "--info",
+  "--warning",
+  "--purple",
+  "--danger",
+  "--success",
 ] as const;
-const styles: readonly GraphLaneStyle[] = tones.map(([color, wash]) => ({
-  "--graph-color": color,
-  "--graph-wash": wash,
-  "--graph-border": `${color}55`,
+const styles: readonly GraphLaneStyle[] = tones.map((color) => ({
+  "--graph-color": `var(${color})`,
+  "--graph-wash": `color-mix(in srgb, var(${color}) 12%, var(--paper))`,
+  "--graph-border": `color-mix(in srgb, var(${color}) 35%, var(--paper))`,
 }));
 
 /** 统一节点、连线和引用的通道色；共享祖先不推断唯一分支归属。 */

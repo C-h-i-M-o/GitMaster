@@ -1,0 +1,36 @@
+GitMaster 主题配色来源说明
+
+GitHub 参考：https://github.com/smallyunet/codex-palette-vscode
+src/codex-source-colors.mjs 文件 SHA：21104e71c1207f5e4cec14539fc1d059f161d41a
+上游声明核心色来自 Codex 内置主题。GitMaster 仅保留截图指定的主题颜色；语义变量、界面映射和必要的对比度处理为 GitMaster 适配，不宣称复刻原应用。
+OG 色值经本机 Codex 26.1021.31345（21828）og-dark-c4ffd9f0861f.js 静态核验补齐；主题名称仅用于标识配色。
+
+MIT License
+
+Copyright (c) 2026 smallyu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+# Third-party notices
+
+Codex Palette is an independently authored VS Code theme mapping. Some theme names and palette traditions correspond to established open-source editor themes, including Ayu, Catppuccin, Dracula, Everforest, GitHub Theme, Gruvbox, Material Theme, Night Owl, Nord, One Dark Pro, Rose Pine, Solarized and Tokyo Night.
+
+Those projects remain owned and licensed by their respective maintainers. Refer to each upstream project before redistributing or substantially modifying its original theme data. This repository does not bundle upstream source code, logos, fonts or extension runtime code.
+
+Names such as Codex, GitHub, Linear, Notion, Raycast, Sentry, Vercel, VS Code and Xcode are used only to identify visual inspiration. Their inclusion does not imply affiliation, endorsement or sponsorship.

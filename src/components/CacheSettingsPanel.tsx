@@ -1,59 +1,59 @@
-import type { useAppSettings } from "../hooks/useAppSettings";
-import type { useSettingsForm } from "../hooks/useSettingsForm";
-import { cacheSize, useContentCache } from "../hooks/useContentCache";
-import { SettingsFieldError } from "./SettingsFieldError";
+import {
+  cacheSize,
+  cacheContentWidth,
+  useContentCache,
+} from "../hooks/useContentCache";
 
-/** 展示全局缓存用量与用户控制项，实际操作交给后端固定目录接口。 */
-export function CacheSettingsPanel({
-  settings,
-  form,
-}: {
-  settings: ReturnType<typeof useAppSettings>;
-  form: ReturnType<typeof useSettingsForm>;
-}) {
-  const cache = useContentCache(settings.editable, settings.saved?.revision);
+/** 展示应用缓存目录实际占用，仅保留受控清除操作。 */
+export function CacheSettingsPanel({ enabled }: { enabled: boolean }) {
+  const cache = useContentCache(enabled);
   return (
-    <section>
+    <section className="cache-settings">
       <h3>缓存</h3>
-      <label className="checkbox-label">
-        <input
-          type="checkbox"
-          data-settings-field="diskCacheEnabled"
-          checked={settings.draft.diskCacheEnabled}
-          onChange={form.diskCacheEnabled}
-        />
-        启用磁盘缓存
-      </label>
-      <SettingsFieldError error={settings.error} field="diskCacheEnabled" />
-      <p>在多个项目间共享最多 1 GB 磁盘空间，用于加快已提交内容的再次读取。</p>
-      <p className="muted small">
-        关闭后停止磁盘读写，已有缓存保留；内存缓存仍可使用。清除不会删除项目文件、未保存草稿或应用设置。
-      </p>
-      {cache.usage && (
-        <>
-          <p>磁盘用量：{cacheSize(cache.usage.diskBytes)}</p>
-          <p>磁盘上限：{cacheSize(cache.usage.limitBytes)}</p>
-          <p>内存用量：{cacheSize(cache.usage.memoryBytes)}</p>
-          <p>磁盘缓存当前{cache.usage.enabled ? "开启" : "关闭"}</p>
-        </>
-      )}
-      <div className="button-row">
+      <div className="cache-usage-header">
+        <div>
+          <span className="muted">磁盘占用</span>
+          <strong className="cache-total">
+            {cache.usage ? cacheSize(cache.usage.diskBytes) : "—"}
+          </strong>
+        </div>
         <button
           className="secondary"
-          disabled={cache.busy}
-          onClick={cache.reload}
-        >
-          刷新用量
-        </button>
-        <button
-          className="secondary"
-          disabled={cache.busy}
+          disabled={!enabled || cache.busy}
           onClick={cache.clear}
         >
           清除缓存
         </button>
       </div>
-      {cache.busy && <p role="status">正在处理缓存…</p>}
+      {cache.usage && (
+        <figure
+          className="cache-chart"
+          aria-label={`缓存占用 ${cache.usage.diskBytes.toLocaleString("zh-CN")} 字节，其中内容 ${cache.usage.contentBytes.toLocaleString("zh-CN")} 字节`}
+        >
+          <div
+            className={`cache-bar${cache.usage.diskBytes === 0 ? " empty" : ""}`}
+            aria-hidden="true"
+          >
+            <span style={cacheContentWidth(cache.usage)} />
+          </div>
+          <figcaption>
+            <span>
+              <i className="cache-content-dot" />
+              内容 {cacheSize(cache.usage.contentBytes)}
+            </span>
+            <span>
+              <i className="cache-index-dot" />
+              索引与其他{" "}
+              {cacheSize(cache.usage.diskBytes - cache.usage.contentBytes)}
+            </span>
+          </figcaption>
+        </figure>
+      )}
+      {cache.busy && (
+        <p className="muted small" role="status">
+          正在更新缓存用量…
+        </p>
+      )}
       {cache.error && <p role="alert">{cache.error}</p>}
     </section>
   );

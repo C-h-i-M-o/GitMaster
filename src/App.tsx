@@ -26,9 +26,6 @@ export default function App() {
               {repository?.rootPath.split(/[\\/]/).filter(Boolean).at(-1) ??
                 "尚未打开项目"}
             </strong>
-            {repository && (
-              <small title={repository.rootPath}>{repository.rootPath}</small>
-            )}
           </div>
           <nav className="workspace-nav">
             <button

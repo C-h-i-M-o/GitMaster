@@ -1,3 +1,5 @@
+import { monacoTheme } from "../ui/editorTheme";
+import { onAppearanceChange } from "../ui/appearanceRuntime";
 import { useEffect, useRef } from "react";
 import * as monaco from "monaco-editor/editor/editor.api.js";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
@@ -58,29 +60,17 @@ export function useMonacoEditor(props: MonacoEditorProps) {
   const replacing = useRef(false);
   useEffect(() => {
     if (!container.current) return;
-    monaco.editor.defineTheme("gitmaster-light", {
-      base: "vs",
-      inherit: true,
-      rules: [],
-      colors: {
-        "editor.background": "#f7f9f5",
-        "editor.foreground": "#233b3c",
-        "editorLineNumber.foreground": "#91a39b",
-        "editorLineNumber.activeForeground": "#378e80",
-        "editor.selectionBackground": "#b9ddd1",
-        "editor.inactiveSelectionBackground": "#dcece6",
-        "editor.lineHighlightBackground": "#eef6f2",
-        "editorGutter.background": "#f7f9f5",
-        "editorWidget.background": "#ffffff",
-        "editorWidget.border": "#c9ddd5",
-        "scrollbarSlider.background": "#a9c8be88",
-      },
-    });
-    monaco.editor.setTheme("gitmaster-light");
+    /** 更新全局 Monaco 主题但保留已有模型及撤销记录。 */
+    const updateTheme = (): void => {
+      monaco.editor.defineTheme("gitmaster", monacoTheme());
+      monaco.editor.setTheme("gitmaster");
+    };
+    updateTheme();
+    const stopTheme = onAppearanceChange(updateTheme);
     const view = monaco.editor.create(container.current, {
       model: null,
       automaticLayout: true,
-      theme: "gitmaster-light",
+      theme: "gitmaster",
       minimap: { enabled: false },
       detectIndentation: false,
       links: false,
@@ -115,6 +105,7 @@ export function useMonacoEditor(props: MonacoEditorProps) {
     });
     return () => {
       recordPosition();
+      stopTheme();
       scroll.dispose();
       cursor.dispose();
       compositionStart.dispose();

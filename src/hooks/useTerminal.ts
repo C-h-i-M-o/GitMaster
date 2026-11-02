@@ -1,3 +1,5 @@
+import { terminalTheme } from "../ui/editorTheme";
+import { onAppearanceChange } from "../ui/appearanceRuntime";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -32,46 +34,16 @@ export function useTerminal(
       cursorStyle: prefs.cursorStyle,
       cursorBlink: prefs.cursorBlink,
       scrollback: prefs.scrollbackLines,
-      theme: {
-        background:
-          getComputedStyle(container.current)
-            .getPropertyValue("--terminal-background")
-            .trim() || "#f7f9f5",
-        foreground:
-          getComputedStyle(container.current)
-            .getPropertyValue("--terminal-foreground")
-            .trim() || "#233b3c",
-        cursor:
-          getComputedStyle(container.current)
-            .getPropertyValue("--terminal-cursor")
-            .trim() || "#233b3c",
-        selectionBackground:
-          getComputedStyle(container.current)
-            .getPropertyValue("--terminal-selection")
-            .trim() || "#b8d9cf",
-        black: "#233b3c",
-        red: "#ac392e",
-        green: "#286743",
-        yellow: "#806015",
-        blue: "#315db0",
-        magenta: "#885291",
-        cyan: "#167078",
-        white: "#697571",
-        brightBlack: "#62706d",
-        brightRed: "#c44232",
-        brightGreen: "#327949",
-        brightYellow: "#906915",
-        brightBlue: "#3c66bc",
-        brightMagenta: "#96559e",
-        brightCyan: "#168088",
-        brightWhite: "#7b8580",
-      },
+      theme: terminalTheme(),
       allowProposedApi: false,
     });
     const fit = new FitAddon();
     view.loadAddon(fit);
     view.open(container.current);
     terminal.current = view;
+    const stopTheme = onAppearanceChange(() => {
+      view.options.theme = terminalTheme();
+    });
     // 仓库程序输出不能写系统剪贴板；不安装自动打开链接的插件。
     const clipboard = view.parser.registerOscHandler(52, () => true);
     /** xterm 自己处理键盘前显式消费 Cmd/Ctrl+J，交给工作台全局动作。 */
@@ -190,6 +162,7 @@ export function useTerminal(
     void poll();
     return () => {
       active = false;
+      stopTheme();
       clearTimeout(timer);
       retry.current = () => {};
       resizeView.current = () => {};

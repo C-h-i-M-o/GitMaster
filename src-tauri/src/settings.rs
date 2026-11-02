@@ -1,3 +1,5 @@
+mod appearance;
+use appearance::{ColorMode, DarkTheme, LightTheme};
 mod models;
 use gitmaster_core::git::OperationError;
 pub use models::*;
@@ -19,8 +21,6 @@ static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
-    #[serde(default = "default_disk_cache_enabled")]
-    pub disk_cache_enabled: bool,
     #[serde(default)]
     pub log_level: Option<crate::logging::LogLevel>,
     pub version: u8,
@@ -35,6 +35,12 @@ pub struct Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UiPreferences {
+    #[serde(default)]
+    pub color_mode: ColorMode,
+    #[serde(default)]
+    pub light_theme: LightTheme,
+    #[serde(default)]
+    pub dark_theme: DarkTheme,
     #[serde(default = "default_elasticity")]
     pub elasticity: u8,
     #[serde(default = "default_show_labels")]
@@ -46,6 +52,9 @@ impl Default for UiPreferences {
         Self {
             elasticity: 6,
             show_labels: true,
+            color_mode: ColorMode::System,
+            light_theme: LightTheme::Github,
+            dark_theme: DarkTheme::Github,
         }
     }
 }
@@ -55,10 +64,6 @@ fn default_elasticity() -> u8 {
 }
 /// 返回是否显示标签的默认值。
 fn default_show_labels() -> bool {
-    true
-}
-/// 旧配置沿用开启磁盘缓存的默认行为。
-fn default_disk_cache_enabled() -> bool {
     true
 }
 /// 获取设置读改写使用的全局串行锁。
@@ -80,8 +85,8 @@ fn validate(p: &UiPreferences) -> Result<(), OperationError> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredSettings {
-    #[serde(default = "default_disk_cache_enabled")]
-    disk_cache_enabled: bool,
+    #[serde(default, rename = "diskCacheEnabled")]
+    _legacy_disk_cache_enabled: Option<bool>,
     #[serde(default)]
     log_level: Option<crate::logging::LogLevel>,
     version: u8,
@@ -102,7 +107,6 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Settings {
-                disk_cache_enabled: true,
                 version: 4,
                 log_level: None,
                 git_path: None,
@@ -125,7 +129,6 @@ fn read_unlocked(path: &Path) -> Result<Settings, OperationError> {
     };
     validate(&preferences)?;
     let settings = Settings {
-        disk_cache_enabled: stored.disk_cache_enabled,
         version: 4,
         log_level: stored.log_level,
         git_path: stored.git_path,
@@ -249,18 +252,34 @@ pub fn save_patch(
     }
     let mut next = current.settings;
     match patch {
-        SettingsPatch::Cache { disk_cache_enabled } => next.disk_cache_enabled = disk_cache_enabled,
         SettingsPatch::Git { git_path } => next.git_path = git_path,
         SettingsPatch::Logging { log_level } => next.log_level = log_level,
         SettingsPatch::Appearance {
             elasticity,
             show_labels,
+            color_mode,
+            light_theme,
+            dark_theme,
         } => {
-            if elasticity.is_none() && show_labels.is_none() {
+            if elasticity.is_none()
+                && show_labels.is_none()
+                && color_mode.is_none()
+                && light_theme.is_none()
+                && dark_theme.is_none()
+            {
                 return Err(SettingsError {
                     code: "INVALID_INPUT".into(),
                     field_errors: Vec::new(),
                 });
+            }
+            if let Some(value) = color_mode {
+                next.ui_preferences.color_mode = value;
+            }
+            if let Some(value) = light_theme {
+                next.ui_preferences.light_theme = value;
+            }
+            if let Some(value) = dark_theme {
+                next.ui_preferences.dark_theme = value;
             }
             if let Some(value) = elasticity {
                 next.ui_preferences.elasticity = value;
@@ -402,7 +421,6 @@ pub fn save(path: &Path, git_path: Option<String>) -> Result<(), OperationError>
     write_unlocked(
         path,
         &Settings {
-            disk_cache_enabled: current.disk_cache_enabled,
             version: 4,
             log_level: current.log_level,
             git_path,
@@ -421,10 +439,15 @@ pub fn save_preferences(
     let _guard = lock()?;
     validate(&preferences)?;
     let current = read_unlocked(path)?;
+    // 旧提交图接口只更新自己的两个字段，保留新外观偏好。
+    let preferences = UiPreferences {
+        elasticity: preferences.elasticity,
+        show_labels: preferences.show_labels,
+        ..current.ui_preferences
+    };
     write_unlocked(
         path,
         &Settings {
-            disk_cache_enabled: current.disk_cache_enabled,
             version: 4,
             log_level: current.log_level,
             git_path: current.git_path,
@@ -440,37 +463,56 @@ pub fn save_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// 旧配置只读补默认值，缓存补丁持久化后仍保留其他字段并拒绝旧 revision。
+
+    /// 旧设置读取补齐模式与双主题，不改写原始文件。
     #[test]
-    fn disk_cache_migrates_and_persists_without_overwriting_other_settings() {
+    fn appearance_legacy_defaults_and_patch_roundtrip() {
+        let p = path();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let bytes =
+            br#"{"version":2,"gitPath":null,"uiPreferences":{"elasticity":8,"showLabels":false}}"#;
+        fs::write(&p, bytes).unwrap();
+        let snapshot = read_snapshot(&p).unwrap();
+        let value = serde_json::to_value(&snapshot.settings).unwrap();
+        assert_eq!(value["uiPreferences"]["colorMode"], "system");
+        assert_eq!(value["uiPreferences"]["lightTheme"], "github");
+        assert_eq!(value["uiPreferences"]["darkTheme"], "github");
+        assert_eq!(fs::read(&p).unwrap(), bytes);
+        let patch =
+            serde_json::from_str(r#"{"kind":"appearance","colorMode":"dark","darkTheme":"og"}"#)
+                .unwrap();
+        let saved = save_patch(&p, &snapshot.revision, patch).unwrap();
+        let value = serde_json::to_value(load(&p).unwrap()).unwrap();
+        assert_eq!(value["uiPreferences"]["darkTheme"], "og");
+        assert_eq!(value["uiPreferences"]["elasticity"], 8);
+        assert_eq!(saved.settings.terminal, snapshot.settings.terminal);
+        let preferences = save_preferences(&p, UiPreferences::default()).unwrap();
+        assert_eq!(preferences.color_mode, ColorMode::Dark);
+        assert_eq!(preferences.dark_theme, DarkTheme::Og);
+        assert_eq!(load(&p).unwrap().ui_preferences, preferences);
+        assert!(serde_json::from_str::<SettingsPatch>(
+            r#"{"kind":"appearance","lightTheme":"og"}"#
+        )
+        .is_err());
+        cleanup(&p);
+    }
+    /// 旧关闭值可读取但不能关闭缓存，也不再向配置输出关闭字段。
+    #[test]
+    fn legacy_cache_disable_is_ignored() {
         let p = path();
         let mut value = serde_json::to_value(load(&p).unwrap()).unwrap();
-        value.as_object_mut().unwrap().remove("diskCacheEnabled");
-        let bytes = serde_json::to_vec(&value).unwrap();
+        value["diskCacheEnabled"] = false.into();
         fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(&p, &bytes).unwrap();
-        let original = read_snapshot(&p).unwrap();
-        assert!(original.settings.disk_cache_enabled);
-        assert_eq!(fs::read(&p).unwrap(), bytes);
-        let patch = serde_json::from_str(r#"{"kind":"cache","diskCacheEnabled":false}"#).unwrap();
-        let saved = save_patch(&p, &original.revision, patch).unwrap();
-        assert!(!load(&p).unwrap().disk_cache_enabled);
-        assert_eq!(saved.settings.terminal, original.settings.terminal);
-        assert_eq!(saved.settings.editor, original.settings.editor);
-        let disabled = fs::read(&p).unwrap();
-        let error = save_patch(
-            &p,
-            &original.revision,
-            SettingsPatch::Cache {
-                disk_cache_enabled: true,
-            },
+        fs::write(&p, serde_json::to_vec(&value).unwrap()).unwrap();
+        let settings = load(&p).unwrap();
+        assert!(serde_json::to_value(settings)
+            .unwrap()
+            .get("diskCacheEnabled")
+            .is_none());
+        assert!(serde_json::from_str::<SettingsPatch>(
+            r#"{"kind":"cache","diskCacheEnabled":false}"#
         )
-        .unwrap_err();
-        assert_eq!(error.code, "STALE_SETTINGS");
-        assert_eq!(fs::read(&p).unwrap(), disabled);
-        save(&p, Some("/git".into())).unwrap();
-        save_preferences(&p, UiPreferences::default()).unwrap();
-        assert!(!load(&p).unwrap().disk_cache_enabled);
+        .is_err());
         cleanup(&p);
     }
     #[test]
@@ -585,6 +627,7 @@ mod tests {
             UiPreferences {
                 elasticity: 5,
                 show_labels: true,
+                ..UiPreferences::default()
             },
         )
         .unwrap();
@@ -654,6 +697,7 @@ mod tests {
             UiPreferences {
                 elasticity: 9,
                 show_labels: false,
+                ..UiPreferences::default()
             },
         )
         .unwrap();
@@ -678,7 +722,8 @@ mod tests {
             &p,
             UiPreferences {
                 elasticity: 1,
-                show_labels: true
+                show_labels: true,
+                ..UiPreferences::default()
             }
         )
         .is_ok());
@@ -686,7 +731,8 @@ mod tests {
             &p,
             UiPreferences {
                 elasticity: 10,
-                show_labels: true
+                show_labels: true,
+                ..UiPreferences::default()
             }
         )
         .is_ok());
@@ -694,7 +740,8 @@ mod tests {
             &p,
             UiPreferences {
                 elasticity: 0,
-                show_labels: true
+                show_labels: true,
+                ..UiPreferences::default()
             }
         )
         .is_err());
@@ -702,7 +749,8 @@ mod tests {
             &p,
             UiPreferences {
                 elasticity: 11,
-                show_labels: true
+                show_labels: true,
+                ..UiPreferences::default()
             }
         )
         .is_err());
@@ -736,7 +784,8 @@ mod tests {
             &p,
             UiPreferences {
                 elasticity: 0,
-                show_labels: true
+                show_labels: true,
+                ..UiPreferences::default()
             }
         )
         .is_err());

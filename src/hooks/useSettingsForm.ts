@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { isColorMode, isLightTheme, isDarkTheme } from "../ui/themes";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+} from "react";
 import type { useAppSettings } from "./useAppSettings";
 import type {
   AppSettings,
@@ -6,6 +13,7 @@ import type {
   SettingsCategory,
 } from "../types/settings";
 import { settingsFieldLocation } from "../ui/settingsField";
+import { revealSettingsField } from "../ui/settingsDisclosure";
 import { removeTerminalProfile } from "../ui/settingsDraft";
 import { chooseGitPath } from "../services/git";
 import { chooseTerminalPath } from "../services/settings";
@@ -26,18 +34,15 @@ export function useSettingsForm(
   const form = useRef<HTMLDivElement>(null);
   const [focusField, setFocusField] = useState<string | null>(null);
   useEffect(() => {
+    for (const error of settings.error?.fieldErrors ?? []) {
+      if (settingsFieldLocation(error.field)?.category === category)
+        revealSettingsField(form.current, error.field);
+    }
+  }, [settings.error, category]);
+  useEffect(() => {
     if (!focusField || settingsFieldLocation(focusField)?.category !== category)
       return;
-    const elements = form.current?.querySelectorAll<HTMLElement>(
-      "[data-settings-field]",
-    );
-    const element = Array.from(elements ?? []).find(
-      (item) => item.dataset.settingsField === focusField,
-    );
-    if (element) {
-      element.scrollIntoView({ block: "nearest" });
-      element.focus();
-    }
+    revealSettingsField(form.current, focusField, true);
     setFocusField(null);
   }, [category, focusField]);
   /** 错误定位只切换当前设置分类，不保存或丢弃其他草稿。 */
@@ -220,10 +225,60 @@ export function useSettingsForm(
     addArgument,
     removeArgument,
     gitPath: field((draft, value) => ({ ...draft, gitPath: value || null })),
-    /** 开关复用统一保存队列，失败时保留用户输入。 */
-    diskCacheEnabled: (event: ChangeEvent<HTMLInputElement>): void => {
-      const enabled = event.target.checked;
-      settings.edit((draft) => ({ ...draft, diskCacheEnabled: enabled }), true);
+    /** 模式与两个主题字段独立保存，快速切换不覆盖彼此。 */
+    colorMode: (event: ChangeEvent<HTMLInputElement>): void => {
+      const value = event.target.value;
+      if (isColorMode(value))
+        settings.edit(
+          (draft) => ({
+            ...draft,
+            uiPreferences: { ...draft.uiPreferences, colorMode: value },
+          }),
+          true,
+        );
+    },
+    lightTheme: (event: ChangeEvent<HTMLSelectElement>): void => {
+      const value = event.target.value;
+      if (isLightTheme(value))
+        settings.edit(
+          (draft) => ({
+            ...draft,
+            uiPreferences: { ...draft.uiPreferences, lightTheme: value },
+          }),
+          true,
+        );
+    },
+    darkTheme: (event: ChangeEvent<HTMLSelectElement>): void => {
+      const value = event.target.value;
+      if (isDarkTheme(value))
+        settings.edit(
+          (draft) => ({
+            ...draft,
+            uiPreferences: { ...draft.uiPreferences, darkTheme: value },
+          }),
+          true,
+        );
+    },
+    /** 纵向分类支持方向键及首尾跳转，与鼠标选择使用同一路径。 */
+    categoryKeyDown: (event: KeyboardEvent<HTMLButtonElement>): void => {
+      const order: SettingsCategory[] = ["general", "appearance", "git"];
+      const index = order.indexOf(category);
+      const target =
+        event.key === "ArrowDown"
+          ? (index + 1) % 3
+          : event.key === "ArrowUp"
+            ? (index + 2) % 3
+            : event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? 2
+                : -1;
+      if (target < 0) return;
+      event.preventDefault();
+      selectCategory(order[target]!)();
+      form.current
+        ?.querySelector<HTMLButtonElement>(`#settings-tab-${order[target]}`)
+        ?.focus();
     },
     elasticity: field((draft, value) => ({
       ...draft,

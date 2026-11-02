@@ -1,3 +1,4 @@
+import { useAppearance } from "./useAppearance";
 import { useEditorAutosave } from "./useEditorAutosave";
 import { useRestoreFiles } from "./useRestoreFiles";
 import { useWorkbenchShortcuts } from "./useWorkbenchShortcuts";
@@ -101,6 +102,7 @@ export function useWorkbench() {
       !editorGate.current?.dirty &&
       workspace.git.status !== "loading",
   );
+  useAppearance(appSettings.draft.uiPreferences, !workspace.preview);
   const preferences = {
     saved: appSettings.saved?.settings.uiPreferences ?? null,
   };

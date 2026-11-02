@@ -1,7 +1,7 @@
 .operation-feedback {
-  --feedback-green: #2f7468;
-  --feedback-blue: #466f96;
-  --feedback-gold: #8c602a;
+  --feedback-green: var(--success);
+  --feedback-blue: var(--info);
+  --feedback-gold: var(--warning);
   color: var(--ink);
   width: 420px;
   max-width: 100%;
@@ -21,7 +21,7 @@
   width: 150px;
   height: 100px;
   border-radius: 50%;
-  background: #d5e8dd66;
+  background: var(--success-wash);
   filter: blur(22px);
   pointer-events: none;
 }
@@ -61,7 +61,7 @@
 }
 .feedback-node {
   stroke-width: 1.6;
-  fill: #f7f9f5;
+  fill: var(--surface);
 }
 .feedback-ring {
   fill: none;
@@ -117,20 +117,20 @@
   font:
     10px Consolas,
     monospace;
-  color: #71877b;
+  color: var(--muted);
 }
 .feedback-meta i {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #7fa997;
+  background: var(--success);
 }
 .feedback-meta time {
   font-variant-numeric: tabular-nums;
 }
 .feedback-copy .feedback-long {
   margin-top: 12px;
-  color: #806540;
+  color: var(--warning);
   font-size: 11px;
 }
 .feedback-action {
@@ -143,10 +143,10 @@
   gap: 28px;
   padding: 22px 24px;
   text-align: left;
-  background: #fbfcf8f5;
-  border: 1px solid #d8e4d9;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 13px;
-  box-shadow: 0 8px 28px #234b3d09;
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--ink) 4%, transparent);
 }
 .operation-feedback.compact .feedback-art {
   width: 84px;
@@ -179,19 +179,19 @@
   position: relative;
 }
 .operation-feedback.failed.centered {
-  border: 1px solid #e5dac6;
+  border: 1px solid var(--line);
   border-radius: 20px;
-  background: linear-gradient(145deg, #fffdf8, #f8faf4);
-  box-shadow: 0 14px 42px #6554350d;
+  background: linear-gradient(145deg, var(--surface), var(--warning-wash));
+  box-shadow: 0 14px 42px color-mix(in srgb, var(--ink) 5%, transparent);
 }
 .operation-feedback.failed.centered .feedback-art {
   height: 112px;
 }
 .operation-feedback.failed .feedback-art::before {
-  background: #eee1c966;
+  background: var(--warning-wash);
 }
 .operation-feedback.failed .feedback-meta i {
-  background: #a88449;
+  background: var(--warning);
 }
 .graph-feedback {
   position: absolute;
