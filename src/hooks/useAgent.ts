@@ -17,10 +17,12 @@ import {
 import type {
   ChatRecord,
   ChatSession,
+  ChatView,
   RunNotice,
   RunSnapshot,
 } from "../types/agent";
 import { useAgentSettings } from "./useAgentSettings";
+import { AgentChatMemory, titleValidation } from "../ui/agentChatMemory";
 /** 管理本地聊天与运行事件；不持久化前端副本或密钥。 */
 export function useAgent(
   enabled: boolean,
@@ -39,6 +41,9 @@ export function useAgent(
   const [archived, setArchived] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const selected = useRef<string | null>(null);
+  const memory = useRef(new AgentChatMemory());
+  const project = useRef(repositoryPath);
+  project.current = repositoryPath;
   const generation = useRef(0);
   const progressVersion = useRef(0);
   const finished = useRef(new Set<string>());
@@ -56,6 +61,7 @@ export function useAgent(
   const load = useCallback(async (id: string, switching = false) => {
     if (switching) {
       selected.current = id;
+      setDraft(memory.current.draft(id, project.current));
       setRecord(null);
       setRun(null);
       setTitle("");
@@ -64,19 +70,18 @@ export function useAgent(
     }
     const version = ++generation.current;
     const progress = progressVersion.current;
-    const view = await agentApi.read(id);
+    memory.current.beginLoad(id);
+    let view: ChatView;
+    try {
+      view = await agentApi.read(id);
+    } catch (cause) {
+      if (version === generation.current) memory.current.endLoad(id);
+      throw cause;
+    }
     if (selected.current !== id || version !== generation.current) return;
-    setRecord((current) => {
-      if (current?.session.id !== id) return view.record;
-      const events = new Map(
-        view.record.events.map((event) => [event.sequence, event]),
-      );
-      for (const event of current.events) events.set(event.sequence, event);
-      return {
-        ...view.record,
-        events: [...events.values()].sort((a, b) => a.sequence - b.sequence),
-      };
-    });
+    const loaded = memory.current.merge(view.record, null);
+    memory.current.endLoad(id);
+    setRecord((current) => memory.current.merge(loaded, current));
     if (switching) setTitle(view.record.session.title);
     if (progress === progressVersion.current)
       setRun(
@@ -95,6 +100,7 @@ export function useAgent(
           );
         }
         if (selected.current !== event.sessionId) return;
+        memory.current.receive(event);
         setRecord((current) =>
           current?.session.id === event.sessionId
             ? {
@@ -162,6 +168,11 @@ export function useAgent(
       cleanup.forEach((stop) => stop());
     };
   }, [enabled, receive, refreshList]);
+  /** 没有聊天时按项目恢复草稿，切换项目不能带走未发送内容。 */
+  useEffect(() => {
+    if (selected.current === null)
+      setDraft(memory.current.draft(null, repositoryPath));
+  }, [repositoryPath]);
   /** 阅读历史时不强行滚动，只有接近底部时跟随新消息。 */
   useEffect(() => {
     if (follow.current) end.current?.scrollIntoView({ block: "end" });
@@ -195,7 +206,6 @@ export function useAgent(
       const chat = await agentApi.create();
       await refreshList();
       await load(chat.id, true);
-      setDraft("");
     });
   }
   /** 发送时才创建缺失聊天，输入在成功接受后清空。 */
@@ -208,12 +218,22 @@ export function useAgent(
     }
     await action(async () => {
       let id = selected.current;
+      const source = id;
+      const sourceProject = project.current;
+      const text = draft;
       if (!id) {
         const chat = await agentApi.create();
+        if (chat.repositoryPath !== sourceProject)
+          throw new Error("项目已切换，原项目草稿已保留，请返回原项目后重试。");
         id = chat.id;
+        memory.current.setDraft(id, sourceProject, text);
         await load(id, true);
       }
-      await agentApi.send(id, draft);
+      if (project.current !== sourceProject)
+        throw new Error("项目已切换，草稿已保留，请检查聊天所属项目后重试。");
+      await agentApi.send(id, text);
+      memory.current.setDraft(id, sourceProject, "");
+      memory.current.setDraft(source, sourceProject, "");
       setDraft("");
       follow.current = true;
       await load(id);
@@ -233,6 +253,11 @@ export function useAgent(
   }
   /** 修改消息草稿，不同步到磁盘或浏览器存储。 */
   function changeDraft(event: ChangeEvent<HTMLTextAreaElement>) {
+    memory.current.setDraft(
+      selected.current,
+      project.current,
+      event.target.value,
+    );
     setDraft(event.target.value);
   }
   /** 修改标题草稿，由保存动作提交。 */
@@ -241,7 +266,7 @@ export function useAgent(
   }
   /** 标题和归档均经后端检查运行状态。 */
   function rename() {
-    if (record)
+    if (record && !titleValidation(title).error)
       void action(async () => {
         await agentApi.update(
           record.session.id,
@@ -278,7 +303,10 @@ export function useAgent(
     if (record)
       void action(async () => {
         await agentApi.delete(record.session.id);
+        memory.current.setDraft(record.session.id, project.current, "");
+        memory.current.endLoad(record.session.id);
         selected.current = null;
+        setDraft(memory.current.draft(null, project.current));
         generation.current++;
         setRecord(null);
         setRun(null);
@@ -333,6 +361,7 @@ export function useAgent(
     error,
     draft,
     title,
+    titleValidation: titleValidation(title),
     busy,
     archived,
     deletePending,

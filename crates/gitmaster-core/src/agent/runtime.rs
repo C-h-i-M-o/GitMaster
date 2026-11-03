@@ -11,8 +11,11 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
 };
 use tokio::sync::oneshot;
 
@@ -70,6 +73,9 @@ pub struct AgentRuntime {
     store: Arc<AgentStore>,
     client: ModelClient,
     active: Mutex<HashMap<String, ActiveRun>>,
+    closing: AtomicBool,
+    drained: tokio::sync::watch::Sender<bool>,
+    shutdown_error: Mutex<Option<AgentError>>,
     emit: Arc<dyn Fn(RunNotice) + Send + Sync>,
     recovery_warnings: Vec<String>,
     _lease: File,
@@ -87,6 +93,9 @@ impl AgentRuntime {
             store,
             client: ModelClient::new()?,
             active: Mutex::new(HashMap::new()),
+            closing: AtomicBool::new(false),
+            drained: tokio::sync::watch::channel(true).0,
+            shutdown_error: Mutex::new(None),
             emit,
             recovery_warnings: warnings,
             _lease: lease,
@@ -117,6 +126,12 @@ impl AgentRuntime {
         ensure_safe_text(&request.text, Some(&request.key))?;
         (request.guard)()?;
         let mut active = self.active.lock().map_err(AgentError::storage)?;
+        if self.closing.load(Ordering::Acquire) {
+            return Err(AgentError::new(
+                "AGENT_SHUTTING_DOWN",
+                "应用正在关闭，不能启动新的 AI 运行。",
+            ));
+        }
         if active.contains_key(&request.chat_id) {
             return Err(AgentError::new(
                 "AGENT_RUNNING",
@@ -148,6 +163,7 @@ impl AgentRuntime {
                 pending: None,
             },
         );
+        self.drained.send_replace(false);
         drop(active);
         let result: AgentResult<()> = (|| {
             self.record(
@@ -223,6 +239,32 @@ impl AgentRuntime {
             }
         }
     }
+    /// 原子禁止新运行并取消全部聊天；终态落盘、通知完成之后才允许窗口退出。
+    pub async fn shutdown(&self) -> AgentResult<()> {
+        let mut drained = self.drained.subscribe();
+        {
+            let mut active = self.active.lock().map_err(AgentError::storage)?;
+            self.closing.store(true, Ordering::Release);
+            for run in active.values_mut() {
+                run.cancel.cancel();
+                run.state.phase = "stopping".into();
+                run.pending.take();
+            }
+        }
+        drained
+            .wait_for(|value| *value)
+            .await
+            .map_err(AgentError::storage)?;
+        match self
+            .shutdown_error
+            .lock()
+            .map_err(AgentError::storage)?
+            .clone()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
     /// 审批 ID、聊天、运行三者均匹配才消费一次；前端不能替换参数。
     pub fn resolve(
         &self,
@@ -265,11 +307,17 @@ impl AgentRuntime {
                 Some(String::new()),
             )?;
             let record = self.store.read_chat(&request.chat_id)?;
-            let accumulated = Mutex::new(String::new());
+            let accumulated = Mutex::new((String::new(), Instant::now()));
             let delta = |text: &str| {
-                if let Ok(mut current) = accumulated.lock() {
+                if let Ok(mut preview) = accumulated.lock() {
+                    let (current, updated) = &mut *preview;
                     current.push_str(text);
-                    if ensure_safe_text(&current, Some(&request.key)).is_ok() {
+                    // 合并细片后才扫描和复制全文；完整文本检查保留跨片段凭据边界。
+                    if updated.elapsed() < Duration::from_millis(100) {
+                        return;
+                    }
+                    *updated = Instant::now();
+                    if ensure_safe_text(current, Some(&request.key)).is_ok() {
                         let _ = self.progress(
                             &request.chat_id,
                             run_id,
@@ -564,16 +612,20 @@ impl AgentRuntime {
             complete_pairs(&self.store, chat_id, run_id)?;
             self.record(chat_id, run_id, EventKind::RunEnded { status, message })
         })();
-        self.active
-            .lock()
-            .map_err(AgentError::storage)?
-            .remove(chat_id);
         let error = persisted.as_ref().err().cloned().or_else(|| outcome.err());
         (self.emit)(RunNotice::Finished {
             session_id: chat_id.into(),
             run_id: run_id.into(),
             error,
         });
+        let mut active = self.active.lock().map_err(AgentError::storage)?;
+        if self.closing.load(Ordering::Acquire) {
+            if let Err(error) = &persisted {
+                *self.shutdown_error.lock().map_err(AgentError::storage)? = Some(error.clone());
+            }
+        }
+        active.remove(chat_id);
+        self.drained.send_replace(active.is_empty());
         persisted
     }
 }

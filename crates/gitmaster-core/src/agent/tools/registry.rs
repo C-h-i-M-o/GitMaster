@@ -187,7 +187,10 @@ impl Toolbox {
         blocking(move || {
             cancel.check()?;
             match prepared.action {
-                Action::File(value) => tools.files.execute(value, approved).map(ToolOutput::Result),
+                Action::File(value) => tools
+                    .files
+                    .execute(value, approved, &cancel)
+                    .map(ToolOutput::Result),
                 Action::Git(value) => tools
                     .git
                     .as_ref()

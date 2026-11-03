@@ -43,6 +43,8 @@ export const agentApi = {
     call("agent_send_message", { id, text }),
   cancel: (id: string, runId: string): Promise<void> =>
     call("agent_cancel_run", { id, runId }),
+  /** 关闭前等待所有聊天停止及终态落盘。 */
+  shutdown: (): Promise<void> => call("agent_shutdown"),
   resolve: (
     id: string,
     runId: string,

@@ -7,6 +7,166 @@ use std::{
     time::Duration,
 };
 
+/// 关闭覆盖所有聊天，并在终态落盘后返回；进入关闭阶段后拒绝新运行。
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_drains_all_chats_and_rejects_new_runs() {
+    let (_dir, store, profile, _server) = fixture(ProviderProtocol::ChatCompletions);
+    let runtime = AgentRuntime::new(store.clone(), Arc::new(|_| {})).unwrap();
+    let mut ids = vec![];
+    for _ in 0..2 {
+        let chat = store.create_chat(&profile.id, None).unwrap();
+        runtime
+            .start(StartRun {
+                chat_id: chat.id.clone(),
+                text: "等待模型".into(),
+                profile: profile.clone(),
+                key: "test-key".into(),
+                mode: PermissionMode::FullAccess,
+                tools: Arc::new(Toolbox::new(None, vec![]).unwrap()),
+                repository_path: None,
+                system_context: String::new(),
+                guard: Arc::new(|| Ok(())),
+            })
+            .unwrap();
+        ids.push(chat.id);
+    }
+    tokio::time::timeout(Duration::from_secs(10), runtime.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    for id in &ids {
+        assert!(runtime.snapshot(id).unwrap().is_none());
+        assert!(matches!(
+            store.read_chat(id).unwrap().events.last().unwrap().payload,
+            EventKind::RunEnded {
+                status: RunStatus::Cancelled,
+                ..
+            }
+        ));
+    }
+    let error = runtime
+        .start(StartRun {
+            chat_id: ids[0].clone(),
+            text: "不能重启".into(),
+            profile,
+            key: "test-key".into(),
+            mode: PermissionMode::FullAccess,
+            tools: Arc::new(Toolbox::new(None, vec![]).unwrap()),
+            repository_path: None,
+            system_context: String::new(),
+            guard: Arc::new(|| Ok(())),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "AGENT_SHUTTING_DOWN");
+    runtime.shutdown().await.unwrap();
+}
+
+/// 真实 Git 提交已完成但结果通知被延迟时，关闭必须继续等待收尾。
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_waits_for_git_write_result_delivery() {
+    use gitmaster_core::agent::tools::git::GitContext;
+    use gitmaster_core::git::{
+        coordinator::RepositoryCoordinator, environment::resolve_git, repository::open_repository,
+    };
+    use std::sync::mpsc;
+    let (dir, store, profile, server) = fixture(ProviderProtocol::ChatCompletions);
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    // 所有写入只在测试仓库完成，真实 Git 结果通知通过通道模拟缓慢收尾。
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(&project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.name", "测试"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    std::fs::write(project.join("note.txt"), "真实 Git 写入").unwrap();
+    git(&["add", "note.txt"]);
+    let executable = resolve_git(None).unwrap();
+    let (repository, _) = open_repository(&executable, &project).unwrap();
+    let tools = Arc::new(
+        Toolbox::new(
+            Some(GitContext {
+                git: executable,
+                repository,
+                coordinator: RepositoryCoordinator::new(),
+            }),
+            vec![],
+        )
+        .unwrap(),
+    );
+    let worker = std::thread::spawn(move || {
+        respond(
+            &server,
+            json!({"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"write","type":"function","function":{"name":"git_commit","arguments":"{\"message\":\"受控收尾\"}"}}]},"finish_reason":"tool_calls"}]}),
+        );
+    });
+    let (entered, waiting) = mpsc::channel();
+    let (release, held) = mpsc::channel();
+    let held = Mutex::new(held);
+    let runtime = AgentRuntime::new(store.clone(), Arc::new(move |notice| {
+        if matches!(notice, RunNotice::Record {event:AgentEvent {payload:EventKind::ToolResult {ref name,..},..}} if name=="git_commit") {
+            entered.send(()).unwrap();
+            held.lock().unwrap().recv_timeout(Duration::from_secs(30)).unwrap();
+        }
+    })).unwrap();
+    let path = Some(project.to_string_lossy().into_owned());
+    let chat = store.create_chat(&profile.id, path.clone()).unwrap();
+    runtime
+        .start(StartRun {
+            chat_id: chat.id.clone(),
+            text: "提交已暂存文件".into(),
+            profile,
+            key: "test-key".into(),
+            mode: PermissionMode::FullAccess,
+            tools,
+            repository_path: path,
+            system_context: String::new(),
+            guard: Arc::new(|| Ok(())),
+        })
+        .unwrap();
+    // Windows Git 夹具本轮实测可超过 73 秒；这里只放宽到达测试屏障的等待。
+    tokio::task::spawn_blocking(move || waiting.recv_timeout(Duration::from_secs(120)).unwrap())
+        .await
+        .unwrap();
+    let owner = runtime.clone();
+    let shutdown = tokio::spawn(async move { owner.shutdown().await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!shutdown.is_finished(), "Git 写结果仍在收尾时不能退出");
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), shutdown)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    worker.join().unwrap();
+    assert_eq!(git(&["log", "-1", "--format=%s"]), "受控收尾");
+    let record = store.read_chat(&chat.id).unwrap();
+    assert!(record.events.iter().any(|event| matches!(
+        event.payload,
+        EventKind::ToolResult {
+            is_error: false,
+            ..
+        }
+    )));
+    assert!(matches!(
+        record.events.last().unwrap().payload,
+        EventKind::RunEnded {
+            status: RunStatus::Cancelled,
+            ..
+        }
+    ));
+}
+
 /// 构造独立磁盘与真实回环 HTTP 服务，不接触真实仓库和服务密钥。
 fn fixture(
     protocol: ProviderProtocol,
@@ -32,6 +192,10 @@ fn fixture(
 }
 /// 读取 HTTP JSON 正文并返回完整 JSON 响应。
 fn respond(server: &TcpListener, value: Value) -> Value {
+    respond_body(server, "application/json", &value.to_string())
+}
+/// 用相同真实 HTTP 夹具返回 JSON 或 SSE，保持完整请求读取。
+fn respond_body(server: &TcpListener, content_type: &str, data: &str) -> Value {
     let (mut stream, _) = server.accept().unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -61,10 +225,129 @@ fn respond(server: &TcpListener, value: Value) -> Value {
         bytes.extend_from_slice(&buf[..n]);
     }
     let body = serde_json::from_slice(&bytes[offset..offset + len]).unwrap();
-    let data = value.to_string();
-    write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",data.len(),data).unwrap();
+    write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",data.len(),data).unwrap();
     body
 }
+
+/// 大量细小流片不会逐片广播全文，完成事件仍保存全部内容。
+#[tokio::test(flavor = "multi_thread")]
+async fn tiny_stream_deltas_are_batched_and_final_text_is_complete() {
+    let (_dir, store, profile, server) = fixture(ProviderProtocol::ChatCompletions);
+    let mut body = String::new();
+    for _ in 0..1200 {
+        body.push_str(&format!(
+            "data: {}\n\n",
+            json!({"choices":[{"delta":{"content":"片"}}]})
+        ));
+    }
+    body.push_str(&format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices":[{"delta":{},"finish_reason":"stop"}]})
+    ));
+    let worker = std::thread::spawn(move || {
+        respond_body(&server, "text/event-stream", &body);
+    });
+    let notices = Arc::new(Mutex::new(vec![]));
+    let target = notices.clone();
+    let runtime = AgentRuntime::new(
+        store.clone(),
+        Arc::new(move |notice| target.lock().unwrap().push(notice)),
+    )
+    .unwrap();
+    let chat = store.create_chat(&profile.id, None).unwrap();
+    runtime
+        .start(StartRun {
+            chat_id: chat.id.clone(),
+            text: "输出长文".into(),
+            profile,
+            key: "test-key".into(),
+            mode: PermissionMode::FullAccess,
+            tools: Arc::new(Toolbox::new(None, vec![]).unwrap()),
+            repository_path: None,
+            system_context: String::new(),
+            guard: Arc::new(|| Ok(())),
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while runtime.snapshot(&chat.id).unwrap().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    worker.join().unwrap();
+    let count = notices
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|notice| matches!(notice, RunNotice::Progress {state,..} if !state.text.is_empty()))
+        .count();
+    assert!(count < 30, "1200 个细片产生了 {count} 次全文通知");
+    assert!(store.read_chat(&chat.id).unwrap().events.iter().any(|event| matches!(&event.payload, EventKind::AssistantMessage {text,..} if text == &"片".repeat(1200))));
+}
+/// 凭据即使拆成不同片段，也不能进入预览通知或最终历史。
+#[tokio::test(flavor = "multi_thread")]
+async fn split_credentials_never_reach_progress_or_history() {
+    let (_dir, store, profile, server) = fixture(ProviderProtocol::ChatCompletions);
+    let body = ["test-", "key"]
+        .iter()
+        .map(|part| {
+            format!(
+                "data: {}\n\n",
+                json!({"choices":[{"delta":{"content":part}}]})
+            )
+        })
+        .collect::<String>()
+        + &format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{},"finish_reason":"stop"}]})
+        );
+    let worker = std::thread::spawn(move || {
+        respond_body(&server, "text/event-stream", &body);
+    });
+    let notices = Arc::new(Mutex::new(vec![]));
+    let received = notices.clone();
+    let runtime = AgentRuntime::new(
+        store.clone(),
+        Arc::new(move |notice| received.lock().unwrap().push(notice)),
+    )
+    .unwrap();
+    let chat = store.create_chat(&profile.id, None).unwrap();
+    runtime
+        .start(StartRun {
+            chat_id: chat.id.clone(),
+            text: "输出内容".into(),
+            profile,
+            key: "test-key".into(),
+            mode: PermissionMode::FullAccess,
+            tools: Arc::new(Toolbox::new(None, vec![]).unwrap()),
+            repository_path: None,
+            system_context: String::new(),
+            guard: Arc::new(|| Ok(())),
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while runtime.snapshot(&chat.id).unwrap().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    worker.join().unwrap();
+    assert!(!serde_json::to_string(&*notices.lock().unwrap())
+        .unwrap()
+        .contains("test-key"));
+    let record = store.read_chat(&chat.id).unwrap();
+    assert!(!serde_json::to_string(&record).unwrap().contains("test-key"));
+    assert!(matches!(
+        record.events.last().unwrap().payload,
+        EventKind::RunEnded {
+            status: RunStatus::Failed,
+            ..
+        }
+    ));
+}
+
 /// 生成同一逻辑工具的各协议回复。
 fn response(protocol: ProviderProtocol, tool: bool, path: &str) -> Value {
     match (protocol, tool) {
@@ -233,7 +516,7 @@ fn recovery_pairs_abandoned_calls_without_replaying_them() {
 /// 拒绝不读取文件；取消等待批准后没有第二个模型请求且配对完整。
 #[tokio::test(flavor = "multi_thread")]
 async fn rejection_and_cancellation_never_execute_pending_tool() {
-    for cancelled in [false, true] {
+    for (cancelled, closing) in [(false, false), (true, false), (true, true)] {
         let (dir, store, profile, server) = fixture(ProviderProtocol::ChatCompletions);
         let path = dir
             .path()
@@ -281,7 +564,11 @@ async fn rejection_and_cancellation_never_execute_pending_tool() {
         .await
         .unwrap();
         if cancelled {
-            runtime.cancel(&chat.id, &id).unwrap();
+            if closing {
+                runtime.shutdown().await.unwrap();
+            } else {
+                runtime.cancel(&chat.id, &id).unwrap();
+            }
         } else {
             runtime.resolve(&chat.id, &id, &approval.id, false).unwrap();
         }
@@ -338,7 +625,8 @@ async fn twenty_request_budget_stops_tool_loop() {
             guard: Arc::new(|| Ok(())),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(15), async {
+    // Windows 同步落盘实测超过 15 秒；预算仍按实际 20 次请求与终态断言。
+    tokio::time::timeout(Duration::from_secs(120), async {
         while runtime.snapshot(&chat.id).unwrap().is_some() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

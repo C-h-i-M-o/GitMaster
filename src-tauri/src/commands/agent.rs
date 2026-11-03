@@ -76,13 +76,21 @@ pub fn initialize_agent(app: &tauri::AppHandle) {
     })();
     app.manage(AgentState(result));
 }
-/// 窗口销毁后不允许后台继续发起新工具；在途 Git 写正常收尾。
+/// 异常窗口销毁时的兜底取消；正常关闭必须先经过 agent_shutdown 的排空屏障。
 pub fn stop_agent(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<AgentState>() {
         if let Ok(services) = state.services() {
             services.runtime.cancel_all();
         }
     }
+}
+/// 在最终销毁窗口前停止并排空所有聊天；AI 初始化失败不妨碍普通工作台退出。
+#[tauri::command]
+pub async fn agent_shutdown(state: State<'_, AgentState>) -> AgentResult<()> {
+    if let Ok(services) = state.services() {
+        services.runtime.shutdown().await?;
+    }
+    Ok(())
 }
 /// 设置和 Keychain IO 移到阻塞池，错误不附带请求参数。
 async fn work<T: Send + 'static>(

@@ -2139,3 +2139,214 @@ Windows 桌面自动化通过 @oai/sky 读取窗口两次超时，备用 cua.get
 - 桌面串行回归：57 通过、0 失败。排队取消专项：1 项复现通过，断言停止后仍写入，不是修复验证。
 - 临时复现入口已从 Cargo 集成测试目录移出，夹具仅在被忽略的根 `tests/` 本地保留。产品代码未因审查修改。
 - 本轮未重做真实服务、原生 UI、Windows、安装包或签名验收。日志路径为 `/tmp/gitmaster-review-*.log`，本地日志不随提交上传。
+
+## AI Agent 审查修复（Windows，2026-11-03）
+
+- 范围：R1～R7，方案见 `docs/spec-plan.md` 第 34 节。关闭原 `pnpm tauri dev`，未提交、推送或恢复上一分支的用户 stash。测试只使用临时文件/仓库与本机 mock HTTP，没有用户仓库 Agent 写入、真实 API Key、安装包或 macOS 验收。
+- R1：新增真实 Toolbox 排队取消用例，修复前明确失败（取消后工具仍成功），修复后文件工具 4/4 通过。后续全量负载下重跑在 `open_repository` 的 status 阶段 TIMEOUT，未到取消断言；不将这次失败抹去。
+- R2/R3/R7：`node --experimental-strip-types --test tests/agent-review.test.ts` 3/3 通过，覆盖旧快照/通知合并、重复和外聊天事件、聊天/项目草稿隔离、中文及 emoji 120/121 边界。真实 hook/IPC 时序和两条关闭路径的浏览器夹具保留在本地 `tests/agent-review-harness.*`、`tests/useAgentReviewHarness.ts`，未完成运行。
+- R4：多聊天 shutdown、终态落盘后返回、关闭后拒绝新运行、等待审批时关闭通过；真实 Git 提交结果延迟送达的收尾专项最终通过（93.43 秒），验证结果未交付时 shutdown 继续等待、放行后完成且提交结果已保存。自动化不等同于真实窗口退出/系统强杀；后者仍未验收。
+- R5：扫描字节量测试先失败后通过（24 次追加不重复扫描全部历史）；存储 5/5 通过，包含另一实例追加、截断、同长度损坏、尾部修复、重启及删除。缓存使用元数据判断变化，不承诺识别人为保持相同元数据的篡改；运行循环仍会读取完整历史。
+- R6：1200 细片测试修复前产生 1200 次全文通知，修复后满足少于 30 次且完整结果一致；三协议 7/7 通过，跨片段测试 Key 不进入进度或历史的回归通过。100ms 限频仍会检查/传输完整预览，不声称严格线性复杂度。
+- 原有 20 请求预算夹具在 15 秒时超时；诊断逐轮记录显示持续推进，完成终态耗时 16.5 秒，仍是 20 个工具结果。移除诊断输出后将夹具上限改为 120 秒，保留请求次数/终态断言，未改变生产运行预算和 Git 超时。
+
+| 检查                                                         | 本轮结果                                                                                                               |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `pnpm typecheck`                                             | 通过；最后发送项目代次保护后复跑通过                                                                                   |
+| `pnpm build`                                                 | 通过，保留既有大 chunk 警告                                                                                            |
+| `pnpm format:check`                                          | 通过；修复代码及本轮文档格式检查通过                                                                                   |
+| `cargo test -p gitmaster-core --offline`                     | 75 通过、173 失败、7 忽略；库阶段失败，后续集成测试未由此命令运行                                                      |
+| 原有 `git::repository::tests::real_status_is_read_only` 单项 | 首次失败：夹具 `resolve_git(None)` 返回 TIMEOUT；编译负载下降后单项复跑通过，耗时 73.29 秒。不能据此认为全量失败已消失 |
+| 审查中两项缓存锁用例                                         | 本轮默认并行均通过，不能据此声明历史间歇问题根因已修复                                                                 |
+| 审查中 `root_files_are_literal_readonly_and_ids_expire`      | 本轮在 Git 检测夹具阶段 TIMEOUT                                                                                        |
+
+最终补充：`cargo check -p gitmaster-desktop --offline` 通过（11 分 32 秒），仅有原有未使用导入/方法警告；`cargo fmt --all -- --check`、`git diff --check` 通过。最终前端 build 复跑通过。独立执行最新存储测试二进制 5/5 通过；不依赖 Git 夹具的运行回归 8/8 通过。最新文件工具二进制复跑 3 通过、1 失败，失败仍在排队取消用例的 Git status 夹具，未到取消断言；这与早先 4/4 通过并存，不能只报告成功批次。
+
+完整运行集成回归最终批次为 9 通过、1 失败：唯一失败在慢 Git 收尾用例等待工具结果进入测试屏障的 30 秒准备阶段，尚未调用 shutdown。依据本机只读 Git 基线已达 73.29 秒，将该测试准备等待调整为 120 秒后，单项复核 1/1 通过；未修改生产超时，也保留“收尾结果未交付时关闭不得完成”的断言。日志为 `tests/agent-shutdown-final.log`。未将单项补测表述为完整批次重跑通过。
+
+结束前确认 1420/1421 均无监听，`gitmaster-desktop` 进程数量为 0；原 dev 环境已关闭。
+
+默认全量失败中 169 个记录含 `OperationError { code: "TIMEOUT" }`；另两项输出上限断言得到 TIMEOUT，一项 Windows 子进程标记文件未创建，一项提交刷新历时约 63 秒后结果断言失败。尚不能把所有失败归因于本轮改动或宣称均为既有缺陷，未修改无关 Git 执行器。原始日志在本地忽略目录 `tests/agent-core-regression.log`；专项复跑日志为 `tests/agent-targeted-regression.log`。
+
+浏览器限制：隔离浏览器 profile 在测试目录内产生锁文件，Vite 文件监听报 EBUSY 后退出；后续浏览器控制接口超时。自动审批拒绝了浏览器进程清理/重启命令及临时 profile 删除命令，仅返回 blocked by policy；相关动作未执行，`tests/agent-browser-profile/` 本地保留。不能把写好夹具等同于运行通过，也没有为规避审批改用其他进程终止或删除方式。
+
+<details>
+<summary>默认并行全量失败用例（173 项，保留实际名称）</summary>
+
+```text
+git::acceptance_tests::missing_object_does_not_fetch
+git::acceptance_tests::unsafe_repository_error_mapping
+git::acceptance_tests::rename_delete_and_conflict
+git::acceptance_tests::submodule_reports_gitlink_only
+git::branches::tests::branch_list_resolves_current_upstream_and_linked_worktree
+git::branches::tests::create_rejects_unborn_invalid_names_and_existing_namespaces
+git::branches::tests::create_supports_sha256_repository
+git::branches::tests::detached_create_is_readonly_until_execution_and_does_not_switch
+git::branches::tests::stale_source_or_existing_target_never_overwrites_reference
+git::branches::tests::switch_is_readonly_until_execution_and_checks_actual_target
+git::capabilities::tests::captured_capability_keeps_snapshot_but_prepare_rejects_late_change
+git::capabilities::tests::detached_capabilities
+git::capabilities::tests::dirty_capabilities
+git::branches::tests::switch_rejects_occupied_remote_and_foreign_ids
+git::branches::tests::switch_rejects_dirty_states_and_late_worktree_changes
+git::capabilities::tests::entry_is_lightweight_but_prepare_keeps_write_guards
+git::capabilities::tests::merge_finish_and_identity_use_real_state
+git::capabilities::tests::unborn_capabilities
+git::checkout::tests::captured_checkout_does_not_execute_configured_filter_or_hook
+git::checkout::tests::captured_checkout_rejects_live_target_move_before_writing
+git::checkout::tests::checkout_locks_block_native_ref_updates_and_release_after_switch
+git::checkout::tests::captured_checkout_matches_native_crlf_and_ident_conversion
+git::checkout::tests::captured_checkout_supports_sha256_linked_worktree_and_preserves_metadata
+git::checkout::tests::checkout_preserves_existing_and_replaced_reference_locks
+git::checkout::tests::checkout_rejects_late_worktree_occupation
+git::checkout::tests::checkout_supports_file_directory_transitions
+git::clean::tests::clean_selected_untracked_preserves_every_other_path
+git::conflicts::finish::tests::finish_metadata_scopes_cleanup_and_rejects_replacement
+git::conflicts::finish::tests::autostash_and_multiple_merge_heads_are_rejected
+git::conflicts::finish::tests::existing_index_lock_prevents_merge_commit
+git::conflicts::finish::tests::replaced_merge_metadata_after_reference_is_preserved
+git::conflicts::finish::tests::cleanup_failure_is_unknown_and_cannot_create_duplicate_merge
+git::conflicts::finish::tests::save_then_finish_commits_confirmed_result_without_touching_unstaged_files
+git::conflicts::finish_tests::clean_merge_preview_is_readonly_and_execution_creates_two_parent_commit
+git::conflicts::finish_tests::finish_rechecks_external_changes
+git::conflicts::finish_tests::identical_tree_still_creates_merge_commit
+git::conflicts::save::tests::configured_short_conflict_markers_are_rejected
+git::conflicts::save::tests::failure_after_file_publication_keeps_result_and_unmerged_index
+git::conflicts::finish_tests::unresolved_index_is_rejected
+git::conflicts::save::tests::existing_index_lock_prevents_any_workfile_publication
+git::conflicts::save::tests::late_edits_and_replaced_index_locks_remain_untouched
+git::conflicts::save_tests::bom_crlf_save_preserves_encoding_and_native_stage_zero_blob
+git::conflicts::save::tests::resolved_attribute_file_uses_its_new_conversion_rules
+git::conflicts::save_tests::markers_and_oversized_content_are_rejected
+git::conflicts::save_tests::prepare_save_is_readonly_and_execution_resolves_only_selected_path
+git::conflicts::save_tests::save_rechecks_file_index_and_config_changes
+git::conflicts::save_tests::stale_fingerprint_is_rejected_without_clobbering_external_change
+git::conflicts::tests::bom_crlf_and_session_recovery_preserve_actual_bytes
+git::capabilities::tests::unborn_commit_requires_real_staged_content
+git::conflicts::tests::clean_merge_has_empty_conflict_files
+git::conflicts::tests::oversized_conflict_documents_are_not_editable
+git::conflicts::tests::delete_and_add_add_conflicts_require_external_resolution
+git::capabilities::tests::normal_read_only
+git::conflicts::tests::replaced_merge_generation_and_foreign_ids_are_rejected
+git::conflicts::tests::text_conflict_document_is_read_only
+git::conflicts::tests::resolved_index_invalidates_old_session
+git::conflicts::tests::unsupported_bytes_are_classified_before_opening_editor
+git::coordinator::tests::execute_is_once_and_current_operation_is_recoverable
+git::coordinator::tests::expired_replaced_and_invalidated_plans_cannot_execute
+git::coordinator::tests::later_preparation_invalidates_inflight_preparation
+git::coordinator::tests::linked_worktrees_share_queue_and_other_repositories_do_not
+git::coordinator::tests::panic_becomes_unknown_and_releases_queue
+git::coordinator::tests::queue_limit_and_cancelled_reservation
+git::coordinator::tests::queued_plan_expiry_does_not_run_work
+git::diff::document::tests::reads_ten_thousand_changes_without_legacy_truncation
+git::coordinator::tests::session_binding_and_monotonic_terminal_progress
+git::coordinator::tests::read_queue_deadline_cancels_reservation
+git::diff::document::tests::document_entry_preserves_sides_and_binary
+git::coordinator::tests::retains_only_recent_sixteen_completed_operations
+git::diff::tests::expanded_context_reads_hidden_lines_and_rejects_excess
+git::diff::tests::literal_names_and_binary
+git::diff::tests::preview_encoding_and_limit
+git::diff::tests::rejects_stale_and_invalid_side
+git::diff::tests::staged_unstaged_and_unborn
+git::environment::tests::candidate_order
+git::files::tests::conflict_stages_are_deduplicated_and_old_snapshot_is_rejected
+git::files::tests::deleted_tracked_file_is_listed_but_not_readable
+git::files::tests::editable_document_is_complete_and_versioned
+git::files::tests::editable_read_cancels_between_stages_and_releases_handles
+git::files::tests::editor_save_rejects_invalid_drafts_without_writes
+git::files::tests::editor_save_preserves_git_and_rejects_stale_bytes
+git::files::tests::editor_save_rejects_replacement_and_deleted_file
+git::files::tests::empty_repository_lists_empty
+git::files::tests::empty_repository_lists_untracked
+git::files::tests::filesystem_lazy_directories_and_bounded_search
+git::files::tests::filesystem_reads_work_without_git_executable
+git::files::tests::lists_tracked_and_non_ignored_untracked
+git::files::tests::old_file_session_uses_current_write_snapshot
+git::files::tests::ordinary_content_read_preserves_repository_bytes
+git::files::tests::project_tree_pages_preserve_file_capabilities
+git::files::tests::rejects_old_id_and_stale_state_and_reads_binary
+git::history::files::tests::boundary_parent_is_valid_without_loading_its_card
+git::history::files::tests::historical_diff_reports_truncation_and_encoding
+git::history::files::tests::merge_selects_direct_parent_and_preserves_rename_paths
+git::history::tests::paginates_fixed_snapshot_and_rejects_unknown_detail
+git::history::tests::merge_and_multiple_refs
+git::history::files::tests::root_files_are_literal_readonly_and_ids_expire
+git::history::tests::rejects_more_than_1000_refs
+git::history::tests::snapshot_does_not_mix_new_commit
+git::branches::tests::switch_preserves_ignored_collision
+git::process::tests::both_pipes_are_bounded
+git::history::tests::unborn_root_and_detached
+git::merge::tests::captured_merge_environment_keeps_global_rules_and_ignores_late_driver
+git::process::tests::policy_allows_bounded_truncation
+git::process::tests::policy_writes_and_closes_stdin
+git::process::tests::truncated_output_terminates_process
+git::process::windows::tests::windows_descendant_is_reaped_after_parent_exit
+git::merge::tests::fast_forward_preparation_is_readonly_and_execution_uses_confirmed_oid
+git::merge::tests::clean_divergence_stops_before_creating_merge_commit
+git::merge::tests::integrate_rechecks_preconditions_without_overwriting_external_state
+git::merge::tests::integrate_preserves_ignored_collision_and_rejects_custom_driver
+git::merge::tests::merge_attribute_changes_match_native_checkout
+git::merge::tests::integrate_rejects_unnecessary_unrelated_and_wrong_mode
+git::merge::tests::text_conflict_returns_real_three_stage_resolution_state
+git::process::windows::tests::windows_input_output_and_argument_boundaries
+git::process::windows::tests::windows_stdin_timeout_and_output_limit_are_bounded
+git::process::tests::read_configuration_preserves_eol_precedence_without_external_filters
+git::process::tests::windows_canonical_paths_switch_branch
+git::process::tests::windows_canonical_git_program_reads_configuration
+git::remote::auth::tests::actual_git_scope_rejects_repository_helper_and_changed_configuration
+git::remote::fetch_all::tests::downloads_all_branches_without_tags_or_local_changes
+git::remote::fetch_all::tests::stale_transaction_publishes_no_new_branch
+git::remote::push::tests::publish_branch_requires_new_target_and_preserves_other_refs
+git::remote::push::tests::sync_push_stops_when_worktree_changes_after_prepare
+git::remote::push::tests::sync_push_updates_only_upstream_and_missing_target_requires_setup
+git::remote::sync_target::tests::sync_fast_forward_uses_current_upstream_only
+git::remote::sync_target::tests::sync_target_checks_missing_partial_and_dirty_state
+git::remote::sync_target::tests::sync_target_preserves_unfetched_upstream_and_rejects_changed_config
+git::remote::tests::assesses_real_graph_relations
+git::remote::tests::corrupt_repository_data_is_not_a_valid_empty_result
+git::conflicts::finish_tests::staged_snapshot_includes_extra_file_but_excludes_unstaged_change
+git::remote::tests::rejects_moved_refs_and_old_state
+git::remote::tests::remote_metadata_is_read_only_and_session_bound
+git::remote::tests::rewritten_urls_match_git_and_explicit_push_target
+git::remote::tests::shallow_is_unknown_and_unborn_requires_head
+git::remote::tests::upstream_snapshot_preserves_remote_and_target_identity
+git::remote::upstream::tests::sets_only_current_upstream_and_rejects_stale_configuration
+git::repository::tests::linked_worktree_and_detached
+git::repository::tests::repository_kinds
+git::repository::tests::real_status_is_read_only
+git::restore::tests::restore_refuses_external_edit_after_preview
+git::restore::tests::restore_recreates_deleted_binary_file
+git::restore::tests::restore_refuses_untracked_collision
+git::restore::tests::restore_selected_file_preserves_index_and_unselected_work
+git::restore::tests::restore_source_freezes_commit_and_preserves_real_index
+git::revert::tests::revert_abort_restores_conflict_without_moving_head_or_cleaning_untracked
+git::revert::tests::revert_conflict_save_preserves_head_marker_and_unrelated_file
+git::revert::tests::revert_session_reopens_real_three_way_state_without_merge_capability
+git::revert::tests::revert_start_previews_then_preserves_head_and_unrelated_content
+git::staging::tests::binary_larger_than_stdin_budget_keeps_exact_bytes
+git::staging::tests::copy_rejects_changed_content_before_creating_objects
+git::staging::tests::existing_crlf_blob_matches_native_add
+git::staging::tests::isolated_conversion_preserves_git_text_rules
+git::staging::tests::frozen_input_ignores_later_source_and_conversion_changes
+git::staging::tests::recovery_conversion_uses_captured_attributes_without_writing_repository
+git::write::tests::commit_rejects_replaced_index_before_prepare
+git::write::tests::commit_object_uses_captured_roles_and_utf8_message
+git::write::tests::commit_supports_sha256_repository
+git::write::tests::commits_selected_reports_failure_after_stage_without_empty_commit
+git::write::tests::commits_selected_untracked_first_version_and_rejects_late_edit
+git::write::tests::commits_selected_worktree_and_existing_index
+git::write::tests::crlf_stage_preserves_worktree_bytes
+git::write::tests::external_commit_invalidates_pending_commit
+git::write::tests::literal_untracked_names_and_binary_stage
+git::write::tests::rename_unstage_and_delete_stage
+git::write::tests::lock_and_invalid_message_are_rejected_without_writes
+git::write::tests::same_status_external_edit_invalidates_prepared_stage
+git::write::tests::unborn_unstage_and_first_commit_preserve_unstaged_content
+git::write_guard::tests::commit_paths_use_captured_index_and_parent
+git::write::tests::stages_modified_file_after_already_staged_rename
+git::write::tests::whole_index_preview_is_readonly_and_rejects_external_index
+git::write::tests::verified_commit_survives_refresh_failure
+git::write::tests::stages_selected_mm_and_preserves_other_index_entries
+```
+
+</details>

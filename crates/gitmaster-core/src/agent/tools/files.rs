@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::policy::{decide, PolicyDecision, ToolRisk};
+use crate::agent::provider::Cancellation;
 use crate::git::{
     conflicts,
     coordinator::{CoordinationKey, RepositoryCoordinator},
@@ -144,7 +145,12 @@ impl FileTools {
         })
     }
     /// 执行前重新核验路径与版本；未批准的越界操作不会产生副作用。
-    pub fn execute(&self, prepared: PreparedFile, approved: bool) -> AgentResult<Value> {
+    pub fn execute(
+        &self,
+        prepared: PreparedFile,
+        approved: bool,
+        cancel: &Cancellation,
+    ) -> AgentResult<Value> {
         if prepared.decision == PolicyDecision::Deny
             || (prepared.decision == PolicyDecision::Ask && !approved)
         {
@@ -160,7 +166,11 @@ impl FileTools {
             ));
         }
         let _guard = self.gate.lock().map_err(AgentError::storage)?;
-        let run = || self.perform(&prepared);
+        let run = || {
+            // 排队期间可能已经停止；只有拿到执行资格后才能决定是否开始副作用。
+            cancel.check()?;
+            self.perform(&prepared)
+        };
         if matches!(prepared.action, Action::Write { .. }) {
             if let Some((coordinator, key)) = &self.coordination {
                 let mut result = None;

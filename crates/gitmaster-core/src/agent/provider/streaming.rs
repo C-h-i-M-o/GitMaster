@@ -130,8 +130,7 @@ impl Accumulator {
                 match part["type"].as_str() {
                     Some("text_delta") => {
                         let text = part["text"].as_str().ok_or_else(protocol_error)?;
-                        let full = format!("{}{text}", block["text"].as_str().unwrap_or_default());
-                        block["text"] = json!(full);
+                        append_block(block, "text", text)?;
                         delta(text);
                     }
                     Some("input_json_delta") => self
@@ -140,18 +139,18 @@ impl Accumulator {
                         .or_default()
                         .push_str(part["partial_json"].as_str().ok_or_else(protocol_error)?),
                     Some("thinking_delta") => {
-                        block["thinking"] = json!(format!(
-                            "{}{}",
-                            block["thinking"].as_str().unwrap_or_default(),
-                            part["thinking"].as_str().ok_or_else(protocol_error)?
-                        ))
+                        append_block(
+                            block,
+                            "thinking",
+                            part["thinking"].as_str().ok_or_else(protocol_error)?,
+                        )?;
                     }
                     Some("signature_delta") => {
-                        block["signature"] = json!(format!(
-                            "{}{}",
-                            block["signature"].as_str().unwrap_or_default(),
-                            part["signature"].as_str().ok_or_else(protocol_error)?
-                        ))
+                        append_block(
+                            block,
+                            "signature",
+                            part["signature"].as_str().ok_or_else(protocol_error)?,
+                        )?;
                     }
                     _ => return Err(protocol_error()),
                 }
@@ -199,5 +198,20 @@ impl Accumulator {
             }
         };
         parse_response(self.protocol, raw)
+    }
+}
+
+/// 直接扩展协议块的字符串，避免每个文本、思考或签名片段都重建完整内容。
+fn append_block(block: &mut Value, field: &str, text: &str) -> AgentResult<()> {
+    let value = &mut block[field];
+    if value.is_null() {
+        *value = Value::String(String::new());
+    }
+    match value {
+        Value::String(current) => {
+            current.push_str(text);
+            Ok(())
+        }
+        _ => Err(protocol_error()),
     }
 }

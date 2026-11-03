@@ -19,6 +19,7 @@ import {
 import type { TerminalPreferences } from "../types/settings";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "@tauri-apps/api/core";
+import { agentApi, agentError } from "../services/agent";
 
 /** 管理底部标签和面板尺寸；折叠或切标签不卸载记录视图。 */
 export function useBottomPanel(
@@ -65,11 +66,12 @@ export function useBottomPanel(
               else {
                 exitAllowed.current = true;
                 try {
-                  // 保护已经完成，直接结束窗口，不重入第二次关闭请求。
+                  // 包括未选中聊天的运行，先收尾再销毁窗口。
+                  await agentApi.shutdown();
                   await getCurrentWindow().destroy();
-                } catch {
+                } catch (cause: unknown) {
                   exitAllowed.current = false;
-                  setTerminalMessage("窗口关闭失败，请重试关闭。");
+                  setTerminalMessage(`窗口尚未关闭：${agentError(cause)}`);
                 }
               }
             });
@@ -249,10 +251,11 @@ export function useBottomPanel(
       if (quitPending) {
         exitAllowed.current = true;
         try {
+          await agentApi.shutdown();
           await getCurrentWindow().destroy();
-        } catch {
+        } catch (cause: unknown) {
           exitAllowed.current = false;
-          setTerminalMessage("窗口关闭失败，请重试关闭。");
+          setTerminalMessage(`窗口尚未关闭：${agentError(cause)}`);
           return;
         }
       }

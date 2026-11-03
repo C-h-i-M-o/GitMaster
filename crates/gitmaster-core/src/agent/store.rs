@@ -1,24 +1,101 @@
 use super::*;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
+    time::SystemTime,
 };
 
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_EVENT: usize = 8 * 1024 * 1024;
 
+#[cfg(test)]
+thread_local! { static SCANNED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    /// 连续追加的历史扫描总量不得随事件数二次增长；用字节计数避免机器耗时噪声。
+    #[test]
+    fn append_does_not_rescan_unchanged_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AgentStore::open(dir.path().into()).unwrap();
+        store
+            .save_profile(ProviderProfile {
+                id: "aa".into(),
+                name: "测试".into(),
+                protocol: ProviderProtocol::Responses,
+                base_url: "http://127.0.0.1:9999".into(),
+                model: "test".into(),
+                credential_id: "bb".into(),
+            })
+            .unwrap();
+        let chat = store.create_chat("aa", None).unwrap();
+        SCANNED_BYTES.with(|value| value.set(0));
+        for _ in 0..24 {
+            store
+                .append(
+                    &chat.id,
+                    "ab",
+                    EventKind::UserMessage {
+                        text: "中".repeat(4096),
+                    },
+                )
+                .unwrap();
+        }
+        let size = fs::metadata(store.chat_dir(&chat.id).unwrap().join("events.jsonl"))
+            .unwrap()
+            .len() as usize;
+        assert!(
+            SCANNED_BYTES.with(|value| value.get()) <= size * 2,
+            "正常追加不应反复读取历史"
+        );
+        assert_eq!(store.read_chat(&chat.id).unwrap().events.len(), 24);
+    }
+}
+
 /// 持有应用私有 Agent 目录，所有更改在进程锁和目录锁内执行。
 pub struct AgentStore {
     root: PathBuf,
-    gate: Mutex<()>,
+    gate: Mutex<HashMap<String, EventTail>>,
+}
+
+/// 只缓存已校验的尾部；外部更改通过文件长度及时间戳使缓存失效。
+#[derive(Clone)]
+struct EventTail {
+    sequence: u64,
+    complete: u64,
+    stamp: Option<EventStamp>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct EventStamp {
+    len: u64,
+    modified: SystemTime,
+    created: Option<SystemTime>,
+}
+
+/// 不跟随符号链接；修改或替换文件后必须重新验证完整历史。
+fn event_stamp(path: &Path) -> AgentResult<Option<EventStamp>> {
+    regular_or_missing(path)?;
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(EventStamp {
+            len: metadata.len(),
+            modified: metadata.modified().map_err(AgentError::storage)?,
+            created: metadata.created().ok(),
+        })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AgentError::storage(error)),
+    }
 }
 
 /// 锁文件关闭时自动释放操作级系统锁。
 struct StoreGuard<'a> {
-    _process: MutexGuard<'a, ()>,
+    process: MutexGuard<'a, HashMap<String, EventTail>>,
     _file: File,
 }
 
@@ -35,7 +112,7 @@ impl AgentStore {
         }
         let store = Self {
             root,
-            gate: Mutex::new(()),
+            gate: Mutex::new(HashMap::new()),
         };
         let _guard = store.lock()?;
         let chats = store.root.join("chats");
@@ -64,7 +141,7 @@ impl AgentStore {
             )
         })?;
         Ok(StoreGuard {
-            _process: process,
+            process,
             _file: file,
         })
     }
@@ -261,6 +338,8 @@ impl AgentStore {
             return Ok((vec![], 0));
         }
         let bytes = read_bounded(&path)?;
+        #[cfg(test)]
+        SCANNED_BYTES.with(|count| count.set(count.get() + bytes.len()));
         let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
         let mut events = vec![];
         for line in bytes[..complete]
@@ -282,12 +361,26 @@ impl AgentStore {
     /// 追加前修复未落稳的尾记录，sync 成功后才交付事件。
     pub fn append(&self, id: &str, run_id: &str, payload: EventKind) -> AgentResult<AgentEvent> {
         valid_id(run_id)?;
-        let _guard = self.lock()?;
+        let mut guard = self.lock()?;
         let mut session = self.session(id)?;
-        let (events, complete) = self.events(id)?;
+        let path = self.chat_dir(id)?.join("events.jsonl");
+        let stamp = event_stamp(&path)?;
+        // 先取出缓存，任何扫描、写入或同步失败都不保留可能已过期的尾部。
+        let tail = match guard.process.remove(id).filter(|tail| tail.stamp == stamp) {
+            Some(tail) => tail,
+            None => {
+                let (events, complete) = self.events(id)?;
+                EventTail {
+                    sequence: events.len() as u64,
+                    complete,
+                    stamp,
+                }
+            }
+        };
+        let complete = tail.complete;
         let event = AgentEvent {
             version: 1,
-            sequence: events.len() as u64 + 1,
+            sequence: tail.sequence + 1,
             session_id: id.into(),
             run_id: run_id.into(),
             timestamp: timestamp(),
@@ -301,13 +394,12 @@ impl AgentStore {
                 "当前对话过长，请新建对话后继续。",
             ));
         }
-        let path = self.chat_dir(id)?.join("events.jsonl");
         regular_or_missing(&path)?;
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(path)
+            .open(&path)
             .map_err(AgentError::storage)?;
         file.set_len(complete).map_err(AgentError::storage)?;
         use std::io::{Seek, SeekFrom};
@@ -315,8 +407,18 @@ impl AgentStore {
         file.write_all(&bytes)
             .and_then(|_| file.sync_all())
             .map_err(AgentError::storage)?;
+        // Windows 在关闭写句柄后才保证文件时间更新，不能缓存旧修改时间。
+        drop(file);
         session.updated_at = event.timestamp;
         atomic_json(&self.chat_dir(id)?.join("session.json"), &session)?;
+        guard.process.insert(
+            id.into(),
+            EventTail {
+                sequence: event.sequence,
+                complete: complete + bytes.len() as u64,
+                stamp: event_stamp(&path)?,
+            },
+        );
         Ok(event)
     }
     /// 重命名或归档不复制聊天内容，磁盘统计随元数据分类变化。
@@ -337,8 +439,9 @@ impl AgentStore {
     }
     /// 删除只能作用于已验证的不透明聊天目录。
     pub fn delete_chat(&self, id: &str) -> AgentResult<()> {
-        let _guard = self.lock()?;
+        let mut guard = self.lock()?;
         let dir = self.chat_dir(id)?;
+        guard.process.remove(id);
         fs::remove_dir_all(dir).map_err(AgentError::storage)
     }
     /// 计算真实文件字节数，不跟随符号链接或统计外部仓库。

@@ -3,6 +3,48 @@ use gitmaster_core::agent::{
 };
 use serde_json::json;
 
+/// 另一实例追加、文件截断和同长度损坏都必须使尾部缓存失效。
+#[test]
+fn append_cache_revalidates_external_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = AgentStore::open(dir.path().into()).unwrap();
+    store.save_profile(profile()).unwrap();
+    let chat = store.create_chat("a1", None).unwrap();
+    let append = |store: &AgentStore| {
+        store
+            .append(
+                &chat.id,
+                "ab",
+                EventKind::UserMessage {
+                    text: "记录".into(),
+                },
+            )
+            .unwrap()
+            .sequence
+    };
+    assert_eq!(append(&store), 1);
+    let other = AgentStore::open(dir.path().into()).unwrap();
+    assert_eq!(append(&other), 2);
+    assert_eq!(append(&store), 3);
+    let path = dir.path().join("chats").join(&chat.id).join("events.jsonl");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let first = text.split_inclusive('\n').next().unwrap();
+    std::fs::write(&path, first).unwrap();
+    assert_eq!(append(&store), 2);
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] = b'!';
+    std::fs::write(&path, bytes).unwrap();
+    assert!(store
+        .append(
+            &chat.id,
+            "ab",
+            EventKind::UserMessage {
+                text: "拒绝损坏记录".into()
+            }
+        )
+        .is_err());
+}
+
 /// 构造没有密钥的有效配置，用真实临时文件验证持久化。
 fn profile() -> ProviderProfile {
     ProviderProfile {

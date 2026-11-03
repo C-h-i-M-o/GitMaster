@@ -81,16 +81,21 @@ export function AgentPanel({ a }: { a: AgentController }) {
                 aria-label="聊天标题"
                 value={a.title}
                 onChange={a.changeTitle}
-                maxLength={200}
+                aria-describedby="agent-title-status"
+                aria-invalid={!!a.titleValidation.error}
                 disabled={a.busy || !!a.run}
               />
               <button
                 className="secondary"
                 onClick={a.rename}
-                disabled={a.busy || !!a.run}
+                disabled={a.busy || !!a.run || !!a.titleValidation.error}
               >
                 保存标题
               </button>
+              <small id="agent-title-status" role="status">
+                {a.titleValidation.count}/120 字符
+                {a.titleValidation.error && ` · ${a.titleValidation.error}`}
+              </small>
               <button
                 className="secondary"
                 onClick={a.archive}

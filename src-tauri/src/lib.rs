@@ -98,6 +98,7 @@ pub fn run() {
             commands::agent_delete_chat,
             commands::agent_send_message,
             commands::agent_cancel_run,
+            commands::agent_shutdown,
             commands::agent_resolve_approval,
             commands::agent_read_device_usage,
             commands::read_app_settings,
