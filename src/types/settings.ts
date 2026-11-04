@@ -1,6 +1,6 @@
 import type { LogLevel, UiPreferences } from "./git";
 
-export type SettingsCategory = "general" | "appearance" | "git";
+export type SettingsCategory = "general" | "appearance" | "git" | "agent";
 export type TerminalDirectory =
   { kind: "project" } | { kind: "home" } | { kind: "fixed"; path: string };
 export interface TerminalProfile {

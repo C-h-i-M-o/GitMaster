@@ -261,17 +261,22 @@ export function useSettingsForm(
     },
     /** 纵向分类支持方向键及首尾跳转，与鼠标选择使用同一路径。 */
     categoryKeyDown: (event: KeyboardEvent<HTMLButtonElement>): void => {
-      const order: SettingsCategory[] = ["general", "appearance", "git"];
+      const order: SettingsCategory[] = [
+        "general",
+        "appearance",
+        "git",
+        "agent",
+      ];
       const index = order.indexOf(category);
       const target =
         event.key === "ArrowDown"
-          ? (index + 1) % 3
+          ? (index + 1) % order.length
           : event.key === "ArrowUp"
-            ? (index + 2) % 3
+            ? (index + order.length - 1) % order.length
             : event.key === "Home"
               ? 0
               : event.key === "End"
-                ? 2
+                ? order.length - 1
                 : -1;
       if (target < 0) return;
       event.preventDefault();

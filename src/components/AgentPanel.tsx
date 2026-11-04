@@ -24,41 +24,6 @@ function AgentMessage({ event }: { event: AgentEvent }) {
 export function AgentPanel({ a }: { a: AgentController }) {
   return (
     <section className="agent-panel" aria-label="AI Agent">
-      <aside className="agent-history">
-        <header>
-          <strong>AI Agent</strong>
-          <button className="secondary" onClick={a.create} disabled={a.busy}>
-            新对话
-          </button>
-        </header>
-        <button
-          className="agent-archive-filter"
-          aria-pressed={a.archived}
-          onClick={a.toggleArchived}
-        >
-          {a.archived ? "正在查看归档 · 查看聊天" : "聊天记录 · 查看归档"}
-        </button>
-        <div className="agent-history-list">
-          {a.chats.map((chat) => (
-            <button
-              key={chat.id}
-              className={chat.id === a.record?.session.id ? "active" : ""}
-              onClick={a.select(chat)}
-              disabled={a.busy}
-            >
-              <strong>{chat.title}</strong>
-              <small title={chat.repositoryPath ?? ""}>
-                {chat.repositoryPath?.split(/[\\/]/).at(-1) ?? "无项目"}
-              </small>
-            </button>
-          ))}
-        </div>
-        {a.unavailable.length > 0 && (
-          <p role="alert">
-            有 {a.unavailable.length} 个聊天无法读取，原文件已保留。
-          </p>
-        )}
-      </aside>
       <div className="agent-conversation">
         <header className="agent-conversation-header">
           <div>
@@ -73,68 +38,28 @@ export function AgentPanel({ a }: { a: AgentController }) {
             配置 API
           </button>
         </header>
-        {a.record && (
-          <details className="agent-chat-actions">
-            <summary>管理此聊天</summary>
-            <div className="button-row">
-              <input
-                aria-label="聊天标题"
-                value={a.title}
-                onChange={a.changeTitle}
-                aria-describedby="agent-title-status"
-                aria-invalid={!!a.titleValidation.error}
-                disabled={a.busy || !!a.run}
-              />
-              <button
-                className="secondary"
-                onClick={a.rename}
-                disabled={a.busy || !!a.run || !!a.titleValidation.error}
-              >
-                保存标题
-              </button>
-              <small id="agent-title-status" role="status">
-                {a.titleValidation.count}/120 字符
-                {a.titleValidation.error && ` · ${a.titleValidation.error}`}
-              </small>
-              <button
-                className="secondary"
-                onClick={a.archive}
-                disabled={a.busy || !!a.run}
-              >
-                {a.record.session.archived ? "恢复聊天" : "归档"}
-              </button>
-              <button
-                className="danger-text"
-                onClick={a.askDelete}
-                disabled={a.busy || !!a.run}
-              >
-                删除
-              </button>
-            </div>
-            {a.deletePending && (
-              <div className="agent-delete-confirm">
-                <p>永久删除此聊天的本地记录？此操作无法撤销。</p>
-                <button className="secondary" onClick={a.keepChat}>
-                  保留
-                </button>
-                <button
-                  className="danger-text"
-                  onClick={a.deleteChat}
-                  disabled={a.busy}
-                >
-                  确认删除
-                </button>
-              </div>
-            )}
-          </details>
-        )}
         <div
           className="agent-messages"
           onScroll={a.scroll}
           tabIndex={0}
           aria-label="对话内容"
         >
-          {!a.record?.events.length && (
+          {a.settings.view === null ? (
+            <p className="agent-empty" role="status">
+              {a.settings.error
+                ? "暂时无法读取模型配置。"
+                : "正在读取模型配置…"}
+            </p>
+          ) : !a.settings.view.settings.activeProfileId ? (
+            <div className="agent-empty">
+              <span className="eyebrow">AI AGENT</span>
+              <h2>先连接一个 AI 模型</h2>
+              <p>配置模型后即可在此与项目上下文协作。</p>
+              <button className="primary" onClick={a.settings.add}>
+                配置 AI 模型
+              </button>
+            </div>
+          ) : !a.record?.events.length ? (
             <div className="agent-empty">
               <span className="eyebrow">PROJECT ASSISTANT</span>
               <h2>让项目事实成为回答的依据</h2>
@@ -145,7 +70,7 @@ export function AgentPanel({ a }: { a: AgentController }) {
                 请根据提交 SHA … 生成开发总结。
               </p>
             </div>
-          )}
+          ) : null}
           {a.record?.events.map((event) => (
             <AgentMessage key={event.sequence} event={event} />
           ))}
@@ -217,8 +142,10 @@ export function AgentPanel({ a }: { a: AgentController }) {
             value={a.draft}
             onChange={a.changeDraft}
             onKeyDown={a.keyDown}
+            onKeyUp={a.keyUp}
             rows={3}
-            placeholder="描述任务… Ctrl / ⌘ + Enter 发送"
+            onBlur={a.composerBlur}
+            placeholder="描述任务… Enter 发送，Ctrl / ⌘ / Shift + Enter 换行"
             disabled={a.disabled}
           />
           <div className="agent-composer-toolbar">

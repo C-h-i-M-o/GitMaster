@@ -63,6 +63,8 @@ export function resetSettingsCategory(
         editor: defaults.editor,
         externalOpen: defaults.externalOpen,
       };
+    case "agent":
+      return draft;
   }
 }
 

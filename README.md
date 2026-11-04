@@ -46,9 +46,11 @@
 
 ## AI Agent
 
-首次进入会提示填写 API 协议、Base URL、模型 ID 和 API Key；后续在“设置 → 通用 → AI Agent”管理多个配置和测试连接。支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages，以及兼容这些协议的服务。模型 ID 以服务商提供的信息为准。密钥使用 macOS Keychain / Windows Credential Manager，不写入普通配置或浏览器存储。
+打开项目不会自动弹出 AI 配置；主动进入 AI Agent 且未配置可用模型时，可点击“配置 AI 模型”填写 API 协议、Base URL、模型 ID 和 API Key；后续在“设置 → AI Agent”管理配置和测试连接。支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages，以及兼容这些协议的服务。模型 ID 以服务商提供的信息为准。密钥使用 macOS Keychain / Windows Credential Manager，不写入普通配置或浏览器存储。
 
-从侧栏打开“AI Agent”，选择模型与权限后发送任务。`Ctrl+Enter` / `Cmd+Enter` 发送，运行中可停止。首次配置可以暂时关闭，普通 Git 功能仍可使用；AI 需完成配置才能请求模型。
+从侧栏打开“AI Agent”，选择模型与权限后发送任务。`Enter` 发送，`Ctrl+Enter` / `Cmd+Enter` / `Shift+Enter` 换行，运行中可停止并编辑下一条草稿。聊天列表使用应用左侧栏，归档、恢复、重命名和删除位于聊天行菜单。普通 Git 功能无需配置 AI 即可使用。
+
+当前 `ai-agent` 分支处于 Agent v2 开发阶段，上下文与记忆、多模型高级配置、工作区选择和命令沙箱尚未完成。切换环境继续开发请先读 [Agent v2 接手文档](docs/agent-v2-handoff-2026-11-04.md) 和 [本轮需求与计划](docs/agent-v2-spec-plan-2026-11-04.md)。
 
 | 权限         | 基础行为                                                                                            |
 | ------------ | --------------------------------------------------------------------------------------------------- |

@@ -172,28 +172,21 @@ impl AgentStore {
     }
     /// 在持锁期间校验磁盘配置的版本、引用和全部已保存配置。
     fn read_settings(&self) -> AgentResult<AgentSettings> {
+        self.read_settings_document()?.view()
+    }
+    /// 在同一目录锁下迁移规范化配置；备份成功后才发布新格式。
+    fn read_settings_document(&self) -> AgentResult<super::migration::SettingsDocument> {
         let path = self.root.join("settings.json");
         regular_or_missing(&path)?;
         if !path.exists() {
-            return Ok(AgentSettings::default());
+            return Ok(super::migration::SettingsDocument::empty());
         }
-        let settings: AgentSettings = read_json(&path)?;
-        if settings.version != 1 || settings.profiles.len() > 32 {
-            return Err(AgentError::corrupt());
-        }
-        let mut ids = std::collections::HashSet::new();
-        for profile in &settings.profiles {
-            profile.validate().map_err(|_| AgentError::corrupt())?;
-            if !ids.insert(&profile.id) {
-                return Err(AgentError::corrupt());
-            }
-        }
-        if settings
-            .active_profile_id
-            .as_ref()
-            .is_some_and(|id| !ids.contains(id))
-        {
-            return Err(AgentError::corrupt());
+        let original: serde_json::Value = read_json(&path)?;
+        let (settings, migrated) = super::migration::SettingsDocument::decode(original.clone())?;
+        if migrated {
+            let backup = self.root.join("settings.v1-backup.json");
+            migration_backup(&backup, &original)?;
+            atomic_json(&path, &settings)?;
         }
         Ok(settings)
     }
@@ -201,56 +194,62 @@ impl AgentStore {
     pub fn save_profile(&self, profile: ProviderProfile) -> AgentResult<AgentSettings> {
         profile.validate()?;
         let _guard = self.lock()?;
-        let mut settings = self.read_settings()?;
-        if let Some(existing) = settings.profiles.iter_mut().find(|p| p.id == profile.id) {
-            *existing = profile.clone();
-        } else {
-            if settings.profiles.len() >= 32 {
-                return Err(AgentError::new(
-                    "AGENT_PROFILE_LIMIT",
-                    "最多保存 32 个 API 配置。",
-                ));
-            }
-            settings.profiles.push(profile.clone());
-        }
-        if settings.active_profile_id.is_none() {
-            settings.active_profile_id = Some(profile.id);
-        }
+        let mut settings = self.read_settings_document()?;
+        settings.put_profile(profile)?;
+        let view = settings.view()?;
         atomic_json(&self.root.join("settings.json"), &settings)?;
-        Ok(settings)
+        Ok(view)
     }
     /// 删除配置引用；凭据删除由平台层在同一配置操作内完成。
     pub fn delete_profile(&self, id: &str) -> AgentResult<AgentSettings> {
         let _guard = self.lock()?;
-        let mut settings = self.read_settings()?;
-        settings.profiles.retain(|p| p.id != id);
-        if settings.active_profile_id.as_deref() == Some(id) {
-            settings.active_profile_id = settings.profiles.first().map(|p| p.id.clone());
+        let mut settings = self.read_settings_document()?;
+        let provider_id = settings
+            .models
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.provider_id.clone());
+        settings.models.retain(|m| m.id != id);
+        if let Some(provider_id) = provider_id {
+            if !settings.models.iter().any(|m| m.provider_id == provider_id) {
+                settings.providers.retain(|p| p.id != provider_id);
+            }
         }
+        if settings.active_model_config_id.as_deref() == Some(id) {
+            settings.active_model_config_id = settings
+                .models
+                .iter()
+                .find(|m| m.enabled)
+                .map(|m| m.id.clone());
+        }
+        let view = settings.view()?;
         atomic_json(&self.root.join("settings.json"), &settings)?;
-        Ok(settings)
+        Ok(view)
     }
     /// 只允许选择存在的配置；聊天在下一轮使用该选择。
     pub fn select_profile(&self, id: &str) -> AgentResult<AgentSettings> {
         let _guard = self.lock()?;
-        let mut settings = self.read_settings()?;
-        if !settings.profiles.iter().any(|p| p.id == id) {
+        let mut settings = self.read_settings_document()?;
+        if !settings.models.iter().any(|m| m.id == id && m.enabled) {
             return Err(AgentError::new(
                 "AGENT_PROFILE_MISSING",
                 "API 配置不存在，请在设置中重新选择。",
             ));
         }
-        settings.active_profile_id = Some(id.into());
+        settings.active_model_config_id = Some(id.into());
+        let view = settings.view()?;
         atomic_json(&self.root.join("settings.json"), &settings)?;
-        Ok(settings)
+        Ok(view)
     }
     /// 保存下轮生效的默认权限，不改变正在执行的运行快照。
     pub fn set_permission(&self, mode: PermissionMode) -> AgentResult<AgentSettings> {
         let _guard = self.lock()?;
-        let mut settings = self.read_settings()?;
+        let mut settings = self.read_settings_document()?;
         settings.default_permission_mode = mode;
+        settings.permission_review_required = false;
+        let view = settings.view()?;
         atomic_json(&self.root.join("settings.json"), &settings)?;
-        Ok(settings)
+        Ok(view)
     }
     /// 建立独立聊天目录和元数据，不创建云端会话。
     pub fn create_chat(
@@ -268,11 +267,13 @@ impl AgentStore {
         }
         let now = timestamp();
         let chat = ChatSession {
-            version: 1,
+            version: 2,
             id: new_id(),
             title: "新对话".into(),
+            workspace_id: super::workspace::workspace_id(repository_path.as_deref()),
             repository_path,
             profile_id: profile_id.into(),
+            model_config_id: profile_id.into(),
             permission_mode: settings.default_permission_mode,
             archived: false,
             created_at: now,
@@ -317,8 +318,23 @@ impl AgentStore {
     }
     /// 校验元数据版本及 ID 与目录的一致性。
     fn session(&self, id: &str) -> AgentResult<ChatSession> {
-        let chat: ChatSession = read_json(&self.chat_dir(id)?.join("session.json"))?;
-        if chat.version != 1 || chat.id != id {
+        let path = self.chat_dir(id)?.join("session.json");
+        let original: serde_json::Value = read_json(&path)?;
+        let mut chat: ChatSession =
+            serde_json::from_value(original.clone()).map_err(|_| AgentError::corrupt())?;
+        if !matches!(chat.version, 1 | 2) || chat.id != id {
+            return Err(AgentError::corrupt());
+        }
+        valid_id(&chat.profile_id)?;
+        let expected_workspace = super::workspace::workspace_id(chat.repository_path.as_deref());
+        if chat.version == 1 {
+            chat.version = 2;
+            chat.workspace_id = expected_workspace;
+            chat.model_config_id = chat.profile_id.clone();
+            migration_backup(&path.with_file_name("session.v1-backup.json"), &original)?;
+            atomic_json(&path, &chat)?;
+        } else if chat.workspace_id != expected_workspace || chat.model_config_id != chat.profile_id
+        {
             return Err(AgentError::corrupt());
         }
         Ok(chat)
@@ -513,6 +529,22 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> AgentResult<()> {
     file.as_file().sync_all().map_err(AgentError::storage)?;
     file.persist(path).map_err(AgentError::storage)?;
     Ok(())
+}
+/// 迁移备份只创建一次；中断后复用相同内容，不覆盖来源不明的旧备份。
+fn migration_backup(path: &Path, original: &serde_json::Value) -> AgentResult<()> {
+    regular_or_missing(path)?;
+    if path.exists() {
+        let previous: serde_json::Value = read_json(path)?;
+        if &previous != original {
+            return Err(AgentError::new(
+                "AGENT_MIGRATION_BACKUP",
+                "旧数据备份与待迁移内容不一致，已保留文件，请先检查备份。",
+            ));
+        }
+        Ok(())
+    } else {
+        atomic_json(path, original)
+    }
 }
 /// 遍历应用自有目录；符号链接占用不计入，以免越界或重复累计。
 pub fn directory_bytes(path: &Path) -> AgentResult<u64> {

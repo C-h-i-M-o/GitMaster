@@ -1,5 +1,28 @@
 # 分阶段验证记录
 
+## 2026-11-04 Agent v2 阶段性交接
+
+用户明确要求当前代码与项目文档一起提交 GitHub，以更换开发环境继续；本次保存 `ai-agent` 的在开发快照，不合并 `main`，不发布，也不宣称 Agent v2 全部完成。进度和待修问题见 [交接文档](agent-v2-handoff-2026-11-04.md)，详细需求仍以 [本轮合并计划](agent-v2-spec-plan-2026-11-04.md) 为准。
+
+本机环境：Windows，Node 24.18.0、pnpm 11.15.1、rustc/Cargo 1.98.1、Git 2.55.0.windows.3。本次实际检查：
+
+| 检查                                                                                                                                      | 结果与范围                                                                                                               |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm typecheck`                                                                                                                          | 通过，两份 tsconfig 均完成                                                                                               |
+| `pnpm build`                                                                                                                              | 通过；保留大 chunk 警告，不能视作性能验收                                                                                |
+| `cargo fmt --all -- --check`                                                                                                              | 通过                                                                                                                     |
+| `cargo check -p gitmaster-desktop --offline`                                                                                              | 通过；原有 unused imports / dead code 警告仍在                                                                           |
+| `cargo test -p gitmaster-core --offline --test agent_workspace_migration --test agent_migration --test agent_profiles --test agent_store` | 14 通过，0 失败；3 配置迁移 + 5 凭据 + 5 存储 + 1 会话迁移                                                               |
+| `node --test tests/agent-composer.test.ts tests/agent-settings-tabs.test.ts tests/agent-sidebar-render.test.mjs`                          | 6 通过，0 失败；执行输入 helper 与真实组件 SSR；并行 SSR 曾出现 24678 HMR 端口占用警告，测试进程退出 0，交接命令改为串行 |
+
+收尾检查：`pnpm format:check` 通过。上述前端测试再以 `node --test --test-concurrency=1 tests/agent-composer.test.ts tests/agent-settings-tabs.test.ts tests/agent-sidebar-render.test.mjs` 串行复验，仍为 6 通过 / 0 失败，退出码 0，未出现 HMR 端口占用警告。
+
+本轮前端回归源码随提交保存，历史临时测试、日志、浏览器 profile 和第三方沙箱下载仍留在被忽略的 `tests/`。`.prettierignore` 只新增排除 `tests/sandbox-evaluation/`，避免格式检查扫描下载的第三方源码；不排除本轮前端回归源码。
+
+尚未验收：Windows/macOS 原生滚动与中文 IME、菜单与焦点、真实供应商连接、沙箱隔离/命令/接管/退出、上下文与记忆、多模型配置、默认工作区、A11～A13、完整性能与安装包。整套核心测试本次交接未重跑；此前 75 通过 / 173 失败 / 7 忽略的基线仍保留，不能被本次 14 项定向通过覆盖。没有启动 dev 服务。
+
+额外静态审查发现：有效 v2 配置中，无模型引用的供应商连接仍可引用某 Key，但 `ProfileService::delete` 仅按其他模型判断共享；删除另一连接最后模型可能误删该 Key。尚未修改或运行复现，作为接手优先修复项记录，不宣称本次全面审查通过。
+
 ## 2026-10-29 提交前工程检查
 
 用户授权检查通过后提交并推送 `liuyilun-m4-release`，不合并 `main`。本轮 `pnpm typecheck`、`pnpm build`、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop` 均通过；保留已有 Vite 大 chunk 及 Rust 未使用代码警告。

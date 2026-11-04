@@ -45,7 +45,7 @@ export function useAgentSettings(enabled: boolean) {
   const [usage, setUsage] = useState<DeviceUsage | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
   const [usageBusy, setUsageBusy] = useState(false);
-  /** 初始化仅一次；用户关闭首配后普通 Git 仍然可用。 */
+  /** 读取设置只更新状态；AI 首次引导由主界面按需呈现。 */
   useEffect(() => {
     if (!enabled) return;
     let live = true;
@@ -54,7 +54,6 @@ export function useAgentSettings(enabled: boolean) {
       .then((result) => {
         if (live) {
           setView(result);
-          setSetupOpen(result.settings.profiles.length === 0);
         }
       })
       .catch((cause: unknown) => {

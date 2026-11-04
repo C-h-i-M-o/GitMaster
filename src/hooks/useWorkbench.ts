@@ -175,13 +175,14 @@ export function useWorkbench() {
     }
   }
   const [drawer, setDrawer] = useState<Drawer>(null);
+  const lastGitDrawer = useRef<Drawer>(null);
   const [changeDetailOpen, setChangeDetailOpen] = useState(false);
   const changeDetailFocus = useChangeDetailFocus(
     drawer === "changes" && changeDetailOpen && repo.selected !== null,
     closeChangeDetail,
   );
   useEffect(() => {
-    if (drawer !== "changes") {
+    if (drawer !== "changes" && drawer !== "agent") {
       repo.closeDiff();
       setChangeDetailOpen(false);
     }
@@ -819,14 +820,19 @@ export function useWorkbench() {
   /** 切换视图前显式保留或放弃冲突草稿。 */
   function navigate(next: Drawer): void {
     workspaceSession.userOpening();
+    const changeMode = () => {
+      if (next === "agent" && drawer !== "agent")
+        lastGitDrawer.current = drawer;
+      setDrawer(next);
+    };
     if (conflicts.dirty && next !== "conflicts") {
       setDiscardAction(() => () => {
         void conflicts.refresh(true);
-        setDrawer(next);
+        changeMode();
       });
       return;
     }
-    setDrawer(next);
+    changeMode();
   }
   /** 为展示组件提供不含业务判断的导航回调。 */
   function openDrawer(next: Drawer): () => void {
@@ -859,7 +865,11 @@ export function useWorkbench() {
   }
   /** 在不改变输入值的情况下关闭抽屉。 */
   function closeDrawer(): void {
-    navigate(null);
+    navigate(drawer === "agent" ? lastGitDrawer.current : null);
+  }
+  /** 从 AI 模式返回进入前的 Git 视图，保留选择与面板状态。 */
+  function returnToGit(): () => void {
+    return () => navigate(lastGitDrawer.current);
   }
   /** 切换操作记录面板。 */
   function toggleOperations(): void {
@@ -1647,6 +1657,7 @@ export function useWorkbench() {
     openModal,
     closeModal,
     closeDrawer,
+    returnToGit,
     toggleOperations,
     field,
     toggleChange,

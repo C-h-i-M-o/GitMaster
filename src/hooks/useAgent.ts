@@ -23,6 +23,7 @@ import type {
 } from "../types/agent";
 import { useAgentSettings } from "./useAgentSettings";
 import { AgentChatMemory, titleValidation } from "../ui/agentChatMemory";
+import { draftAfterSend, handleComposerKeyDown } from "../ui/agentComposer";
 /** 管理本地聊天与运行事件；不持久化前端副本或密钥。 */
 export function useAgent(
   enabled: boolean,
@@ -37,10 +38,12 @@ export function useAgent(
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [title, setTitle] = useState("");
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [archived, setArchived] = useState(false);
-  const [deletePending, setDeletePending] = useState(false);
+  const [deletePending, setDeletePending] = useState<string | null>(null);
   const selected = useRef<string | null>(null);
+  const enterHeld = useRef(false);
   const memory = useRef(new AgentChatMemory());
   const project = useRef(repositoryPath);
   project.current = repositoryPath;
@@ -65,7 +68,8 @@ export function useAgent(
       setRecord(null);
       setRun(null);
       setTitle("");
-      setDeletePending(false);
+      setRenameTarget(null);
+      setDeletePending(null);
       follow.current = true;
     }
     const version = ++generation.current;
@@ -232,24 +236,41 @@ export function useAgent(
       if (project.current !== sourceProject)
         throw new Error("项目已切换，草稿已保留，请检查聊天所属项目后重试。");
       await agentApi.send(id, text);
-      memory.current.setDraft(id, sourceProject, "");
-      memory.current.setDraft(source, sourceProject, "");
-      setDraft("");
+      const currentDraft = memory.current.draft(id, sourceProject);
+      const remainingDraft = draftAfterSend(currentDraft, text, true);
+      if (remainingDraft !== currentDraft) {
+        memory.current.setDraft(id, sourceProject, remainingDraft);
+        setDraft(remainingDraft);
+      }
+      if (source !== id) memory.current.setDraft(source, sourceProject, "");
       follow.current = true;
       await load(id);
       await refreshList();
     });
   }
-  /** 输入法组合期间不发送；Ctrl/Cmd+Enter 提交。 */
+  /** Enter 发送；修饰键、IME 组合和长按重复事件均不提交。 */
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (
-      event.key === "Enter" &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.nativeEvent.isComposing
-    ) {
-      event.preventDefault();
-      void send();
-    }
+    const result = handleComposerKeyDown(event, {
+      enterHeld: enterHeld.current,
+      canSend: run === null,
+      send: () => {
+        enterHeld.current = true;
+        void send();
+      },
+      changeDraft: (value) => {
+        memory.current.setDraft(selected.current, project.current, value);
+        setDraft(value);
+      },
+    });
+    if (result === "send") enterHeld.current = true;
+  }
+  /** Enter 松开后允许下一次独立按键发送。 */
+  function keyUp(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter") enterHeld.current = false;
+  }
+  /** 输入框失焦时解除按住状态，避免切换焦点后无法再次发送。 */
+  function composerBlur() {
+    enterHeld.current = false;
   }
   /** 修改消息草稿，不同步到磁盘或浏览器存储。 */
   function changeDraft(event: ChangeEvent<HTMLTextAreaElement>) {
@@ -264,53 +285,62 @@ export function useAgent(
   function changeTitle(event: ChangeEvent<HTMLInputElement>) {
     setTitle(event.target.value);
   }
-  /** 标题和归档均经后端检查运行状态。 */
+  /** 开始编辑指定聊天标题，在列表行菜单内保存。 */
+  function beginRename(chat: ChatSession) {
+    return () => {
+      setRenameTarget(chat.id);
+      setTitle(chat.title);
+    };
+  }
+  /** 取消标题编辑，不修改聊天记录。 */
+  function cancelRename() {
+    setRenameTarget(null);
+  }
+  /** 标题经后端检查并在列表刷新后反映。 */
   function rename() {
-    if (record && !titleValidation(title).error)
+    const chat = chats.find((item) => item.id === renameTarget);
+    if (chat && !titleValidation(title).error)
       void action(async () => {
-        await agentApi.update(
-          record.session.id,
-          title,
-          record.session.archived,
-        );
-        await load(record.session.id);
+        await agentApi.update(chat.id, title, chat.archived);
+        if (selected.current === chat.id) await load(chat.id);
         await refreshList();
+        setRenameTarget(null);
       });
   }
   /** 归档不丢数据，恢复后可以继续聊天。 */
-  function archive() {
-    if (record)
+  function archive(chat: ChatSession) {
+    return () => {
       void action(async () => {
-        await agentApi.update(
-          record.session.id,
-          record.session.title,
-          !record.session.archived,
-        );
-        await load(record.session.id);
+        await agentApi.update(chat.id, chat.title, !chat.archived);
+        if (selected.current === chat.id) await load(chat.id);
         await refreshList();
       });
+    };
   }
-  /** 两步确认删除真实本地记录。 */
-  function askDelete() {
-    setDeletePending(true);
+  /** 在对应列表行打开删除确认。 */
+  function askDelete(chat: ChatSession) {
+    return () => setDeletePending(chat.id);
   }
   /** 撤销删除确认，不更改磁盘。 */
   function keepChat() {
-    setDeletePending(false);
+    setDeletePending(null);
   }
   /** 删除后撤销选中引用，并刷新真实容量。 */
   function deleteChat() {
-    if (record)
+    const id = deletePending;
+    if (id)
       void action(async () => {
-        await agentApi.delete(record.session.id);
-        memory.current.setDraft(record.session.id, project.current, "");
-        memory.current.endLoad(record.session.id);
-        selected.current = null;
-        setDraft(memory.current.draft(null, project.current));
-        generation.current++;
-        setRecord(null);
-        setRun(null);
-        setDeletePending(false);
+        await agentApi.delete(id);
+        memory.current.setDraft(id, project.current, "");
+        memory.current.endLoad(id);
+        if (selected.current === id) {
+          selected.current = null;
+          setDraft(memory.current.draft(null, project.current));
+          generation.current++;
+          setRecord(null);
+          setRun(null);
+        }
+        setDeletePending(null);
         await refreshList();
         void settings.refreshUsage();
       });
@@ -348,8 +378,7 @@ export function useAgent(
     record !== null && record.session.repositoryPath !== repositoryPath;
   const disabled =
     !enabled ||
-    busy ||
-    run !== null ||
+    (busy && run === null) ||
     record?.session.archived === true ||
     mismatched;
   return {
@@ -362,6 +391,7 @@ export function useAgent(
     draft,
     title,
     titleValidation: titleValidation(title),
+    renameTarget,
     busy,
     archived,
     deletePending,
@@ -373,8 +403,12 @@ export function useAgent(
     create,
     send,
     keyDown,
+    keyUp,
+    composerBlur,
     changeDraft,
     changeTitle,
+    beginRename,
+    cancelRename,
     rename,
     archive,
     askDelete,

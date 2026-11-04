@@ -140,15 +140,23 @@ pub struct AgentSettings {
     pub profiles: Vec<ProviderProfile>,
     pub active_profile_id: Option<String>,
     pub default_permission_mode: PermissionMode,
+    pub providers: Vec<super::ProviderConnection>,
+    pub models: Vec<super::ModelConfig>,
+    pub active_model_config_id: Option<String>,
+    pub permission_review_required: bool,
 }
 impl Default for AgentSettings {
     /// 未配置时不发起模型请求，默认要求对越界和风险操作询问。
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             profiles: vec![],
             active_profile_id: None,
             default_permission_mode: PermissionMode::default(),
+            providers: vec![],
+            models: vec![],
+            active_model_config_id: None,
+            permission_review_required: false,
         }
     }
 }
@@ -162,6 +170,10 @@ pub struct ChatSession {
     pub title: String,
     pub repository_path: Option<String>,
     pub profile_id: String,
+    #[serde(default)]
+    pub workspace_id: String,
+    #[serde(default)]
+    pub model_config_id: String,
     pub permission_mode: PermissionMode,
     pub archived: bool,
     pub created_at: u64,

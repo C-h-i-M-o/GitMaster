@@ -1,4 +1,6 @@
 import { AgentSetupDialog } from "./components/AgentSetupDialog";
+import { AgentPanel } from "./components/AgentPanel";
+import { AgentSidebar } from "./components/AgentSidebar";
 import { useWorkbench } from "./hooks/useWorkbench";
 import { WorkspaceToolbar } from "./components/WorkspaceToolbar";
 import { Icon } from "./components/Icon";
@@ -16,11 +18,15 @@ export default function App() {
   const w = useWorkbench();
   const repository = w.repo.repository;
   const opening = openingFeedback(w);
+  const agentMode = w.drawer === "agent";
   return (
     <div className="app-shell">
       <WorkspaceToolbar workbench={w} />
       <div className="workspace" id="workspace">
-        <aside className="sidebar" aria-label="项目导航">
+        <aside
+          className={`sidebar ${agentMode ? "sidebar-agent-mode" : ""}`}
+          aria-label={agentMode ? "AI 导航" : "项目导航"}
+        >
           <div className="project-heading">
             <span className="eyebrow">WORKSPACE</span>
             <strong title={repository?.rootPath}>
@@ -29,119 +35,146 @@ export default function App() {
             </strong>
           </div>
           <nav className="workspace-nav">
-            <button
-              className={
-                w.drawer === null || w.drawer === "detail" ? "active" : ""
-              }
-              onClick={w.openDrawer(null)}
-            >
-              <Icon name="history" />
-              <span>提交历史</span>
-            </button>
-            <button
-              className={w.drawer === "changes" ? "active" : ""}
-              disabled={!repository}
-              onClick={w.openDrawer("changes")}
-            >
-              <Icon name="changes" />
-              <span>本地修改</span>
-              <b>{repository?.changes.length ?? 0}</b>
-            </button>
-            <button
-              className={w.drawer === "files" ? "active" : ""}
-              disabled={!repository}
-              onClick={w.openDrawer("files")}
-            >
-              <Icon name="files" />
-              <span>项目文件</span>
-            </button>
-            {repository?.operations.includes("merge") && (
-              <button
-                className={w.drawer === "conflicts" ? "active" : ""}
-                onClick={w.openDrawer("conflicts")}
-              >
-                <Icon name="merge" />
-                <span>合并与冲突</span>
-              </button>
-            )}
-            <button
-              className={w.drawer === "agent" ? "active" : ""}
-              onClick={w.openDrawer("agent")}
-            >
-              <span className="agent-nav-mark">AI</span>
-              <span>AI Agent</span>
-            </button>
-          </nav>
-          <section className="branches">
-            <div className="section-heading">
-              <button
-                className="eyebrow branch-collapse"
-                aria-expanded={w.branchesExpanded}
-                onClick={w.toggleBranches}
-              >
-                <Icon name="chevron" />
-                分支
-              </button>
-              <button
-                className="icon-button"
-                title="新建分支"
-                aria-label="新建分支"
-                disabled={!w.canOpenWrite}
-                onClick={w.openModal("branch")}
-              >
-                <Icon name="plus" />
-              </button>
-            </div>
-            {w.branchesExpanded &&
-              w.branches?.branches.map((branch) => (
-                <button
-                  key={branch.branchId}
-                  className={`branch-item ${branch.current ? "current" : ""}`}
-                  onClick={w.switchBranch(branch.branchId)}
-                  disabled={
-                    branch.current ||
-                    branch.kind === "remote" ||
-                    branch.occupiedByOtherWorktree ||
-                    !w.canSwitchBranch
-                  }
-                  title={`${branch.name}${branch.occupiedByOtherWorktree ? " · 其他工作树正在使用" : ""}`}
-                >
-                  <span className={`branch-dot ${branch.kind}`} />
-                  <span>{branch.name}</span>
-                  {branch.current && <Icon name="check" />}
-                  {branch.occupiedByOtherWorktree && <small>占用</small>}
+            {agentMode ? (
+              <>
+                <button onClick={w.returnToGit}>
+                  <Icon name="history" />
+                  <span>返回 Git 工作台</span>
                 </button>
-              ))}
-            {repository?.head.kind === "unborn" && (
-              <p className="muted small">
-                {repository.head.name} · 等待首次提交
-              </p>
+                <button className="active" onClick={w.openDrawer("agent")}>
+                  <span className="agent-nav-mark">AI</span>
+                  <span>AI Agent</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className={
+                    w.drawer === null || w.drawer === "detail" ? "active" : ""
+                  }
+                  onClick={w.openDrawer(null)}
+                >
+                  <Icon name="history" />
+                  <span>提交历史</span>
+                </button>
+                <button
+                  className={w.drawer === "changes" ? "active" : ""}
+                  disabled={!repository}
+                  onClick={w.openDrawer("changes")}
+                >
+                  <Icon name="changes" />
+                  <span>本地修改</span>
+                  <b>{repository?.changes.length ?? 0}</b>
+                </button>
+                <button
+                  className={w.drawer === "files" ? "active" : ""}
+                  disabled={!repository}
+                  onClick={w.openDrawer("files")}
+                >
+                  <Icon name="files" />
+                  <span>项目文件</span>
+                </button>
+                {repository?.operations.includes("merge") && (
+                  <button
+                    className={w.drawer === "conflicts" ? "active" : ""}
+                    onClick={w.openDrawer("conflicts")}
+                  >
+                    <Icon name="merge" />
+                    <span>合并与冲突</span>
+                  </button>
+                )}
+                <button
+                  className={w.drawer === "agent" ? "active" : ""}
+                  onClick={w.openDrawer("agent")}
+                >
+                  <span className="agent-nav-mark">AI</span>
+                  <span>AI Agent</span>
+                </button>
+              </>
             )}
-            {repository?.head.kind === "detached" && (
-              <p className="warning-card small">
-                分离头指针 · {repository.head.oid.slice(0, 7)}
-              </p>
-            )}
-          </section>
-          <div className="sidebar-bottom">
-            <span
-              className={`status-dot ${w.git.environment?.status === "ready" ? "ready" : ""}`}
+          </nav>
+          {agentMode ? (
+            <AgentSidebar
+              a={w.agent}
+              repositoryPath={repository?.rootPath ?? null}
             />
-            <span>
-              {w.preview
-                ? "浏览器预览，Git 功能不可用"
-                : w.git.environment?.status === "ready"
-                  ? `Git ${w.git.environment.version}`
-                  : "Git 尚未就绪"}
-            </span>
-            {!w.preview && w.git.environment?.status !== "ready" && (
-              <button onClick={w.openModal("settings")}>配置 Git</button>
-            )}
-          </div>
+          ) : (
+            <section className="branches">
+              <div className="section-heading">
+                <button
+                  className="eyebrow branch-collapse"
+                  aria-expanded={w.branchesExpanded}
+                  onClick={w.toggleBranches}
+                >
+                  <Icon name="chevron" />
+                  分支
+                </button>
+                <button
+                  className="icon-button"
+                  title="新建分支"
+                  aria-label="新建分支"
+                  disabled={!w.canOpenWrite}
+                  onClick={w.openModal("branch")}
+                >
+                  <Icon name="plus" />
+                </button>
+              </div>
+              {w.branchesExpanded &&
+                w.branches?.branches.map((branch) => (
+                  <button
+                    key={branch.branchId}
+                    className={`branch-item ${branch.current ? "current" : ""}`}
+                    onClick={w.switchBranch(branch.branchId)}
+                    disabled={
+                      branch.current ||
+                      branch.kind === "remote" ||
+                      branch.occupiedByOtherWorktree ||
+                      !w.canSwitchBranch
+                    }
+                    title={`${branch.name}${branch.occupiedByOtherWorktree ? " · 其他工作树正在使用" : ""}`}
+                  >
+                    <span className={`branch-dot ${branch.kind}`} />
+                    <span>{branch.name}</span>
+                    {branch.current && <Icon name="check" />}
+                    {branch.occupiedByOtherWorktree && <small>占用</small>}
+                  </button>
+                ))}
+              {repository?.head.kind === "unborn" && (
+                <p className="muted small">
+                  {repository.head.name} · 等待首次提交
+                </p>
+              )}
+              {repository?.head.kind === "detached" && (
+                <p className="warning-card small">
+                  分离头指针 · {repository.head.oid.slice(0, 7)}
+                </p>
+              )}
+            </section>
+          )}
+          {!agentMode && (
+            <div className="sidebar-bottom">
+              <span
+                className={`status-dot ${w.git.environment?.status === "ready" ? "ready" : ""}`}
+              />
+              <span>
+                {w.preview
+                  ? "浏览器预览，Git 功能不可用"
+                  : w.git.environment?.status === "ready"
+                    ? `Git ${w.git.environment.version}`
+                    : "Git 尚未就绪"}
+              </span>
+              {!w.preview && w.git.environment?.status !== "ready" && (
+                <button onClick={w.openModal("settings")}>配置 Git</button>
+              )}
+            </div>
+          )}
         </aside>
-        <main className="main-content">
+        <main
+          className={`main-content ${agentMode ? "agent-main-content" : ""}`}
+        >
           <WorkspaceNotices w={w} />
-          <div className="canvas-area">
+          {agentMode && <AgentPanel a={w.agent} />}
+          <div className="canvas-area" hidden={agentMode} inert={agentMode}>
             <CommitGraph workbench={w} />
             <WorkbenchDrawer workbench={w} />
             <ChangeDetailDrawer workbench={w} />
@@ -151,7 +184,9 @@ export default function App() {
               </div>
             )}
           </div>
-          <BottomPanel workbench={w} />
+          <div hidden={agentMode}>
+            <BottomPanel workbench={w} />
+          </div>
         </main>
       </div>
       <footer className="statusbar">

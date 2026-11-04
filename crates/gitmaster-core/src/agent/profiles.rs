@@ -60,6 +60,10 @@ impl<V: CredentialVault> ProfileService<V> {
             has_api_keys: BTreeMap::new(),
             warnings: vec![],
         };
+        if view.settings.permission_review_required {
+            view.warnings
+                .push("AI 配置已升级；原完全访问权限已收紧，请检查新权限设置。".into());
+        }
         for profile in &view.settings.profiles {
             match self.vault.read(&profile.credential_id) {
                 Ok(key) => {
@@ -68,7 +72,11 @@ impl<V: CredentialVault> ProfileService<V> {
                 }
                 Err(_) => {
                     view.has_api_keys.insert(profile.id.clone(), false);
-                    if view.warnings.is_empty() {
+                    if !view
+                        .warnings
+                        .iter()
+                        .any(|message| message.contains("系统密钥库暂不可用"))
+                    {
                         view.warnings
                             .push("系统密钥库暂不可用，请允许 GitMaster 访问密钥库后重试。".into());
                     }
@@ -137,8 +145,15 @@ impl<V: CredentialVault> ProfileService<V> {
             }
             return Err(error);
         }
-        let cleanup_failed =
-            key.is_some() && old.is_some_and(|p| self.vault.delete(&p.credential_id).is_err());
+        let current = self.store.settings()?;
+        let cleanup_failed = key.is_some()
+            && old.is_some_and(|p| {
+                !current
+                    .providers
+                    .iter()
+                    .any(|provider| provider.credential_id == p.credential_id)
+                    && self.vault.delete(&p.credential_id).is_err()
+            });
         let mut view = self.view()?;
         if cleanup_failed {
             view.warnings.push(
@@ -158,6 +173,20 @@ impl<V: CredentialVault> ProfileService<V> {
             .iter()
             .find(|p| p.id == id)
             .ok_or_else(|| AgentError::new("AGENT_PROFILE_MISSING", "API 配置不存在。"))?;
+        let shared = settings
+            .models
+            .iter()
+            .filter(|model| model.id != id)
+            .any(|model| {
+                settings.providers.iter().any(|provider| {
+                    provider.id == model.provider_id
+                        && provider.credential_id == profile.credential_id
+                })
+            });
+        if shared {
+            self.store.delete_profile(id)?;
+            return self.view();
+        }
         let old_key = self.vault.read(&profile.credential_id)?;
         self.vault.delete(&profile.credential_id)?;
         if let Err(error) = self.store.delete_profile(id) {

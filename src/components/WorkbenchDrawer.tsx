@@ -1,4 +1,3 @@
-import { AgentPanel } from "./AgentPanel";
 import { EditorDialogs } from "./EditorDialogs";
 import { ProjectFilesPanel } from "./ProjectFilesPanel";
 import { useConflictScroll } from "../hooks/useConflictScroll";
@@ -402,7 +401,7 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
       <aside
         ref={w.changeDetailFocus.list}
         inert={w.changeDetailFocus.covered}
-        hidden={!w.drawer}
+        hidden={!w.drawer || w.drawer === "agent"}
         className={`workbench-drawer ${w.drawer === "agent" ? "agent-drawer" : w.drawer === "conflicts" ? "merge-drawer" : w.drawer === "files" ? "files-drawer" : ""}`}
         aria-label={
           {
@@ -437,9 +436,7 @@ export function WorkbenchDrawer({ workbench: w }: { workbench: Workbench }) {
             <Icon name="close" />
           </button>
         </header>
-        {w.drawer === "agent" ? (
-          <AgentPanel a={w.agent} />
-        ) : w.drawer === "changes" ? (
+        {w.drawer === "changes" ? (
           <Changes w={w} />
         ) : w.drawer === "detail" ? (
           <CommitDetails w={w} />

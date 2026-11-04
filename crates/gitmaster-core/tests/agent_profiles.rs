@@ -107,6 +107,27 @@ fn new_profile_without_key_and_forged_profile_id_are_rejected() {
         .is_err());
 }
 
+/// 多模型共用凭据时删除一个模型不能删除另一模型仍使用的密钥。
+#[test]
+fn deleting_one_model_keeps_shared_credential() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(AgentStore::open(dir.path().into()).unwrap());
+    let vault = Vault::default();
+    let service = ProfileService::new(store.clone(), vault.clone());
+    service
+        .save(request(None, Some("shared-test-key")))
+        .unwrap();
+    let first = store.settings().unwrap().profiles[0].clone();
+    let mut second = first.clone();
+    second.id = "bb".into();
+    second.model = "other-model".into();
+    store.save_profile(second.clone()).unwrap();
+    service.delete(&first.id).unwrap();
+    assert_eq!(service.key_for(&second).unwrap(), "shared-test-key");
+    service.delete(&second.id).unwrap();
+    assert!(vault.entries.lock().unwrap().is_empty());
+}
+
 /// 粘贴到名称/模型的明显凭据和当前新 Key 不能绕过密码字段进入普通配置。
 #[test]
 fn credentials_in_plain_profile_fields_are_rejected_before_storage() {

@@ -5,3 +5,6 @@ src-tauri/gen/
 pnpm-lock.yaml
 Cargo.lock
 LICENSE
+
+# 本地下载的第三方沙箱源码与分发包不属于本项目格式检查范围
+tests/sandbox-evaluation/

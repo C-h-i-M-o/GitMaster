@@ -16,6 +16,7 @@ const categories: { id: SettingsCategory; label: string }[] = [
   { id: "general", label: "通用" },
   { id: "appearance", label: "外观" },
   { id: "git", label: "Git 环境" },
+  { id: "agent", label: "AI Agent" },
 ];
 
 /** 设置分类共享草稿与应用入口，输入控件只负责呈现。 */
@@ -53,16 +54,21 @@ export function SettingsPanel({ w }: { w: Workbench }) {
         id="settings-panel"
         role="tabpanel"
         aria-labelledby={`settings-tab-${w.settingsCategory}`}
+        tabIndex={0}
       >
         {w.preview && <p role="status">请在桌面应用中配置设置。</p>}
         {s.activity === "loading" && <p role="status">正在读取设置…</p>}
-        {w.settingsCategory === "general" && (
-          <>
-            <AgentSettingsPanel s={w.agent.settings} />
-            <DeviceStoragePanel s={w.agent.settings} />
-          </>
+        {w.settingsCategory === "agent" && (
+          <AgentSettingsPanel s={w.agent.settings} />
         )}
-        <fieldset className="settings-fields" disabled={!s.editable}>
+        {w.settingsCategory === "general" && (
+          <DeviceStoragePanel s={w.agent.settings} />
+        )}
+        <fieldset
+          className="settings-fields"
+          disabled={!s.editable}
+          hidden={w.settingsCategory === "agent"}
+        >
           {w.settingsCategory === "git" && (
             <section>
               <h3>Git 环境</h3>

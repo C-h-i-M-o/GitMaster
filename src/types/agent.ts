@@ -18,9 +18,32 @@ export interface AgentSettingsView {
     profiles: ProviderProfile[];
     activeProfileId: string | null;
     defaultPermissionMode: PermissionMode;
+    providers: ProviderConnection[];
+    models: ModelConfig[];
+    activeModelConfigId: string | null;
+    permissionReviewRequired: boolean;
   };
   hasApiKeys: Record<string, boolean>;
   warnings: string[];
+}
+/** 连接与模型分别保存，同一连接下的模型共用系统凭据引用。 */
+export interface ProviderConnection {
+  id: string;
+  name: string;
+  baseUrl: string;
+  credentialId: string;
+  presetId: string | null;
+  revision: number;
+}
+/** 独立模型配置，旧 profiles 只作过渡的界面和运行投影。 */
+export interface ModelConfig {
+  id: string;
+  providerId: string;
+  modelId: string;
+  label: string;
+  protocol: ProviderProtocol;
+  enabled: boolean;
+  revision: number;
 }
 export interface SaveProfile {
   id: string | null;
@@ -36,6 +59,8 @@ export interface ChatSession {
   title: string;
   repositoryPath: string | null;
   profileId: string;
+  workspaceId: string;
+  modelConfigId: string;
   permissionMode: PermissionMode;
   archived: boolean;
   createdAt: number;

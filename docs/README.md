@@ -6,6 +6,8 @@
 
 ## 阅读顺序
 
+2026-11-04：`ai-agent` 分支保存了 Agent v2 的阶段性代码与文档，尚未完成整轮开发。切换环境先读 [Agent v2 接手文档](agent-v2-handoff-2026-11-04.md)，再按 [本轮合并需求与计划](agent-v2-spec-plan-2026-11-04.md) 继续；最新检查范围见 [验证记录](verification.md)。
+
 2026-10-28：M4 第 1—7 项已获授权在 Windows 实施，macOS 在后续设备验证。统一需求与实施步骤见 [spec-plan.md 第 29 节](spec-plan.md)，本地 GitHub 文案见[发布素材](github-release-materials.md)。旧 README 的研发叙述已迁至[历史归档](readme-development-history.md)，不再作为用户入口。
 
 2026-10-27 品牌资源接入、原始设计归档与暂存选择修复见[总计划第 25 节](spec-plan.md#25-gitmaster-品牌资源接入与-macos-验收2026-10-26)。[品牌资源说明](../assets/branding/production/README.md)包含图标生成命令。macOS Release 已构建，后续原生测试按用户本轮指示跳过；实际结果见[验证记录](verification.md)末尾。
