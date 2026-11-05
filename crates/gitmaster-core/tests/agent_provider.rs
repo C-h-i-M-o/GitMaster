@@ -39,6 +39,29 @@ fn tool() -> ToolDefinition {
     }
 }
 
+/// 同模型同端点切换凭据身份时，不跨账号回放供应商 opaque 响应。
+#[test]
+fn different_credential_identity_drops_opaque_wire() {
+    let prior = profile(ProviderProtocol::Responses, "https://example.com/v1");
+    let mut current = prior.clone();
+    current.credential_id = "c2".into();
+    let history = vec![
+        event(EventKind::RunStarted {
+            profile: prior,
+            permission_mode: PermissionMode::RequestApproval,
+        }),
+        event(EventKind::AssistantMessage {
+            text: "可移植回答".into(),
+            protocol: ProviderProtocol::Responses,
+            wire: json!([{"type":"reasoning","encrypted_content":"account-bound","summary":[]}]),
+            calls: vec![],
+        }),
+    ];
+    let body = build_request(&current, &history, &[], "系统规则").unwrap();
+    assert!(!body.to_string().contains("account-bound"));
+    assert!(body.to_string().contains("可移植回答"));
+}
+
 #[test]
 fn three_protocols_replay_tool_results_in_their_own_wire_format() {
     let cases = [
@@ -148,7 +171,7 @@ fn server(
                             .strip_prefix("content-length: ")
                             .map(str::to_owned)
                     })
-                    .unwrap()
+                    .unwrap_or_else(|| "0".into())
                     .parse()
                     .unwrap();
                 if request.len() >= index + 4 + length {
@@ -164,6 +187,68 @@ fn server(
         String::from_utf8(request).unwrap()
     });
     (url, handle)
+}
+
+/// 发现模型使用当前草稿端点和分页参数，元数据优先且严格绑定实际请求端点。
+#[tokio::test]
+async fn model_discovery_preserves_capabilities_and_pagination() {
+    let (url, handle) = server(json!({"data":[{"id":"custom-model","display_name":"自定义模型","context_window":64000,"max_output_tokens":8000,"supports_tools":true,"effort":{"supported_levels":["low","high"]}}],"has_more":true,"last_id":"custom-model"}).to_string(), "200 OK", "application/json");
+    let profile = profile(ProviderProtocol::AnthropicMessages, &url);
+    let result = ModelClient::new()
+        .unwrap()
+        .list_models(
+            &profile,
+            "model-test-key",
+            "aa".into(),
+            Some("previous/model".into()),
+            &Cancellation::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.next_cursor.as_deref(), Some("custom-model"));
+    assert_eq!(result.models[0].capabilities.context_window, Some(64000));
+    assert_eq!(
+        result.models[0].capabilities.supported_efforts,
+        ["low", "high"]
+    );
+    assert_eq!(result.models[0].capabilities.source, "discovery");
+    assert_eq!(
+        result.models[0].capabilities.endpoint.as_deref(),
+        Some(profile.endpoint().unwrap().as_str())
+    );
+    let request = handle.join().unwrap();
+    assert!(request.starts_with("GET /v1/models?after_id=previous%2Fmodel "));
+    assert!(request
+        .to_ascii_lowercase()
+        .contains("x-api-key: model-test-key"));
+}
+
+/// 目录接口不可用与返回凭据时均不产生可保存模型配置。
+#[tokio::test]
+async fn unsupported_discovery_and_credential_echo_are_rejected() {
+    let (url, handle) = server("unknown".into(), "404 Not Found", "application/json");
+    let error = ModelClient::new()
+        .unwrap()
+        .list_models(
+            &profile(ProviderProtocol::Responses, &url),
+            "private-discovery-key",
+            "aa".into(),
+            None,
+            &Cancellation::new(),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "AGENT_MODEL_LIST_UNSUPPORTED");
+    handle.join().unwrap();
+    let input = json!({"data":[{"id":"safe","name":"private-discovery-key"}]});
+    assert!(provider::discovery::parse_models(
+        &profile(ProviderProtocol::Responses, "https://example.com/v1"),
+        "private-discovery-key",
+        "aa".into(),
+        input
+    )
+    .is_err());
 }
 
 #[tokio::test]

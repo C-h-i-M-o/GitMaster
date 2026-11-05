@@ -1,7 +1,7 @@
 //! 用户提供的 git-development-summary 转换为只读提交证据与专用报告生成。
 use super::{
     provider::{Cancellation, ModelClient},
-    tools::git::GitTools,
+    tools::git::{checked_path_list, GitTools},
     *,
 };
 use serde::Serialize;
@@ -99,6 +99,11 @@ pub fn collect_summary(tools: &GitTools, ids: &[String]) -> AgentResult<SummaryE
             base.push(parent.clone());
         }
         base.push(oid.clone());
+        // 在读取任何补丁正文前完整审核路径，超限或含敏感路径即拒绝。
+        let mut names_args = base.clone();
+        names_args.extend(["--name-only".into(), "-z".into(), "--".into()]);
+        let names = tools.read(&names_args, 64 * 1024)?;
+        let paths = checked_path_list(&names)?;
         let mut patch_args = base.clone();
         patch_args.push("-p".into());
         patch_args.push("--".into());
@@ -110,17 +115,6 @@ pub fn collect_summary(tools: &GitTools, ids: &[String]) -> AgentResult<SummaryE
         let patch_text = patch["text"].as_str().ok_or_else(invalid)?.to_owned();
         budget = budget.saturating_sub(patch_text.len());
         let mut truncated = patch["truncated"] == true;
-        let mut names_args = base;
-        names_args.extend(["--name-only".into(), "-z".into(), "--".into()]);
-        let names = tools.read(&names_args, 64 * 1024)?;
-        truncated |= names["truncated"] == true;
-        let paths: Vec<_> = names["text"]
-            .as_str()
-            .ok_or_else(invalid)?
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .collect();
         truncated |= paths.len() > 10;
         let mut selected: Vec<String> = paths.into_iter().take(10).collect();
         for path in ["README.md", "docs/spec-plan.md"] {
@@ -198,6 +192,34 @@ pub async fn generate_summary(
     audience: Option<&str>,
     cancellation: &Cancellation,
 ) -> AgentResult<String> {
+    generate_summary_configured(
+        client,
+        profile,
+        key,
+        evidence,
+        related_chats,
+        audience,
+        cancellation,
+        &ModelParameters::default(),
+        &provider::catalog::effective_capabilities(profile, &ModelCapabilities::default()),
+        &|_| Ok(()),
+    )
+    .await
+}
+
+/// 专用总结继承本轮参数，HTTP 重试和用量通过同一回调纳入运行总预算。
+pub async fn generate_summary_configured(
+    client: &ModelClient,
+    profile: &ProviderProfile,
+    key: &str,
+    evidence: &SummaryEvidence,
+    related_chats: &[String],
+    audience: Option<&str>,
+    cancellation: &Cancellation,
+    parameters: &ModelParameters,
+    capabilities: &ModelCapabilities,
+    on_attempt: &(dyn Fn(provider::ModelAttempt) -> AgentResult<()> + Send + Sync),
+) -> AgentResult<String> {
     if audience.is_some_and(|value| value.len() > 200) {
         return Err(AgentError::new(
             "AGENT_SUMMARY_AUDIENCE",
@@ -216,14 +238,17 @@ pub async fn generate_summary(
         payload: EventKind::UserMessage { text: input },
     }];
     let reply = client
-        .complete(
+        .complete_with_attempts(
             profile,
             key,
             &events,
             &[],
             SUMMARY_PROMPT,
+            parameters,
+            capabilities,
             cancellation,
             &|_| {},
+            on_attempt,
         )
         .await?;
     if !reply.calls.is_empty() || !valid_report(&reply.text) {

@@ -1,4 +1,85 @@
 import type { AgentEvent } from "../types/agent";
+import type { PermissionMode } from "../types/agent";
+import type { IconName } from "../components/Icon";
+export {
+  agentFinalMessage,
+  formatTranscriptValue,
+  projectAgentTranscript,
+  providerThinking,
+  transcriptRunStatus,
+  transcriptToolStatus,
+  transcriptToolSummary,
+} from "./agentTranscript.ts";
+export type {
+  AgentTranscriptMessage,
+  AgentTranscriptTool,
+  AgentTranscriptTurn,
+} from "./agentTranscript.ts";
+
+const permissionIcons: Record<PermissionMode, IconName> = {
+  requestApproval: "shield",
+  autoApprove: "folderCheck",
+  fullAccess: "shieldBolt",
+};
+
+/** 展示现有权限配置的名称、说明和图标，不计算或改变授权边界。 */
+export function permissionPresentation(
+  mode: PermissionMode,
+  options: readonly {
+    value: PermissionMode;
+    label: string;
+    description: string;
+  }[],
+): {
+  label: string;
+  description: string;
+  icon: IconName;
+} {
+  const option = options.find((item) => item.value === mode);
+  return {
+    label: option?.label ?? mode,
+    description: option?.description ?? "请在设置中检查此权限模式。",
+    icon: permissionIcons[mode],
+  };
+}
+
+/** 说明聊天管理按钮为何暂时禁用。 */
+export function chatMenuDisabledReason(
+  chatId: string,
+  activeChatId: string | null,
+  activeRunId: string | null,
+  busy: boolean,
+): string | null {
+  if (busy) return "正在保存聊天操作，请稍候。";
+  if (activeRunId !== null && chatId === activeChatId)
+    return "此聊天正在执行；等待完成或停止后即可管理。";
+  return null;
+}
+
+/** 为长文本生成有界预览，同时保留可展开的原始全文。 */
+export function previewLongText(
+  text: string,
+  maximumLength = 1200,
+): { preview: string; truncated: boolean; fullText: string } {
+  const limit = Math.max(1, Math.floor(maximumLength));
+  if (text.length <= limit)
+    return { preview: text, truncated: false, fullText: text };
+  let end = limit - 1;
+  const previous = text.charCodeAt(end - 1);
+  const next = text.charCodeAt(end);
+  if (
+    previous >= 0xd800 &&
+    previous <= 0xdbff &&
+    next >= 0xdc00 &&
+    next <= 0xdfff
+  )
+    end--;
+  return {
+    preview: `${text.slice(0, end)}…`,
+    truncated: true,
+    fullText: text,
+  };
+}
 /** 用真实字节数展示此设备用量，零与读取错误由调用方区分。 */
 export function agentBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -85,6 +166,7 @@ export function runPhase(phase: string): string {
   return (
     {
       requesting: "正在生成…",
+      compacting: "正在压缩历史上下文…",
       executingTool: "正在执行工具…",
       awaitingApproval: "等待你的批准",
       stopping: "正在停止；等待在途操作返回实际结果…",

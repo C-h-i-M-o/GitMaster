@@ -20,6 +20,8 @@ const LIMIT: usize = 2 * 1024 * 1024;
 /// 文件操作上下文，保护应用自身状态并共享既有仓库写队列。
 pub struct FileTools {
     root: Option<PathBuf>,
+    /// v2 只允许根目录读取和这一目录写入；旧工具构造器供既有核心调用兼容。
+    write_root: Option<PathBuf>,
     protected: Vec<PathBuf>,
     coordination: Option<(RepositoryCoordinator, CoordinationKey)>,
     gate: Mutex<()>,
@@ -77,10 +79,26 @@ impl FileTools {
             .collect::<AgentResult<_>>()?;
         Ok(Self {
             root,
+            write_root: None,
             protected,
             coordination,
             gate: Mutex::new(()),
         })
+    }
+    /// 为默认工作区或普通文件夹绑定强制范围，不因权限模式扩大到宿主其他目录。
+    pub fn scoped(
+        root: PathBuf,
+        write_root: PathBuf,
+        protected: Vec<PathBuf>,
+        coordination: Option<(RepositoryCoordinator, CoordinationKey)>,
+    ) -> AgentResult<Self> {
+        let mut files = Self::new(Some(root), protected, coordination)?;
+        let writable = fs::canonicalize(write_root).map_err(AgentError::storage)?;
+        if !writable.is_dir() {
+            return Err(invalid());
+        }
+        files.write_root = Some(writable);
+        Ok(files)
     }
     /// 准备阶段仅处理路径和参数，不在获得必要批准前读取文件内容。
     pub fn prepare(&self, call: &ToolCall, mode: PermissionMode) -> AgentResult<PreparedFile> {
@@ -115,10 +133,15 @@ impl FileTools {
             _ => return Err(AgentError::new("AGENT_UNKNOWN_TOOL", "该文件工具不存在。")),
         };
         let target = self.target(&path)?;
+        self.check_scope(&target.path, matches!(action, Action::Write { .. }))?;
         let outside = self
             .root
             .as_ref()
-            .is_none_or(|root| !target.path.starts_with(root));
+            .is_none_or(|root| !target.path.starts_with(root))
+            && self
+                .write_root
+                .as_ref()
+                .is_none_or(|root| !target.path.starts_with(root));
         let sensitive = sensitive_path(&target.path);
         let decision = decide(
             mode,
@@ -193,6 +216,10 @@ impl FileTools {
             return Err(changed());
         }
         self.check_protected(&target.path)?;
+        self.check_scope(
+            &target.path,
+            matches!(prepared.action, Action::Write { .. }),
+        )?;
         let deadline = Instant::now() + Duration::from_secs(10);
         match &prepared.action {
             Action::List => {
@@ -227,11 +254,12 @@ impl FileTools {
                 content,
                 expected_version,
             } => {
-                if target.path.exists() {
+                let (before_content, before_version, expected_bytes) = if target.path.exists() {
                     let original =
                         conflicts::read_regular(&target.anchor, &target.relative, LIMIT, deadline)
                             .map_err(git_error)?;
-                    if expected_version.as_deref() != Some(&version(target, &original)) {
+                    let before_version = version(target, &original);
+                    if expected_version.as_deref() != Some(&before_version) {
                         return Err(changed());
                     }
                     let old = editor_text::decode(&original.bytes).map_err(git_error)?;
@@ -246,6 +274,7 @@ impl FileTools {
                         deadline,
                     )
                     .map_err(git_error)?;
+                    (Some(old.content), Some(before_version), bytes)
                 } else {
                     if expected_version.is_some() {
                         return Err(changed());
@@ -258,7 +287,8 @@ impl FileTools {
                         deadline,
                     )
                     .map_err(git_error)?;
-                }
+                    (None, None, content.as_bytes().to_vec())
+                };
                 let saved =
                     conflicts::read_regular(&target.anchor, &target.relative, LIMIT, deadline)
                         .map_err(|_| {
@@ -267,8 +297,16 @@ impl FileTools {
                                 "已执行写入，但未能核验落盘结果，请重新读取文件。",
                             )
                         })?;
+                if saved.bytes != expected_bytes {
+                    return Err(AgentError::new("AGENT_WRITE_UNKNOWN", "写入后内容再次发生变化，无法确认本次修改的最终结果；已停止，请先核验文件。"));
+                }
+                let after_content = editor_text::decode(&saved.bytes)
+                    .map_err(git_error)?
+                    .content;
+                let after_version = version(target, &saved);
                 Ok(
-                    json!({"path":target.path,"version":version(target, &saved),"bytes":saved.bytes.len(),"saved":true}),
+                    json!({"path":target.path,"version":after_version,"bytes":saved.bytes.len(),"saved":true,
+                        "change":{"path":target.path,"beforeContent":before_content,"afterContent":after_content,"beforeVersion":before_version,"afterVersion":after_version,"verified":true}}),
                 )
             }
         }
@@ -319,15 +357,35 @@ impl FileTools {
     }
     /// 即使完全访问也不能通过文件工具篡改 Agent 自己的权限、凭据引用或历史。
     fn check_protected(&self, path: &Path) -> AgentResult<()> {
-        if self
-            .protected
-            .iter()
-            .any(|protected| path.starts_with(protected))
-        {
+        if self.protected.iter().any(|protected| {
+            path.starts_with(protected)
+                && !self.write_root.as_ref().is_some_and(|writable| {
+                    writable != protected
+                        && writable.starts_with(protected)
+                        && path.starts_with(writable)
+                })
+        }) {
             return Err(AgentError::new(
                 "AGENT_PROTECTED_PATH",
                 "AI 自身的数据和凭据需通过设置管理，不能由文件工具读写。",
             ));
+        }
+        Ok(())
+    }
+    /// 再次执行时也核验范围；外部目录和程序根写入不能靠一次审批放行。
+    fn check_scope(&self, path: &Path, write: bool) -> AgentResult<()> {
+        if let Some(writable) = &self.write_root {
+            let in_output = path.starts_with(writable);
+            let in_root = self
+                .root
+                .as_ref()
+                .is_some_and(|root| path.starts_with(root));
+            if (write && !in_output) || (!write && !in_root && !in_output) {
+                return Err(AgentError::new(
+                    "AGENT_WORKSPACE_SCOPE",
+                    "目标不在本工作区允许的范围内；默认工作区只能向生成物目录写入。",
+                ));
+            }
         }
         Ok(())
     }
@@ -370,7 +428,7 @@ fn version(target: &Target, file: &conflicts::FileBytes) -> String {
     format!("{:x}", hash.finalize())
 }
 /// 固定规则识别凭据和系统配置路径，不由模型自行判断风险。
-fn sensitive_path(path: &Path) -> bool {
+pub(crate) fn sensitive_path(path: &Path) -> bool {
     path.components().any(|part| {
         let part = part.as_os_str().to_string_lossy().to_ascii_lowercase();
         matches!(

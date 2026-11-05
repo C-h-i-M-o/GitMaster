@@ -1,5 +1,61 @@
 # 分阶段验证记录
 
+## 2026-11-05 提交前检查与开发快照交付
+
+用户要求完成提交前检查后，将当前全部代码和文档提交 GitHub。目标为 `origin/ai-agent`，远端更新后与本地基线 `b6f92a3` 一致；本次不合并 `main` 或发布。沿用此前“取消测试”的指令，本轮没有执行 Node/Rust 运行测试，也未重新进行 Git 超时采样。
+
+- `pnpm build` 通过，包含两份 TypeScript 配置的类型检查；保留原有大 chunk 警告。
+- `cargo check -p gitmaster-desktop --locked --offline` 通过；保留原有条件编译 unused imports/dead code 警告。
+- `pnpm format:check` 通过；`cargo fmt --all -- --check` 首次仅指出诊断测试的一处换行，修正后复核通过。
+- 暂存差异空白检查、敏感路径/大文件筛查与常见密钥/凭据 URL 特征扫描无异常；这属于提交范围检查，不等同于完整安全审计。
+- 前端/桌面与核心 Agent 的定向只读审查未发现提交阻断；复核了密钥存储、跨 origin 复用、受限工具表、取消/重试及写结果通知。没有新增 shell 回退或启用 T5。
+
+代码、文档、本轮手写 Agent 回归用例与手动诊断脚本一起交付。下载的第三方沙箱源码、依赖、构建产物、原始日志和其他既有本地临时夹具继续忽略；检查日志在 `%TEMP%/gitmaster-precommit-20261105/`。三项 Git 超时尚未稳定修复，原生双平台、真实模型和沙箱边界仍未验收，不能把本次静态检查通过或分支推送描述为完整功能验收通过。具体超时证据保留在下节。
+
+## 2026-11-05 Git 超时专项（用户取消后续测试）
+
+用户要求继续定位三项超时，随后明确回复“取消测试”。取消时串行复跑已结束，已核实没有本轮 Cargo、rustc 或测试进程；不再启动测试。没有增加生产或测试超时、删除业务断言、切换系统 Git、修改系统防护或提交代码。
+
+- 受管/普通进程对照：同一临时仓库读取，启动器模式 20 次受管执行中 4 次超时，原生模式 20 次中 1 次超时；两组各 3 次打开仓库均失败。耗时主要在等待 Git 进程退出，创建、管道与回收通常较短；普通进程也有超过 12 秒的成功读取。日志 `tests/git-timeout-process-baseline.log`。
+- 将实时日志移至系统临时目录后，重复对照的 6 次打开仓库均成功，但启动器模式仍有 1 次超时，不能把移动日志或切换原生程序认定为根治。同期曾观察到较高系统 CPU、处理器排队、桌面后台 Git 查询和 Git 内的防护模块；这些是相关现象，尚无调度/调用栈证据证明具体责任方。
+- 三项连续两轮复跑：第一轮 0/3 通过；第二轮分支审批/过期计划、Git 写结果关闭收尾通过，排队文件写取消在 `resolve_git` 的版本探测阶段仍超时，结果为 2/3。关闭收尾另一次单项也通过，但随后曾在仓库准备阶段失败。因此三项仍未达到稳定通过门槛。
+- 关闭测试已增加可选 `GITMASTER_TEST_TIMINGS` 脱敏阶段输出；结果屏障超时保留原有 120 秒并报告运行阶段和末条事件。没有修改生产执行逻辑。测试编译并执行过；最后仅手工换行调整未重新验证，因为用户已取消测试。
+- Windows 内建 WPR 的 CPU 跟踪启动被系统策略拒绝：`0xc5585011` / `Failed to enable the policy to profile system performance`，没有取得 CPU 调度跟踪。未申请工具提权或改变系统策略。
+
+后续日志位于 `%TEMP%/gitmaster-timeout-20261105/`：`process-isolated.log`、`runtime-isolated.log`、`agent_files-round-1/2.log`、`agent_git-round-1/2.log`、`agent_runtime-round-1/2.log`。原始失败不因后续单项通过而删除。当前结论是 Git 子进程存在环境相关的长尾延迟，具体根因及可靠修复仍未确认；恢复测试需用户另行指示。
+
+## 2026-11-05 Agent v2 继续开发
+
+用户要求继续开发，沿用 `ai-agent` / `b6f92a3`，本轮没有提交、推送或发布。临时夹具、HTTP mock、日志保留在本地 `tests/`；不使用真实用户仓库测试 Git 写入，不调用真实付费模型。
+
+| 检查                                           | 已观察结果与范围                                                                                                                                                                                                                            |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm build`（包含两份 tsconfig 的 typecheck） | 通过，退出 0。保留原有大 chunk 警告，不视为长聊天性能验收；日志 `tests/agent-v2-build-final.log`                                                                                                                                            |
+| Node/SSR：13 个 Agent 测试文件串行             | 首轮 35/36 通过。唯一失败为旧设置页 fixture 缺少新增 `configuration.deletePending`；补齐后该文件 2/2 通过，其余 34 项此前通过，共覆盖 36 项。未削弱 AI/通用分区隔离断言；首轮日志 `tests/agent-v2-ui-final.log`                             |
+| `cargo check -p gitmaster-desktop --offline`   | 已通过，Git 写后结果补丁后再次核验；现有 Windows 条件编译 unused imports/dead code 警告保留。日志 `tests/agent-v2-desktop-check-final.log`                                                                                                  |
+| 全部 `agent_*.rs` Cargo 集成目标               | 26 个目标首轮 115 通过 / 11 失败；修正后复跑 6 个目标，30 通过 / 3 失败。按各目标最后一次结果合计 123 通过 / 3 失败（不是一次全绿运行）。日志 `tests/agent-v2-agent-all-recheck.log`、`tests/agent-v2-failed-targets-recheck.log`           |
+| 核心 Agent 内部单元回归                        | Git 写后结果修复后 `cargo test -p gitmaster-core --offline --lib agent:: -- --test-threads=1` 4/4 通过；日志 `tests/agent-v2-core-unit-final.log`                                                                                           |
+| 桌面工作区单元回归                             | `cargo test -p gitmaster-desktop --offline commands::agent::workspaces::tests -- --test-threads=1` 1/1 通过，验证默认工作区不受文件夹切换影响、普通文件夹无需 Git、旧文件夹失去执行身份；日志 `tests/agent-v2-desktop-workspaces-final.log` |
+| 格式                                           | `cargo fmt --all -- --check`、`pnpm format:check` 均通过，退出 0；最终文档补录后另做定向格式检查                                                                                                                                            |
+
+关键覆盖包含三协议参数/usage/草稿两阶段工具探针、取消和有界重试、共享 Key 与 origin 变更确认、同连接多模型、范围保护、会话配置原子创建、归档只读、上下文压缩与取消门禁、引用版本/敏感 Git 路径、工具分页元数据、记忆作用域/显式保存、历史工件校验、写后模型失败不重放、聊天搜索和最近模型。Node/SSR 验证实际组件与 hook 首次渲染、输入快捷键、模型能力、权限说明、过程折叠、改动/用量/记忆和上下文入口，不等于原生交互验收。
+
+复跑仍失败的三个用例：
+
+- `agent_files::queued_file_write_does_not_execute_after_cancel`：本轮首次通过，复跑在临时仓库 `open_repository` 的 `revParse` 阶段 `TIMEOUT`，取消写入断言未执行。
+- `agent_git::branch_switch_requires_approval_and_rejects_stale_prepared_state`：两次均在临时仓库初始化 `revParse` 超时；同组其余三项复跑通过。
+- `agent_runtime::shutdown_waits_for_git_write_result_delivery`：首次未记录成功工具结果，第二次等待写入结果屏障超过现有 120 秒；未放宽生产或测试超时，不能记为关闭链路验收通过。
+
+修正的夹具问题包括设置页新字段、探针测试错误分支的 Debug 约束、单线程异步测试中的阻塞等待、模拟重启前释放旧 runtime 租约；文件版本测试改为批准写入后仍要求 `AGENT_FILE_CHANGED`，未通过拒绝审批来掩盖版本检查。模型探针最终 5/5、引用 9/9、写后失败不重放 1/1 通过。运行时 10 项复跑为 9/10，先前的审批等待和开发总结失败此次通过，仍保留初次失败记录。
+
+复跑后的静态复核另修复 Git 写入成功后再次读取状态会将成功误报失败的问题：直接复用 `OperationResult` 的刷新快照；刷新失败仍保留已成功操作，多步 pull 首步成功后的后续异常禁止自动重试。该改动之后的 4 项核心内部测试通过，覆盖成功/刷新失败/未知结果/部分拉取；没有把此前 26 个集成目标的结果写成该补丁后的一次全量通过。
+
+**全量基线仍未通过。** 串行执行 `cargo test -p gitmaster-core --offline --no-fail-fast -- --test-threads=1` 后，库测试出现分支/能力相关失败；为定位并运行全部 Agent 目标，停止该次全量进程，原始日志保留为 `tests/agent-v2-core-full.log`，没有完整总数。单独复跑 `git::branches::tests::switch_preserves_ignored_collision` 仍失败：`branches.rs:960` 的 `open_repository` 返回 `TIMEOUT` / `gitQuery`，耗时 136.03s，尚未到分支切换行为断言。日志 `tests/agent-v2-existing-branch-failure.log`。这些 Git 源文件本轮未修改；证据不足以确定超时根因，不能宣称全量通过。没有扩大生产超时或删除断言。
+
+**原生验证限制。** 本机 `pnpm tauri dev --no-watch` 编译启动成功，但初次窗口出现白屏，定位为 `useAgent` 内部 `newChatConfiguration` 命名遮蔽导入的工厂；已改为 `newChatRequest`，真实 hook 在禁用/设置未加载两种状态的 SSR 启动回归通过。随后 Windows 自动化连续两次无法激活捕获窗口，未继续盲目输入；开发版已关闭。滚动、中文 IME、缩放、菜单焦点、长列表及重新启动后的原生显示尚未验收，不能把 SSR 修复等同于实机通过。
+
+**沙箱与平台。** 用户明确回复“暂不授权，继续其他功能开发”，因此未启动 Docker、未 pull 镜像、未创建容器；没有安装账户/helper 或改变 ACL/WFP/防火墙。T5 模型命令及接管保持关闭，没有裸宿主回退。SRT/Codex 固定候选评估不证明 A10 边界成立。macOS、真实模型供应商、沙箱执行、Release 安装包与签名均未验收。
+
 ## 2026-11-04 Agent v2 阶段性交接
 
 用户明确要求当前代码与项目文档一起提交 GitHub，以更换开发环境继续；本次保存 `ai-agent` 的在开发快照，不合并 `main`，不发布，也不宣称 Agent v2 全部完成。进度和待修问题见 [交接文档](agent-v2-handoff-2026-11-04.md)，详细需求仍以 [本轮合并计划](agent-v2-spec-plan-2026-11-04.md) 为准。

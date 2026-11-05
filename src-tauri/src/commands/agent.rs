@@ -1,18 +1,26 @@
 //! 桌面 Agent 适配；密钥仅在此进程内使用，IPC 读取从不返回秘密。
+mod configuration;
+mod context;
+mod memories;
+mod workspaces;
 use super::DesktopState;
 use crate::agent_credentials::SystemCredentialVault;
+pub use configuration::*;
+pub use context::*;
 use gitmaster_core::agent::{
     provider::{Cancellation, ModelClient},
     runtime::{AgentRuntime, RunNotice, RunSnapshot, StartRun},
     tools::{git::GitContext, registry::Toolbox},
     *,
 };
+pub use memories::*;
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tauri::{Emitter, Manager, State};
+pub use workspaces::*;
 
 /// 初始化失败只禁用 AI，不影响普通 Git 功能。
 pub struct AgentState(Result<Arc<AgentServices>, AgentError>);
@@ -21,7 +29,10 @@ struct AgentServices {
     profiles: ProfileService<SystemCredentialVault>,
     runtime: Arc<AgentRuntime>,
     root: PathBuf,
+    application_root: PathBuf,
+    output_root: PathBuf,
     gate: Mutex<()>,
+    configuration_requests: Mutex<std::collections::HashMap<String, Cancellation>>,
 }
 impl AgentState {
     /// 为每次 IPC 克隆服务句柄，不长期持有 Tauri 状态引用。
@@ -38,6 +49,19 @@ pub fn initialize_agent(app: &tauri::AppHandle) {
             .map_err(|_| storage())?
             .join("agent-v1");
         let store = Arc::new(AgentStore::open(root.clone())?);
+        let application_root = std::env::current_exe()
+            .map_err(|_| storage())?
+            .parent()
+            .ok_or_else(storage)?
+            .canonicalize()
+            .map_err(|_| storage())?;
+        let output_root = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| storage())?
+            .join("agent-output");
+        std::fs::create_dir_all(&output_root).map_err(|_| storage())?;
+        let output_root = output_root.canonicalize().map_err(|_| storage())?;
         let handle = app.clone();
         let runtime = AgentRuntime::new(
             store.clone(),
@@ -71,7 +95,10 @@ pub fn initialize_agent(app: &tauri::AppHandle) {
             store,
             runtime,
             root,
+            application_root,
+            output_root,
             gate: Mutex::new(()),
+            configuration_requests: Mutex::new(std::collections::HashMap::new()),
         }))
     })();
     app.manage(AgentState(result));
@@ -208,23 +235,44 @@ pub async fn agent_list_chats(state: State<'_, AgentState>) -> AgentResult<ChatL
 pub async fn agent_create_chat(
     state: State<'_, AgentState>,
     desktop: State<'_, DesktopState>,
+    workspace_id: Option<String>,
+    model_config_id: Option<String>,
+    permission_mode: Option<PermissionMode>,
+    parameters: Option<ModelParameters>,
 ) -> AgentResult<ChatSession> {
     let services = state.services()?;
-    let path = desktop
-        .0
-        .lock()
-        .map_err(|_| storage())?
-        .active
-        .as_ref()
-        .map(|(handle, _)| handle.root.to_string_lossy().into_owned());
+    let workspace = {
+        let session = desktop.0.lock().map_err(|_| storage())?;
+        let id = workspace_id.unwrap_or_else(|| {
+            workspaces::workspaces(&services, &session)
+                .last()
+                .expect("默认工作区始终存在")
+                .id
+                .clone()
+        });
+        workspaces::resolve_workspace(&services, &session, &id)?
+    };
+    let path = (workspace.kind == "folder").then_some(workspace.root_path.clone());
+    let shared = desktop.inner().clone();
     work(move || {
+        let _gate = services.gate.lock().map_err(|_| storage())?;
+        let session = shared.0.lock().map_err(|_| storage())?;
+        let current = workspaces::resolve_workspace(&services, &session, &workspace.id)?;
+        if current.generation != workspace.generation {
+            return Err(AgentError::new(
+                "AGENT_WORKSPACE_CHANGED",
+                "工作区已变化，请重新创建聊天。",
+            ));
+        }
         let settings = services.store.settings()?;
-        services.store.create_chat(
-            settings
-                .active_profile_id
+        services.store.create_chat_configured(
+            model_config_id
                 .as_deref()
+                .or(settings.active_profile_id.as_deref())
                 .ok_or_else(profile_missing)?,
             path,
+            permission_mode,
+            parameters,
         )
     })
     .await
@@ -284,92 +332,62 @@ pub async fn agent_send_message(
     desktop: State<'_, DesktopState>,
     id: String,
     text: String,
+    references: Option<Vec<references::UserReferenceSpec>>,
 ) -> AgentResult<String> {
     let services = state.services()?;
     let shared = desktop.inner().clone();
-    let (context, epoch, token, path) = {
-        let session = shared.0.lock().map_err(|_| storage())?;
-        let context = match (&session.git, &session.active) {
-            (Some(git), Some((repository, _))) => Some(GitContext {
-                git: git.clone(),
-                repository: repository.clone(),
-                coordinator: session.coordinator.clone(),
-            }),
-            _ => None,
-        };
-        let path = context
-            .as_ref()
-            .map(|value| value.repository.root.to_string_lossy().into_owned());
-        (
-            context,
-            session.epoch,
-            session.agent_repository_request,
-            path,
-        )
-    };
-    let mut protected = vec![services.root.clone()];
-    for directory in [
-        app.path().app_config_dir(),
-        app.path().app_log_dir(),
-        app.path().app_cache_dir(),
-    ] {
-        if let Ok(path) = directory {
-            protected.push(path);
-        }
-    }
-    let (profile, key, mode, tools) = work({
+    let chat = work({
+        let services = services.clone();
+        let id = id.clone();
+        move || services.store.read_chat(&id)
+    })
+    .await?;
+    let (workspace, tools, system_context, guard) =
+        context::workspace_context(&app, &services, &shared, &chat.session.workspace_id).await?;
+    let references = references::verify_references(
+        &tools,
+        &references.unwrap_or_default(),
+        &Cancellation::new(),
+    )
+    .await?;
+    guard()?;
+    let (profile, key, mode) = work({
         let services = services.clone();
         move || {
             let settings = services.store.settings()?;
             let profile = settings
                 .profiles
                 .into_iter()
-                .find(|value| Some(&value.id) == settings.active_profile_id.as_ref())
+                .find(|value| value.id == chat.session.model_config_id)
                 .ok_or_else(profile_missing)?;
             let key = services.profiles.key_for(&profile)?;
-            Ok((
-                profile,
-                key,
-                settings.default_permission_mode,
-                Arc::new(Toolbox::new(context, protected)?),
-            ))
+            Ok((profile, key, chat.session.permission_mode))
         }
     })
     .await?;
-    let system_context = {
-        let session = shared.0.lock().map_err(|_| storage())?;
-        match &session.active {
-            Some((handle, _)) => format!(
-                "当前仓库 ID：{}；当前项目：{}。",
-                handle.id,
-                handle.root.display()
-            ),
-            None => "当前未打开项目，只能使用用户明确指定的绝对文件路径。".into(),
-        }
-    };
-    let guard = Arc::new(move || {
-        let session = shared.0.lock().map_err(|_| storage())?;
-        if session.epoch != epoch || session.agent_repository_request != token {
-            Err(AgentError::new(
-                "AGENT_REPOSITORY_CHANGED",
-                "项目环境已切换，旧运行已停止，请重新发送消息。",
-            ))
-        } else {
-            Ok(())
-        }
-    });
+    let path = (workspace.kind == "folder").then(|| workspace.root_path.clone());
     let _gate = services.gate.lock().map_err(|_| storage())?;
-    services.runtime.start(StartRun {
-        chat_id: id,
-        text,
-        profile,
-        key,
-        mode,
-        tools,
-        repository_path: path,
-        system_context,
-        guard,
-    })
+    let latest = services.store.read_chat(&id)?;
+    if latest.session.model_config_id != profile.id || latest.session.permission_mode != mode {
+        return Err(AgentError::new(
+            "AGENT_CONFIG_STALE",
+            "聊天配置已更新，请重新发送消息。",
+        ));
+    }
+    services.runtime.start_with_references(
+        StartRun {
+            chat_id: id,
+            text,
+            profile,
+            key,
+            mode,
+            tools,
+            repository_path: path,
+            system_context,
+            guard,
+        },
+        references,
+    )
 }
 /// 取消指定运行，不声称回滚已经完成的写入。
 #[tauri::command]

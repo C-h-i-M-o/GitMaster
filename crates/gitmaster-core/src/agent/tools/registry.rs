@@ -46,6 +46,26 @@ pub enum ToolOutput {
     },
 }
 impl Toolbox {
+    /// 文件范围独立于 Git 身份；默认工作区和非 Git 文件夹也有受限文件能力。
+    pub fn scoped(
+        context: Option<GitContext>,
+        root: PathBuf,
+        write_root: PathBuf,
+        protected: Vec<PathBuf>,
+    ) -> AgentResult<Self> {
+        let coordination = context
+            .as_ref()
+            .map(|value| {
+                crate::git::coordinator::CoordinationKey::repository(&value.repository)
+                    .map(|key| (value.coordinator.clone(), key))
+                    .map_err(git_error)
+            })
+            .transpose()?;
+        Ok(Self {
+            files: FileTools::scoped(root, write_root, protected, coordination)?,
+            git: context.map(GitTools::new),
+        })
+    }
     /// 从桌面快照建立工具，保护 Agent 数据目录不被自身读写。
     pub fn new(context: Option<GitContext>, protected: Vec<PathBuf>) -> AgentResult<Self> {
         let root = context.as_ref().map(|value| value.repository.root.clone());

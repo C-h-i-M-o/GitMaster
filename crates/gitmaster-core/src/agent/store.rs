@@ -1,4 +1,10 @@
 use super::*;
+pub(super) mod chat_search;
+pub(super) mod context_store;
+pub(super) mod memory;
+mod recent_models;
+mod run_summary;
+pub(super) mod tool_results;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::HashMap,
@@ -241,6 +247,27 @@ impl AgentStore {
         atomic_json(&self.root.join("settings.json"), &settings)?;
         Ok(view)
     }
+    /// 在同一锁内验证并原子发布连接与模型变更，保留无关配置。
+    pub(crate) fn change_configuration(
+        &self,
+        update: impl FnOnce(&mut super::migration::SettingsDocument) -> AgentResult<()>,
+    ) -> AgentResult<AgentSettings> {
+        let _guard = self.lock()?;
+        let mut document = self.read_settings_document()?;
+        update(&mut document)?;
+        if !document.models.iter().any(|model| {
+            model.enabled && Some(&model.id) == document.active_model_config_id.as_ref()
+        }) {
+            document.active_model_config_id = document
+                .models
+                .iter()
+                .find(|model| model.enabled)
+                .map(|model| model.id.clone());
+        }
+        let view = document.view()?;
+        atomic_json(&self.root.join("settings.json"), &document)?;
+        Ok(view)
+    }
     /// 保存下轮生效的默认权限，不改变正在执行的运行快照。
     pub fn set_permission(&self, mode: PermissionMode) -> AgentResult<AgentSettings> {
         let _guard = self.lock()?;
@@ -257,14 +284,32 @@ impl AgentStore {
         profile_id: &str,
         repository_path: Option<String>,
     ) -> AgentResult<ChatSession> {
+        self.create_chat_configured(profile_id, repository_path, None, None)
+    }
+    /// 先验证完整的聊天配置再建立目录，配置失败不会留下半初始化聊天。
+    pub fn create_chat_configured(
+        &self,
+        profile_id: &str,
+        repository_path: Option<String>,
+        mode: Option<PermissionMode>,
+        parameters: Option<ModelParameters>,
+    ) -> AgentResult<ChatSession> {
         let _guard = self.lock()?;
         let settings = self.read_settings()?;
-        if !settings.profiles.iter().any(|p| p.id == profile_id) {
-            return Err(AgentError::new(
-                "AGENT_PROFILE_MISSING",
-                "请先完成 API 配置。",
-            ));
-        }
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .ok_or_else(|| AgentError::new("AGENT_PROFILE_MISSING", "请先完成 API 配置。"))?;
+        let model = settings
+            .models
+            .iter()
+            .find(|model| model.id == profile_id && model.enabled)
+            .ok_or_else(|| AgentError::new("AGENT_PROFILE_MISSING", "所选模型已禁用或删除。"))?;
+        parameters.as_ref().unwrap_or(&model.defaults).validate(
+            profile,
+            &provider::catalog::effective_capabilities(profile, &model.capabilities),
+        )?;
         let now = timestamp();
         let chat = ChatSession {
             version: 2,
@@ -274,7 +319,9 @@ impl AgentStore {
             repository_path,
             profile_id: profile_id.into(),
             model_config_id: profile_id.into(),
-            permission_mode: settings.default_permission_mode,
+            parameters,
+            memory: ChatMemoryConfig::default(),
+            permission_mode: mode.unwrap_or(settings.default_permission_mode),
             archived: false,
             created_at: now,
             updated_at: now,
@@ -452,6 +499,74 @@ impl AgentStore {
         chat.updated_at = timestamp();
         atomic_json(&self.chat_dir(id)?.join("session.json"), &chat)?;
         Ok(chat)
+    }
+    /// 只保存一个聊天的下一轮配置；调用方须持运行门禁，禁止运行中覆盖快照。
+    pub fn configure_chat(
+        &self,
+        id: &str,
+        model_id: &str,
+        mode: PermissionMode,
+        parameters: Option<ModelParameters>,
+    ) -> AgentResult<ChatSession> {
+        let _guard = self.lock()?;
+        let settings = self.read_settings()?;
+        let model = settings
+            .models
+            .iter()
+            .find(|model| model.id == model_id && model.enabled)
+            .ok_or_else(|| {
+                AgentError::new(
+                    "AGENT_PROFILE_MISSING",
+                    "所选模型已禁用或删除，请选择可用模型。",
+                )
+            })?;
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == model_id)
+            .ok_or_else(AgentError::corrupt)?;
+        parameters.as_ref().unwrap_or(&model.defaults).validate(
+            profile,
+            &provider::catalog::effective_capabilities(profile, &model.capabilities),
+        )?;
+        let mut chat = self.session(id)?;
+        if chat.archived {
+            return Err(AgentError::new("AGENT_ARCHIVED", "请先恢复归档聊天。"));
+        }
+        chat.model_config_id = model_id.into();
+        chat.profile_id = model_id.into();
+        chat.permission_mode = mode;
+        chat.parameters = parameters;
+        chat.updated_at = timestamp();
+        atomic_json(&self.chat_dir(id)?.join("session.json"), &chat)?;
+        Ok(chat)
+    }
+    /// 保存下一轮记忆选项，不修改任何记忆正文或已有事件。
+    pub fn set_chat_memory(&self, id: &str, request: ChatMemoryConfig) -> AgentResult<ChatSession> {
+        if request.excluded_ids.len() > 1000 {
+            return Err(AgentError::new("AGENT_MEMORY_LIMIT", "本轮排除条目过多。"));
+        }
+        for id in &request.excluded_ids {
+            valid_id(id)?;
+        }
+        let _guard = self.lock()?;
+        let mut chat = self.session(id)?;
+        if chat.archived {
+            return Err(AgentError::new("AGENT_ARCHIVED", "请先恢复归档聊天。"));
+        }
+        chat.memory = request;
+        atomic_json(&self.chat_dir(id)?.join("session.json"), &chat)?;
+        Ok(chat)
+    }
+    /// 本轮终态后仅清空一次性排除，不影响用户保存的开关和记忆内容。
+    pub fn clear_memory_exclusions(&self, id: &str) -> AgentResult<()> {
+        let _guard = self.lock()?;
+        let mut chat = self.session(id)?;
+        if !chat.memory.excluded_ids.is_empty() {
+            chat.memory.excluded_ids.clear();
+            atomic_json(&self.chat_dir(id)?.join("session.json"), &chat)?;
+        }
+        Ok(())
     }
     /// 删除只能作用于已验证的不透明聊天目录。
     pub fn delete_chat(&self, id: &str) -> AgentResult<()> {

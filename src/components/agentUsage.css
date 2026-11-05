@@ -1,0 +1,50 @@
+.agent-usage {
+  position: relative;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.agent-usage > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.agent-usage > section {
+  display: grid;
+  gap: 0.45rem;
+  max-width: min(44rem, calc(100vw - 2rem));
+  max-height: min(24rem, 60vh);
+  overflow: auto;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--surface);
+}
+
+.agent-usage h4,
+.agent-usage p {
+  margin: 0;
+}
+
+.agent-usage ul {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.agent-usage li {
+  display: grid;
+  gap: 0.2rem;
+  overflow-wrap: anywhere;
+}
+
+.agent-usage small {
+  color: var(--muted);
+}
+
+.agent-context-preview {
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--line);
+}

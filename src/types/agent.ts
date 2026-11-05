@@ -1,6 +1,14 @@
 /** Agent IPC 只使用可序列化 JSON，已保存密钥不出现在任何读取类型中。 */
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+import type {
+  ModelCapabilities,
+  ModelParameters,
+  ProviderPreset,
+} from "./agentModels";
+import type { ChatMemoryConfig, MemorySelection } from "./agentMemory";
+import type { AgentFileChange, ModelAttempt, ContextPreview } from "./agentRun";
+import type { VerifiedReference } from "./agentContext";
 export type ProviderProtocol =
   "chatCompletions" | "responses" | "anthropicMessages";
 export type PermissionMode = "requestApproval" | "autoApprove" | "fullAccess";
@@ -24,6 +32,9 @@ export interface AgentSettingsView {
     permissionReviewRequired: boolean;
   };
   hasApiKeys: Record<string, boolean>;
+  providerHasApiKeys: Record<string, boolean>;
+  presets: ProviderPreset[];
+  recentModelConfigIds: string[];
   warnings: string[];
 }
 /** 连接与模型分别保存，同一连接下的模型共用系统凭据引用。 */
@@ -44,6 +55,8 @@ export interface ModelConfig {
   protocol: ProviderProtocol;
   enabled: boolean;
   revision: number;
+  capabilities: ModelCapabilities;
+  defaults: ModelParameters;
 }
 export interface SaveProfile {
   id: string | null;
@@ -62,9 +75,21 @@ export interface ChatSession {
   workspaceId: string;
   modelConfigId: string;
   permissionMode: PermissionMode;
+  parameters: ModelParameters | null;
+  memory: ChatMemoryConfig;
   archived: boolean;
   createdAt: number;
   updatedAt: number;
+}
+/** 执行范围由桌面签发；历史路径不能作为新的工作区授权。 */
+export interface AgentWorkspace {
+  id: string;
+  kind: "default" | "folder";
+  label: string;
+  rootPath: string;
+  writePath: string;
+  generation: number;
+  gitAvailable: boolean;
 }
 export interface ToolCall {
   id: string;
@@ -79,6 +104,22 @@ export interface ApprovalRequest {
   preview: JsonValue;
 }
 export type EventPayload =
+  | { kind: "userReferences"; references: VerifiedReference[] }
+  | { kind: "memorySuggested"; text: string; tags: string[] }
+  | { kind: "modelAttempt"; purpose: string; attempt: ModelAttempt }
+  | {
+      kind: "contextPrepared";
+      preview: ContextPreview;
+      memories: MemorySelection;
+    }
+  | { kind: "fileChanged"; callId: string; change: AgentFileChange }
+  | { kind: "runWarning"; message: string }
+  | {
+      kind: "runConfiguration";
+      parameters: ModelParameters;
+      modelRevision: number | null;
+      connectionRevision: number | null;
+    }
   | {
       kind: "runStarted";
       profile: ProviderProfile;

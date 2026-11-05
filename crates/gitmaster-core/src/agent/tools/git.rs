@@ -1,3 +1,4 @@
+use super::files::sensitive_path;
 use super::*;
 use crate::agent::{
     policy::{decide, PolicyDecision, ToolRisk},
@@ -11,14 +12,21 @@ use crate::git::{
     remote::RemoteSession,
     repository::read_repository_state,
     GitExecutable, HeadState, OperationResult, RepositoryHandle, RepositoryState, SyncUpstream,
-    WritePreview,
+    WritePreview, WriteRefresh,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     ffi::OsString,
+    path::Path,
     time::{Duration, Instant},
 };
+
+const MAX_DIFF_PATH_LIST_BYTES: usize = 256 * 1024;
+const MAX_DIFF_PATH_COUNT: usize = 4096;
+const MAX_DIFF_ARGUMENT_BYTES: usize = 8 * 1024;
+const MAX_DIFF_OUTPUT_BYTES: usize = 256 * 1024;
 
 /// 桌面提供已验证 Git、仓库身份及共享写协调器，不接受模型指定程序。
 #[derive(Clone)]
@@ -145,6 +153,13 @@ impl GitTools {
             "git_diff" => {
                 let input: DiffArgs = args(call)?;
                 validate_path(input.path.as_deref())?;
+                if input
+                    .path
+                    .as_deref()
+                    .is_some_and(|path| sensitive_path(Path::new(path)))
+                {
+                    return Err(sensitive_git_path_error());
+                }
                 Action::Diff {
                     staged: input.staged,
                     path: input.path,
@@ -153,6 +168,13 @@ impl GitTools {
             "git_show" => {
                 let input: ShowArgs = args(call)?;
                 validate_path(input.path.as_deref())?;
+                if input
+                    .path
+                    .as_deref()
+                    .is_some_and(|path| sensitive_path(Path::new(path)))
+                {
+                    return Err(sensitive_git_path_error());
+                }
                 Action::Show {
                     oid: self.resolve_commit(&input.commit_id)?,
                     path: input.path,
@@ -340,7 +362,12 @@ impl GitTools {
                 ))
             }
         };
-        let decision = decide(mode, risk);
+        let decision =
+            if mode == PermissionMode::RequestApproval && matches!(action, Action::Write { .. }) {
+                PolicyDecision::Ask
+            } else {
+                decide(mode, risk)
+            };
         let reason = if matches!(risk, ToolRisk::Network { .. }) {
             "此操作会访问 Git 远端。"
         } else if matches!(
@@ -407,26 +434,12 @@ impl GitTools {
                 ],
                 128 * 1024,
             ),
-            Action::Diff { staged, path } => {
-                let mut args = vec![
-                    "diff".into(),
-                    "--no-ext-diff".into(),
-                    "--no-textconv".into(),
-                    "--no-renames".into(),
-                ];
-                if staged {
-                    args.push("--cached".into());
-                }
-                args.push("--".into());
-                if let Some(path) = path {
-                    args.push(path);
-                }
-                self.read(&args, 256 * 1024)
-            }
+            Action::Diff { staged, path } => self.read_diff(staged, path.as_deref()),
             Action::Show { oid, path } => {
                 if let Some(path) = path {
                     self.read(&["show".into(), format!("{oid}:{path}")], 128 * 1024)
                 } else {
+                    self.ensure_safe_commit(&oid)?;
                     self.read(
                         &[
                             "show".into(),
@@ -443,23 +456,25 @@ impl GitTools {
             Action::Write { plan_id, pull } => {
                 let mut result = self.finish_plan(&plan_id)?;
                 if let Some(target) = pull {
-                    cancellation.check()?;
-                    let state = self.state()?;
+                    cancellation.check().map_err(|_| pull_followup_error())?;
+                    let state = operation_refresh_state(&result).ok_or_else(pull_followup_error)?;
                     if !matches!(&state.head, HeadState::Branch { name, .. } if name == &target.local)
                     {
-                        return Err(stale());
+                        return Err(pull_followup_error());
                     }
                     let context = &self.context;
-                    let remotes =
-                        RemoteSession::new(&context.git, &context.repository).map_err(git_error)?;
-                    let sync = remotes.sync_target(&state).map_err(git_error)?;
+                    let remotes = RemoteSession::new(&context.git, &context.repository)
+                        .map_err(|_| pull_followup_error())?;
+                    let sync = remotes
+                        .sync_target(&state)
+                        .map_err(|_| pull_followup_error())?;
                     let SyncUpstream::Configured {
                         remote_id,
                         target_branch_name,
                         ..
                     } = sync.upstream
                     else {
-                        return Err(stale());
+                        return Err(pull_followup_error());
                     };
                     if target_branch_name != target.branch
                         || !remotes
@@ -468,7 +483,7 @@ impl GitTools {
                             .iter()
                             .any(|r| r.remote_id == remote_id && r.name == target.remote)
                     {
-                        return Err(stale());
+                        return Err(pull_followup_error());
                     }
                     let plan: WritePreview = git::remote::prepare_sync_fast_forward(
                         &context.coordinator,
@@ -477,11 +492,12 @@ impl GitTools {
                         &state,
                         &remotes,
                     )
-                    .map_err(git_error)?;
-                    result = self.finish_plan(&plan.plan_id)?;
+                    .map_err(|_| pull_followup_error())?;
+                    result = self
+                        .finish_plan(&plan.plan_id)
+                        .map_err(|_| pull_followup_error())?;
                 }
-                let state = self.state()?;
-                Ok(json!({"operation":result,"state":state}))
+                write_operation_value(result)
             }
         }
     }
@@ -532,6 +548,125 @@ impl GitTools {
         };
         Ok(json!({"text":text,"truncated":output.truncated}))
     }
+    /// 用 NUL 名称清单审查完整当前差异路径，再对冻结的普通文件名生成补丁。
+    fn read_diff(&self, staged: bool, path: Option<&str>) -> AgentResult<Value> {
+        let paths = self.diff_path_names(staged, path)?;
+        if paths.is_empty() {
+            return Ok(json!({"text":"","truncated":false}));
+        }
+        let mut text = String::new();
+        let mut truncated = false;
+        let mut batch = Vec::new();
+        let mut batch_bytes = 0usize;
+        for path in &paths {
+            let path_bytes = path.len().saturating_add(1);
+            if path_bytes > MAX_DIFF_ARGUMENT_BYTES {
+                return Err(diff_path_list_error());
+            }
+            if !batch.is_empty() && batch_bytes.saturating_add(path_bytes) > MAX_DIFF_ARGUMENT_BYTES
+            {
+                self.append_diff_batch(staged, &batch, &mut text, &mut truncated)?;
+                if truncated {
+                    break;
+                }
+                batch.clear();
+                batch_bytes = 0;
+            }
+            batch.push(path.clone());
+            batch_bytes += path_bytes;
+        }
+        if !truncated && !batch.is_empty() {
+            self.append_diff_batch(staged, &batch, &mut text, &mut truncated)?;
+        }
+        // 若两次读取期间增删了路径，丢弃刚生成的补丁，不把未审核路径交给调用者。
+        if self.diff_path_names(staged, path)? != paths {
+            return Err(diff_changed_error());
+        }
+        Ok(json!({"text":text,"truncated":truncated}))
+    }
+    /// 先完整列出差异文件名；超限或清单含敏感项时不读取任何补丁正文。
+    fn diff_path_names(&self, staged: bool, path: Option<&str>) -> AgentResult<Vec<String>> {
+        let mut args = vec![
+            "-c".to_owned(),
+            "core.quotePath=false".to_owned(),
+            "--literal-pathspecs".to_owned(),
+            "diff".to_owned(),
+            "--no-ext-diff".to_owned(),
+            "--no-textconv".to_owned(),
+            "--no-renames".to_owned(),
+            "--name-only".to_owned(),
+            "-z".to_owned(),
+        ];
+        if staged {
+            args.push("--cached".into());
+        }
+        args.push("--".into());
+        if let Some(path) = path {
+            args.push(path.into());
+        }
+        let output = self.read(&args, MAX_DIFF_PATH_LIST_BYTES)?;
+        checked_path_list(&output)
+    }
+    /// 按已审核文件名分批读取，literal pathspec 阻止通配符扩展。
+    fn append_diff_batch(
+        &self,
+        staged: bool,
+        paths: &[String],
+        text: &mut String,
+        truncated: &mut bool,
+    ) -> AgentResult<()> {
+        let remaining = MAX_DIFF_OUTPUT_BYTES.saturating_sub(text.len());
+        if remaining == 0 {
+            *truncated = true;
+            return Ok(());
+        }
+        let mut args = vec![
+            "-c".to_owned(),
+            "core.quotePath=false".to_owned(),
+            "--literal-pathspecs".to_owned(),
+            "diff".to_owned(),
+            "--no-ext-diff".to_owned(),
+            "--no-textconv".to_owned(),
+            "--no-renames".to_owned(),
+            "--src-prefix=a/".to_owned(),
+            "--dst-prefix=b/".to_owned(),
+            "--no-color".to_owned(),
+        ];
+        if staged {
+            args.push("--cached".into());
+        }
+        args.push("--".into());
+        args.extend(paths.iter().cloned());
+        let output = self.read(&args, remaining)?;
+        let patch = output["text"].as_str().ok_or_else(invalid)?;
+        verify_patch_headers(patch, paths)?;
+        text.push_str(patch);
+        *truncated = output["truncated"] == true;
+        Ok(())
+    }
+    /// 枚举不可变提交的全部变更路径，用于阻止 git_show 整提交输出敏感文件。
+    fn commit_path_names(&self, oid: &str) -> AgentResult<Vec<String>> {
+        let args = vec![
+            "diff-tree".to_owned(),
+            "--root".to_owned(),
+            "--no-commit-id".to_owned(),
+            "-r".to_owned(),
+            "-m".to_owned(),
+            "--no-renames".to_owned(),
+            "--no-ext-diff".to_owned(),
+            "--no-textconv".to_owned(),
+            "--name-only".to_owned(),
+            "-z".to_owned(),
+            oid.to_owned(),
+            "--".to_owned(),
+        ];
+        let output = self.read(&args, MAX_DIFF_PATH_LIST_BYTES)?;
+        checked_path_list(&output)
+    }
+    /// 返回提交补丁或文件前先校验整份不可变提交路径清单。
+    fn ensure_safe_commit(&self, oid: &str) -> AgentResult<()> {
+        self.commit_path_names(oid).map(|_| ())
+    }
     /// 只接受 SHA，不把 ref 表达式或选项当作用户指定提交。
     pub(crate) fn resolve_commit(&self, id: &str) -> AgentResult<String> {
         if !(4..=64).contains(&id.len()) || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -562,7 +697,7 @@ impl GitTools {
         Ok(oid.into())
     }
     /// 不以动画或任务受理当作成功，等待核心发布真实执行结果。
-    fn finish_plan(&self, plan_id: &str) -> AgentResult<Value> {
+    fn finish_plan(&self, plan_id: &str) -> AgentResult<OperationResult> {
         let context = &self.context;
         let handle = context
             .coordinator
@@ -572,30 +707,144 @@ impl GitTools {
             let record = context
                 .coordinator
                 .read_operation(Some(&handle.operation_id))
-                .map_err(git_error)?
-                .ok_or_else(|| {
-                    AgentError::new(
-                        "AGENT_GIT_UNKNOWN",
-                        "Git 任务状态不可用，操作可能已发生，请刷新仓库确认。",
-                    )
-                })?;
+                .map_err(|_| unknown_git_result_error())?
+                .ok_or_else(unknown_git_result_error)?;
             if let Some(result) = record.result {
-                return match result {
-                    OperationResult::Succeeded { .. } => {
-                        serde_json::to_value(result).map_err(AgentError::storage)
-                    }
-                    OperationResult::Failed { error, .. }
-                    | OperationResult::Unknown { error, .. } => Err(git_error(error)),
-                    OperationResult::NeedsResolution { .. } => Err(AgentError::new(
-                        "AGENT_GIT_CONFLICT",
-                        "Git 操作需要处理冲突，请在工作台中查看实际状态。",
-                    )),
-                };
+                return successful_operation(result);
             }
             std::thread::sleep(Duration::from_millis(40));
         }
     }
 }
+/// 保留操作自带的刷新结果，避免写入成功后再执行一次可超时状态查询。
+fn write_operation_value(result: OperationResult) -> AgentResult<Value> {
+    let result = successful_operation(result)?;
+    let state = match &result {
+        OperationResult::Succeeded {
+            refresh: WriteRefresh::Ready { state },
+            ..
+        } => json!(state),
+        OperationResult::Succeeded { .. } => Value::Null,
+        _ => unreachable!("成功操作校验应过滤非成功结果"),
+    };
+    let operation = serde_json::to_value(result).map_err(AgentError::storage)?;
+    Ok(json!({"operation":operation,"state":state}))
+}
+
+/// 失败保持可诊断错误，未知结果一律禁止作为可安全重试的普通失败。
+fn successful_operation(result: OperationResult) -> AgentResult<OperationResult> {
+    match result {
+        result @ OperationResult::Succeeded { .. } => Ok(result),
+        OperationResult::Failed { error, .. } => Err(git_error(error)),
+        OperationResult::Unknown { .. } => Err(unknown_git_result_error()),
+        OperationResult::NeedsResolution { .. } => Err(AgentError::new(
+            "AGENT_GIT_CONFLICT",
+            "Git 操作需要处理冲突，请在工作台中查看实际状态。",
+        )),
+    }
+}
+
+/// 只使用已确认操作结果中的刷新快照，不重新查询仓库。
+fn operation_refresh_state(result: &OperationResult) -> Option<RepositoryState> {
+    match result {
+        OperationResult::Succeeded {
+            refresh: WriteRefresh::Ready { state },
+            ..
+        } => Some(state.clone()),
+        _ => None,
+    }
+}
+
+/// 写操作结果未知时明确提示先核验，避免 runtime 按普通失败自动重试。
+fn unknown_git_result_error() -> AgentError {
+    AgentError::new(
+        "AGENT_GIT_UNKNOWN",
+        "Git 写操作结果未知，可能已产生副作用；请检查仓库实际状态后再决定是否继续。",
+    )
+}
+
+/// 拉取首步已完成而后续核验或快进未完成，禁止把整轮误报为可重试失败。
+fn pull_followup_error() -> AgentError {
+    AgentError::new(
+        "AGENT_GIT_UNKNOWN",
+        "拉取的首步已完成，但后续状态核验或快进未完成；请检查仓库实际状态后再决定是否继续，不能自动重试。",
+    )
+}
+
+/// 校验 NUL 分隔名称清单必须完整、有限，并且不包含敏感文件路径。
+pub(crate) fn checked_path_list(output: &Value) -> AgentResult<Vec<String>> {
+    if output["truncated"] == true {
+        return Err(diff_path_list_error());
+    }
+    let text = output["text"].as_str().ok_or_else(diff_path_list_error)?;
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let content = text.strip_suffix('\0').ok_or_else(diff_path_list_error)?;
+    let paths = content.split('\0').map(str::to_owned).collect::<Vec<_>>();
+    if paths.is_empty() || paths.iter().any(|path| path.is_empty()) {
+        return Err(diff_path_list_error());
+    }
+    if paths.len() > MAX_DIFF_PATH_COUNT {
+        return Err(diff_path_list_error());
+    }
+    if paths.iter().any(|path| sensitive_path(Path::new(path))) {
+        return Err(sensitive_git_path_error());
+    }
+    Ok(paths)
+}
+
+/// 不暴露具体敏感路径或名称清单内容。
+fn sensitive_git_path_error() -> AgentError {
+    AgentError::new(
+        "AGENT_GIT_SENSITIVE_PATH",
+        "Git 差异涉及凭据或系统配置路径，已拒绝读取；请只选择明确的普通文件。",
+    )
+}
+
+/// 不完整或过大的路径清单不能作为安全补丁范围。
+fn diff_path_list_error() -> AgentError {
+    AgentError::new(
+        "AGENT_GIT_PATH_LIST_LIMIT",
+        "Git 变更路径清单无效或超过读取上限，未读取补丁内容。",
+    )
+}
+
+/// 两次路径清单不一致时，要求重新读取当前差异。
+fn diff_changed_error() -> AgentError {
+    AgentError::new(
+        "AGENT_GIT_DIFF_CHANGED",
+        "读取期间 Git 变更路径发生变化，请刷新后重试。",
+    )
+}
+
+/// 仅放行能与审核文件清单逐字对应的 diff header；无法确认的形式一律拒绝。
+fn verify_patch_headers(text: &str, paths: &[String]) -> AgentResult<()> {
+    let allowed = paths
+        .iter()
+        .map(|path| format!("diff --git a/{path} b/{path}"))
+        .collect::<HashSet<_>>();
+    let mut found = false;
+    for line in text.lines().filter(|line| line.starts_with("diff --git ")) {
+        found = true;
+        if !allowed.contains(line) {
+            return Err(diff_header_error());
+        }
+    }
+    if !text.is_empty() && !found {
+        return Err(diff_header_error());
+    }
+    Ok(())
+}
+
+/// patch header 无法绑定审核路径时不返回任何正文。
+fn diff_header_error() -> AgentError {
+    AgentError::new(
+        "AGENT_GIT_DIFF_PATHS",
+        "Git 补丁包含无法核对的文件路径，已拒绝读取；请刷新差异后重试。",
+    )
+}
+
 /// 仓库对象路径不允许目录穿越或路径表达式，且始终在参数分隔符之后传递。
 fn validate_path(path: Option<&str>) -> AgentResult<()> {
     if let Some(path) = path {
@@ -666,10 +915,72 @@ fn invalid() -> AgentError {
         "Git 工具参数无效，请使用已存在的文件、分支或远端名称。",
     )
 }
-/// 拉取前后上游或分支发生变化，不能继续整合到另一个目标。
-fn stale() -> AgentError {
-    AgentError::new(
-        "AGENT_GIT_CHANGED",
-        "当前分支或上游已变化，已停止后续整合，请重新读取仓库状态。",
-    )
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+    use crate::git::{error::OperationError, OperationKind, WriteRefresh};
+
+    /// 构造不访问仓库的已成功操作，用于验证结果与刷新状态映射。
+    fn succeeded(refresh: WriteRefresh) -> OperationResult {
+        OperationResult::Succeeded {
+            operation_id: "aa".into(),
+            kind: OperationKind::Commit,
+            commit_oid: None,
+            branch_name: None,
+            clone_path: None,
+            path_results: Vec::new(),
+            refresh,
+        }
+    }
+
+    /// 写入成功的快照作为 state 返回，刷新失败仍保留 operation 且 state 为空。
+    #[test]
+    fn successful_write_uses_embedded_refresh_without_losing_refresh_failure() {
+        let state = RepositoryState {
+            index_identity: [0; 32],
+            repository_id: "repo".into(),
+            snapshot_id: "snapshot".into(),
+            root_path: "C:/temp/repo".into(),
+            head: HeadState::Branch {
+                name: "main".into(),
+                oid: "a".repeat(40),
+            },
+            operations: Vec::new(),
+            changes: Vec::new(),
+        };
+        let value = write_operation_value(succeeded(WriteRefresh::Ready {
+            state: state.clone(),
+        }))
+        .unwrap();
+        assert_eq!(value["state"]["snapshotId"], "snapshot");
+        assert_eq!(value["operation"]["refresh"]["status"], "ready");
+
+        let value = write_operation_value(succeeded(WriteRefresh::Failed {
+            error: OperationError::new("TIMEOUT"),
+        }))
+        .unwrap();
+        assert!(value["state"].is_null());
+        assert_eq!(value["operation"]["refresh"]["status"], "failed");
+        assert_eq!(value["operation"]["refresh"]["error"]["code"], "TIMEOUT");
+    }
+
+    /// 未知结果始终作为专用未知错误，首步完成后的 pull 后续错误同样禁止重试。
+    #[test]
+    fn unknown_and_partial_pull_results_are_not_reported_as_ordinary_failures() {
+        let unknown = successful_operation(OperationResult::Unknown {
+            operation_id: "aa".into(),
+            kind: OperationKind::Commit,
+            error: OperationError::new("TIMEOUT"),
+            clone_recovery: None,
+            path_results: Vec::new(),
+            refresh: WriteRefresh::NotApplicable,
+        })
+        .unwrap_err();
+        assert_eq!(unknown.code, "AGENT_GIT_UNKNOWN");
+
+        let partial = pull_followup_error();
+        assert_eq!(partial.code, "AGENT_GIT_UNKNOWN");
+        assert!(partial.message.contains("首步已完成"));
+        assert!(partial.message.contains("不能自动重试"));
+    }
 }

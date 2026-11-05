@@ -1,4 +1,5 @@
 //! 持久运行循环：每个聊天串行，工具批准一次性消费，重启只补结果不重放写操作。
+mod inference;
 use super::*;
 use super::{
     policy::PolicyDecision,
@@ -6,6 +7,7 @@ use super::{
     provider::{Cancellation, ModelClient},
     tools::registry::{ToolOutput, Toolbox},
 };
+pub use inference::ContextPreviewResult;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
@@ -116,6 +118,30 @@ impl AgentRuntime {
     }
     /// 同一聊天只允许一轮运行；启动前固定模型、权限与项目身份。
     pub fn start(self: &Arc<Self>, request: StartRun) -> AgentResult<String> {
+        self.start_with_references(request, vec![])
+    }
+    /// 桌面在发送时重新读取引用并校验版本；本层只保存已验证快照，不授予文件权限。
+    pub fn start_with_references(
+        self: &Arc<Self>,
+        request: StartRun,
+        references: Vec<references::VerifiedReference>,
+    ) -> AgentResult<String> {
+        if references.len() > 8
+            || references
+                .iter()
+                .map(|value| value.text.len())
+                .sum::<usize>()
+                > 64 * 1024
+        {
+            return Err(AgentError::new(
+                "AGENT_REFERENCE_LIMIT",
+                "引用资料超过本轮限制。",
+            ));
+        }
+        ensure_safe_value(
+            &serde_json::to_value(&references).map_err(AgentError::storage)?,
+            Some(&request.key),
+        )?;
         if request.text.trim().is_empty() || request.text.len() > 128 * 1024 {
             return Err(AgentError::new(
                 "AGENT_INPUT",
@@ -123,6 +149,57 @@ impl AgentRuntime {
             ));
         }
         request.profile.validate()?;
+        let settings = self.store.settings()?;
+        let model = settings
+            .models
+            .into_iter()
+            .find(|model| model.id == request.profile.id && model.enabled);
+        let chat = self.store.read_chat(&request.chat_id)?;
+        let current_profile = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == request.profile.id);
+        if chat.session.model_config_id != request.profile.id
+            || current_profile.is_none_or(|profile| {
+                profile.base_url != request.profile.base_url
+                    || profile.model != request.profile.model
+                    || profile.protocol != request.profile.protocol
+                    || profile.credential_id != request.profile.credential_id
+            })
+        {
+            return Err(AgentError::new(
+                "AGENT_CONFIG_STALE",
+                "聊天或模型配置已变化，请重新读取后发送。",
+            ));
+        }
+        let parameters = chat.session.parameters.clone().unwrap_or_else(|| {
+            model
+                .as_ref()
+                .map(|model| model.defaults.clone())
+                .unwrap_or_default()
+        });
+        let model_revision = model.as_ref().map(|model| model.revision);
+        let connection_revision = model
+            .as_ref()
+            .and_then(|model| {
+                settings
+                    .providers
+                    .iter()
+                    .find(|provider| provider.id == model.provider_id)
+            })
+            .map(|provider| provider.revision);
+        let memory = chat.session.memory.clone();
+        let capabilities = provider::catalog::effective_capabilities(
+            &request.profile,
+            &model.map(|model| model.capabilities).unwrap_or_default(),
+        );
+        if capabilities.tool_support == Some(false) {
+            return Err(AgentError::new(
+                "AGENT_MODEL_TOOLS_UNSUPPORTED",
+                "此模型明确不支持 Agent 工具，请选择支持工具调用的模型。",
+            ));
+        }
+        parameters.validate(&request.profile, &capabilities)?;
         ensure_safe_text(&request.text, Some(&request.key))?;
         (request.guard)()?;
         let mut active = self.active.lock().map_err(AgentError::storage)?;
@@ -138,7 +215,6 @@ impl AgentRuntime {
                 "该聊天仍在运行，请等待完成或停止。",
             ));
         }
-        let chat = self.store.read_chat(&request.chat_id)?;
         if chat.session.archived {
             return Err(AgentError::new("AGENT_ARCHIVED", "请先恢复归档聊天。"));
         }
@@ -181,6 +257,22 @@ impl AgentRuntime {
                     text: request.text.clone(),
                 },
             )?;
+            self.record(
+                &request.chat_id,
+                &run_id,
+                EventKind::RunConfiguration {
+                    parameters: parameters.clone(),
+                    model_revision,
+                    connection_revision,
+                },
+            )?;
+            if !references.is_empty() {
+                self.record(
+                    &request.chat_id,
+                    &run_id,
+                    EventKind::UserReferences { references },
+                )?;
+            }
             if chat.events.is_empty() {
                 self.store.update_chat(
                     &request.chat_id,
@@ -201,7 +293,18 @@ impl AgentRuntime {
             let chat_id = request.chat_id.clone();
             let child_id = id.clone();
             let signal = cancel.clone();
-            let task = tokio::spawn(async move { owner.run(&request, &child_id, &signal).await });
+            let task = tokio::spawn(async move {
+                owner
+                    .run(
+                        &request,
+                        &child_id,
+                        &signal,
+                        &parameters,
+                        &capabilities,
+                        &memory,
+                    )
+                    .await
+            });
             let outcome = task.await.unwrap_or_else(|_| {
                 Err(AgentError::new(
                     "AGENT_RUNTIME_FAILED",
@@ -290,15 +393,18 @@ impl AgentRuntime {
         request: &StartRun,
         run_id: &str,
         cancel: &Cancellation,
+        parameters: &ModelParameters,
+        capabilities: &ModelCapabilities,
+        memory: &ChatMemoryConfig,
     ) -> AgentResult<()> {
-        let mut budget = 20u8;
+        let budget = Mutex::new(20u8);
         let mut seen = HashSet::new();
-        let system = format!("{SYSTEM}\n{}", request.system_context);
-        let definitions = request.tools.definitions();
+        let base_system = format!("{SYSTEM}\n{}", request.system_context);
+        let mut remembered_model = false;
+        let definitions = inference::definitions(&request.tools);
         loop {
             cancel.check()?;
             (request.guard)()?;
-            consume(&mut budget)?;
             self.progress(
                 &request.chat_id,
                 run_id,
@@ -307,6 +413,20 @@ impl AgentRuntime {
                 Some(String::new()),
             )?;
             let record = self.store.read_chat(&request.chat_id)?;
+            let (events, system) = self
+                .prepare_context(
+                    request,
+                    run_id,
+                    cancel,
+                    parameters,
+                    capabilities,
+                    memory,
+                    &record,
+                    &definitions,
+                    &base_system,
+                    &budget,
+                )
+                .await?;
             let accumulated = Mutex::new((String::new(), Instant::now()));
             let delta = |text: &str| {
                 if let Ok(mut preview) = accumulated.lock() {
@@ -328,18 +448,38 @@ impl AgentRuntime {
                     }
                 }
             };
-            let work = self.client.complete(
+            let on_attempt =
+                |attempt| self.record_attempt(request, run_id, "reply", &budget, attempt);
+            let work = self.client.complete_with_attempts(
                 &request.profile,
                 &request.key,
-                &record.events,
+                &events,
                 &definitions,
                 &system,
+                parameters,
+                capabilities,
                 cancel,
                 &delta,
+                &on_attempt,
             );
             let reply = guarded(work, &request.guard, cancel).await?;
             ensure_safe_text(&reply.text, Some(&request.key))?;
             ensure_safe_value(&reply.wire, Some(&request.key))?;
+            if !remembered_model {
+                remembered_model = true;
+                if let Err(error) = self.store.remember_model(&request.profile.id) {
+                    if error.code != "AGENT_PROFILE_MISSING" {
+                        self.record(
+                            &request.chat_id,
+                            run_id,
+                            EventKind::RunWarning {
+                                message: "最近模型列表未能保存；本轮响应和聊天仍会正常记录。"
+                                    .into(),
+                            },
+                        )?;
+                    }
+                }
+            }
             for call in &reply.calls {
                 ensure_safe_value(&call.arguments, Some(&request.key))?;
                 if !seen.insert(call.id.clone()) {
@@ -378,16 +518,51 @@ impl AgentRuntime {
                     Some(String::new()),
                 )?;
                 let outcome = self
-                    .perform(request, run_id, &call, cancel, &mut budget)
+                    .perform(
+                        request,
+                        run_id,
+                        &call,
+                        cancel,
+                        &budget,
+                        parameters,
+                        capabilities,
+                    )
                     .await;
                 let outcome = outcome.and_then(|value| {
                     ensure_safe_value(&value, Some(&request.key))?;
                     Ok(value)
                 });
-                let (result, is_error) = match outcome {
+                let stop_for_unknown_write = outcome
+                    .as_ref()
+                    .err()
+                    .filter(|error| requires_result_verification(error))
+                    .cloned();
+                let (mut result, is_error) = match outcome {
                     Ok(value) => (value, false),
                     Err(error) => (json!(error), true),
                 };
+                if !is_error && call.name == "write_file" {
+                    if let Some(change) = result
+                        .as_object_mut()
+                        .and_then(|value| value.remove("change"))
+                    {
+                        let content: FileChangeContent =
+                            serde_json::from_value(change).map_err(AgentError::storage)?;
+                        if content.before_content.as_deref() != Some(content.after_content.as_str())
+                        {
+                            let change = self.store.save_file_change(&request.chat_id, &content)?;
+                            result["changeArtifactId"] = json!(change.artifact_id);
+                            self.record(
+                                &request.chat_id,
+                                run_id,
+                                EventKind::FileChanged {
+                                    call_id: call.id.clone(),
+                                    change,
+                                },
+                            )?;
+                        }
+                    }
+                }
                 self.record(
                     &request.chat_id,
                     run_id,
@@ -398,6 +573,9 @@ impl AgentRuntime {
                         is_error,
                     },
                 )?;
+                if let Some(error) = stop_for_unknown_write {
+                    return Err(error);
+                }
             }
         }
     }
@@ -408,8 +586,31 @@ impl AgentRuntime {
         run_id: &str,
         call: &ToolCall,
         cancel: &Cancellation,
-        budget: &mut u8,
+        budget: &Mutex<u8>,
+        parameters: &ModelParameters,
+        capabilities: &ModelCapabilities,
     ) -> AgentResult<Value> {
+        if call.name == "suggest_memory" {
+            return self.suggest_memory(request, run_id, call);
+        }
+        if call.name == "read_tool_result" {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Arguments {
+                source_sequence: u64,
+                offset: usize,
+                limit: usize,
+            }
+            let args: Arguments = serde_json::from_value(call.arguments.clone())
+                .map_err(|_| AgentError::new("AGENT_TOOL_ARGUMENTS", "工具结果续读参数不正确。"))?;
+            return serde_json::to_value(self.store.read_tool_result(
+                &request.chat_id,
+                args.source_sequence,
+                args.offset,
+                args.limit,
+            )?)
+            .map_err(AgentError::storage);
+        }
         let prepared = guarded(
             request.tools.prepare(call.clone(), request.mode),
             &request.guard,
@@ -488,7 +689,6 @@ impl AgentRuntime {
         match request.tools.execute(prepared, true, cancel).await? {
             ToolOutput::Result(value) => Ok(value),
             ToolOutput::Summary { evidence, audience } => {
-                consume(budget)?;
                 let value = serde_json::to_value(&evidence).map_err(AgentError::storage)?;
                 ensure_safe_value(&value, Some(&request.key))?;
                 let chats = self.related_chats(request)?;
@@ -501,8 +701,11 @@ impl AgentRuntime {
                         related_chats: chats.clone(),
                     },
                 )?;
+                let on_attempt = |attempt| {
+                    self.record_attempt(request, run_id, "developmentSummary", budget, attempt)
+                };
                 let report = guarded(
-                    summary::generate_summary(
+                    summary::generate_summary_configured(
                         &self.client,
                         &request.profile,
                         &request.key,
@@ -510,6 +713,9 @@ impl AgentRuntime {
                         &chats,
                         audience.as_deref(),
                         cancel,
+                        parameters,
+                        capabilities,
+                        &on_attempt,
                     ),
                     &request.guard,
                     cancel,
@@ -610,6 +816,15 @@ impl AgentRuntime {
         let message = outcome.as_ref().err().map(|error| error.message.clone());
         let persisted = (|| {
             complete_pairs(&self.store, chat_id, run_id)?;
+            if self.store.clear_memory_exclusions(chat_id).is_err() {
+                self.record(
+                    chat_id,
+                    run_id,
+                    EventKind::RunWarning {
+                        message: "本轮记忆排除项未能清空，请在下次发送前检查记忆选项。".into(),
+                    },
+                )?;
+            }
             self.record(chat_id, run_id, EventKind::RunEnded { status, message })
         })();
         let error = persisted.as_ref().err().cloned().or_else(|| outcome.err());
@@ -693,12 +908,20 @@ fn complete_pairs(store: &AgentStore, chat_id: &str, run_id: &str) -> AgentResul
     let mut calls = vec![];
     let mut results = HashSet::new();
     let mut approvals = HashSet::new();
+    let mut attempts = HashMap::new();
     for event in record
         .events
         .into_iter()
         .filter(|event| event.run_id == run_id)
     {
         match event.payload {
+            EventKind::ModelAttempt { purpose, attempt } => {
+                if attempt.phase == provider::ModelAttemptPhase::Started {
+                    attempts.insert(attempt.id.clone(), (purpose, attempt));
+                } else {
+                    attempts.remove(&attempt.id);
+                }
+            }
             EventKind::AssistantMessage { calls: items, .. } => calls.extend(items),
             EventKind::ToolResult { call_id, .. } => {
                 results.insert(call_id);
@@ -711,6 +934,16 @@ fn complete_pairs(store: &AgentStore, chat_id: &str, run_id: &str) -> AgentResul
             }
             _ => {}
         }
+    }
+    for (_, (purpose, mut attempt)) in attempts {
+        attempt.phase = provider::ModelAttemptPhase::Failed;
+        attempt.error_code = Some("AGENT_INTERRUPTED".into());
+        attempt.usage = None;
+        store.append(
+            chat_id,
+            run_id,
+            EventKind::ModelAttempt { purpose, attempt },
+        )?;
     }
     for approval_id in approvals {
         store.append(
@@ -732,4 +965,28 @@ fn complete_pairs(store: &AgentStore, chat_id: &str, run_id: &str) -> AgentResul
 /// 陈旧、重复或其他运行的批准不能应用到当前操作。
 fn stale() -> AgentError {
     AgentError::new("AGENT_STALE_RUN", "运行或批准已失效，请刷新聊天状态。")
+}
+
+/// 在途写入或线程异常不能交给模型自动重试，必须结束本轮等待实际状态核验。
+fn requires_result_verification(error: &AgentError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "AGENT_WRITE_UNKNOWN" | "WRITE_OUTCOME_UNKNOWN" | "AGENT_GIT_UNKNOWN" | "AGENT_TOOL_FAILED"
+    )
+}
+
+#[cfg(test)]
+mod result_verification_tests {
+    use super::*;
+
+    /// Git 核心的未知写结果经过适配后仍阻止重放，版本竞争则允许重新读取。
+    #[test]
+    fn git_unknown_result_requires_verification_but_stale_file_can_be_reloaded() {
+        let unknown = crate::agent::tools::git_error(crate::git::OperationError::new(
+            "WRITE_OUTCOME_UNKNOWN",
+        ));
+        assert!(requires_result_verification(&unknown));
+        let stale = crate::agent::tools::git_error(crate::git::OperationError::new("FILE_CHANGED"));
+        assert!(!requires_result_verification(&stale));
+    }
 }

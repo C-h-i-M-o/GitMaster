@@ -1,0 +1,28 @@
+.agent-run-context {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.agent-run-context > details {
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.25));
+  border-radius: 0.65rem;
+}
+
+.agent-run-context > details > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.agent-run-context article {
+  margin-top: 0.6rem;
+  overflow-wrap: anywhere;
+}
+
+.agent-run-context article pre {
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -23,6 +23,7 @@ function workbench(category: "general" | "agent"): Workbench {
     usageError: null,
     usageBusy: false,
     refreshUsage() {},
+    configuration: { deletePending: null },
   };
   return {
     appSettings: {

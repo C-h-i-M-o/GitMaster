@@ -22,18 +22,18 @@ fn permission_matrix_distinguishes_external_files_network_and_git_risks() {
         sensitive: true,
         write: false,
     };
-    assert_eq!(decide(RequestApproval, normal), Allow);
+    assert_eq!(decide(RequestApproval, normal), Ask);
     assert_eq!(decide(RequestApproval, external), Ask);
     assert_eq!(decide(AutoApprove, external), Allow);
-    assert_eq!(decide(AutoApprove, sensitive), Ask);
-    assert_eq!(decide(FullAccess, sensitive), Allow);
+    assert_eq!(decide(AutoApprove, sensitive), Deny);
+    assert_eq!(decide(FullAccess, sensitive), Deny);
     assert_eq!(
         decide(RequestApproval, ToolRisk::Network { private: false }),
         Ask
     );
     assert_eq!(
         decide(AutoApprove, ToolRisk::Network { private: false }),
-        Allow
+        Ask
     );
     assert_eq!(
         decide(AutoApprove, ToolRisk::Network { private: true }),
@@ -55,7 +55,7 @@ fn permission_matrix_distinguishes_external_files_network_and_git_risks() {
                 changes_worktree_or_remote: true
             }
         ),
-        Allow
+        Ask
     );
 }
 

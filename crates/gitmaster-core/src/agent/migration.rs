@@ -25,6 +25,10 @@ pub struct ModelConfig {
     pub protocol: ProviderProtocol,
     pub enabled: bool,
     pub revision: u64,
+    #[serde(default)]
+    pub capabilities: ModelCapabilities,
+    #[serde(default)]
+    pub defaults: ModelParameters,
 }
 
 /// 磁盘 v2 只保存唯一来源；旧 profile 列表仅作为运行时兼容投影。
@@ -50,14 +54,14 @@ struct LegacySettings {
 }
 
 impl SettingsDocument {
-    /// 新安装不自动提升现有权限；权限策略升级由独立任务接入。
+    /// 新安装采用工作区协作；解码已有配置时保留其明确选择。
     pub(crate) fn empty() -> Self {
         Self {
             version: 2,
             providers: vec![],
             models: vec![],
             active_model_config_id: None,
-            default_permission_mode: PermissionMode::RequestApproval,
+            default_permission_mode: PermissionMode::AutoApprove,
             permission_review_required: false,
         }
     }
@@ -122,7 +126,8 @@ impl SettingsDocument {
         }
         let mut model_ids = HashSet::new();
         let mut profiles = vec![];
-        for m in &self.models {
+        let mut models = self.models.clone();
+        for (index, m) in self.models.iter().enumerate() {
             if m.revision == 0 || !model_ids.insert(m.id.clone()) {
                 return Err(AgentError::corrupt());
             }
@@ -140,6 +145,10 @@ impl SettingsDocument {
                 credential_id: p.credential_id.clone(),
             };
             profile.validate()?;
+            let capabilities =
+                super::provider::catalog::effective_capabilities(&profile, &m.capabilities);
+            m.defaults.validate(&profile, &capabilities)?;
+            models[index].capabilities = capabilities;
             if m.enabled {
                 profiles.push(profile);
             }
@@ -157,7 +166,7 @@ impl SettingsDocument {
             active_profile_id: self.active_model_config_id.clone(),
             default_permission_mode: self.default_permission_mode,
             providers: self.providers.clone(),
-            models: self.models.clone(),
+            models,
             active_model_config_id: self.active_model_config_id.clone(),
             permission_review_required: self.permission_review_required,
         })
@@ -198,6 +207,8 @@ impl SettingsDocument {
             m.protocol = profile.protocol;
             m.enabled = true;
             m.revision = m.revision.checked_add(1).ok_or_else(AgentError::corrupt)?;
+            m.capabilities =
+                super::provider::catalog::capabilities(&profile_for_model(m, &self.providers)?);
         } else {
             self.models.push(ModelConfig {
                 id: profile.id.clone(),
@@ -207,6 +218,8 @@ impl SettingsDocument {
                 protocol: profile.protocol,
                 enabled: true,
                 revision: 1,
+                capabilities: ModelCapabilities::default(),
+                defaults: ModelParameters::default(),
             });
         }
         if self.active_model_config_id.is_none() {
@@ -214,4 +227,23 @@ impl SettingsDocument {
         }
         Ok(())
     }
+}
+
+/// 兼容入口更新模型后，用新的供应商地址重新核对能力。
+fn profile_for_model(
+    model: &ModelConfig,
+    providers: &[ProviderConnection],
+) -> AgentResult<ProviderProfile> {
+    let provider = providers
+        .iter()
+        .find(|p| p.id == model.provider_id)
+        .ok_or_else(AgentError::corrupt)?;
+    Ok(ProviderProfile {
+        id: model.id.clone(),
+        name: model.label.clone(),
+        protocol: model.protocol,
+        base_url: provider.base_url.clone(),
+        model: model.model_id.clone(),
+        credential_id: provider.credential_id.clone(),
+    })
 }

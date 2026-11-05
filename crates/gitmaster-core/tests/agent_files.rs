@@ -111,9 +111,16 @@ fn file_edit_requires_the_read_version_and_rejects_external_edits() {
     let write = tools
         .prepare(&request, PermissionMode::RequestApproval)
         .unwrap();
-    assert_eq!(write.decision, PolicyDecision::Allow);
+    assert_eq!(write.decision, PolicyDecision::Ask);
     std::fs::write(dir.path().join("note.md"), "用户已编辑").unwrap();
-    assert!(tools.execute(write, false, &Cancellation::new()).is_err());
+    // 即使用户批准了写入，执行时仍须拒绝已经失效的读取版本。
+    assert_eq!(
+        tools
+            .execute(write, true, &Cancellation::new())
+            .unwrap_err()
+            .code,
+        "AGENT_FILE_CHANGED"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("note.md")).unwrap(),
         "用户已编辑"

@@ -18,6 +18,9 @@ pub(crate) fn git_error(error: crate::git::OperationError) -> AgentError {
         "OPERATION_IN_PROGRESS" | "QUEUE_FULL" => "仓库正在执行其他操作，请稍后重试。",
         "AUTH_REQUIRED" => "Git 远端需要认证，请先在系统 Git 中完成认证。",
         "TIMEOUT" => "Git 操作超时，请检查仓库和网络状态。",
+        "WRITE_OUTCOME_UNKNOWN" => {
+            "Git 写操作结果未知，已停止本轮；请检查实际状态后再继续，不能自动重放。"
+        }
         _ => "操作未完成，请检查仓库状态与工具参数。",
     };
     AgentError::new(&error.code, message)

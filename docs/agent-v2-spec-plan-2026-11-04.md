@@ -1,6 +1,6 @@
 # GitMaster Agent 第二轮开发：需求与实施计划
 
-> 日期：2026-11-04。状态：阶段性交接，整轮开发未完成。基线：`ai-agent` / `981f86c`。
+> 日期：2026-11-04；2026-11-05 续作。状态：用户已要求继续完成开发。原始基线：`ai-agent` / `981f86c`，续作基线：`b6f92a3`。
 > 执行方式：按本文任务逐项实施并验证，使用 `superpowers:executing-plans`。用户现已授权将当前代码和全部项目文档提交、推送至 `ai-agent`，以切换工作环境继续；不是发布或合并授权。接手入口见 [交接文档](agent-v2-handoff-2026-11-04.md)，沙箱隔离评估授权见第 14 节。
 
 执行更新：用户已明确授权按计划开发，且确认使用当前可用的 GPT-6 Luna / Low（非 Fast）协助独立任务，主 Agent 负责核心实现、调度与最终审查。保留当前 `ai-agent` 工作区；执行日志就地维护于本文第 14 节，避免复制第二份 spec/plan。2026-11-04 新增的推送授权只用于本次交接，仍不包含安装系统沙箱组件。
@@ -161,7 +161,7 @@
 - 测试使用当前表单快照。Key 空白且编辑已保存连接时使用其已存 Key；新连接 Key 空白时本地提示。临时 Key 仅用于此次请求，关闭后清空。
 - 地址/供应商变更时不得把旧 Key 自动发往新主机；必须明确选择为该主机使用已存 Key 或填写新 Key。重定向不跨主机转发凭据。
 - 分阶段显示“鉴权/模型可用性/文本响应/工具协议”。普通连接成功不能标成沙箱工具成功；工具协议测试只返回 mock 工具结果，不执行本机操作。
-- 提示测试可能产生一次小额模型调用；只在点击测试时执行。表单修改使旧测试结果过期，迟到响应不能覆盖新表单状态。
+- 提示测试可能产生模型调用费用，工具协议探针和有界重试可能产生多次调用；只在点击测试时执行。表单修改使旧测试结果过期，迟到响应不能覆盖新表单状态。
 
 ## 6. 上下文与长期记忆
 
@@ -367,6 +367,18 @@ SRT 文档标注 Windows 为 alpha，且说明了网络和身份切换等限制�
 
 每个功能任务按“失败用例 → 最小实现 → 目标验证 → 更新本轮验证记录”执行。提交不作为任务默认动作。临时 UI 测试在本地 `tests/`；沿用现有 Cargo 集成测试目录扩展长期回归。
 
+2026-11-05 续作状态：下列清单中同时包含实现和平台验收，未勾选的整项不等于尚无代码。最终命令结果以 [验证记录](verification.md) 为准。
+
+| 任务  | 已实现范围                                                                                           | 仍待验收或前置条件                                                                               |
+| ----- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| T0/T5 | 固定候选源码与隔离评估记录；产品没有注册命令执行工具                                                 | 未选择符合全部边界的后端。用户暂不授权 Docker 评估；命令、PTY 接管、沙箱安装与双平台探针均未完成 |
+| T1/T2 | 原子迁移、共享凭据保护、连接/多模型、官方预设、发现、草稿两阶段测试、三协议高级参数与能力约束        | 真实供应商 Key 与原生配置页流程尚未验收                                                          |
+| T3    | 默认/当前文件夹两种工作区、后端范围与代次校验、只读程序根/独立生成目录、会话配置、权限名称/说明/icon | 沙箱命令策略依赖 T5；macOS 路径与原生目录选择待实测                                              |
+| T4    | 实际请求预算、独立 checkpoint、受限文件/文本/Git 差异引用、工具结果分页、记忆 CRUD/排除/显式建议确认 | 长聊天真实供应商与原生操作待验收；文本片段由用户显式输入，不承诺自动读取编辑器选区               |
+| T6/T7 | Agent tab、单滚动容器、按需引导、统一侧栏/归档、键盘规则、分轮思考/工具折叠、参数和权限控件          | Windows 启动冒烟已发现并修复 helper 遮蔽问题；原生窗口激活失败，滚动/IME/缩放和 macOS 未验收     |
+| T8    | 实际写入前后工件与只读 diff、有界请求重试、实际尝试/用量、聊天正文搜索、最近五个模型                 | 沙箱命令改动及退出码依赖 T5；仅对已验证结构化写入展示可归属的 diff                               |
+| T9    | 本轮代码和文档已同步，验证日志保留在本地                                                             | 全量基线、原生双平台、Release/安装包及签名不能由定向测试替代；本轮不自动提交或推送               |
+
 ### T0：验证基线与沙箱可行性（阻塞 T5）
 
 - [ ] 核对当前分支、工作区和已有测试状态；保留上一轮 Git TIMEOUT 证据，记录本轮机器与并发条件。
@@ -383,19 +395,19 @@ SRT 文档标注 Windows 为 alpha，且说明了网络和身份切换等限制�
 接口：产出第 9 节连接/模型/工作区/会话类型与迁移器；旧事件读取保持兼容。
 
 - [ ] 先写同供应商不同 Key 不合并、共享 Key 删除引用、v1 null/非空路径、重复迁移、迁移中断、未来版本拒绝覆盖用例。
-- [ ] 实现原子迁移、引用映射及权限默认收紧；默认工作区路径解析由桌面注入核心。
+- [x] 实现原子迁移、引用映射及权限默认收紧；默认工作区路径解析由桌面注入核心。
 - [ ] 执行 `cargo test -p gitmaster-core --offline --test agent_migration --test agent_store --test agent_profiles`；预期目标用例全部通过且旧凭据内容未改变。
 
 ### T2：供应商预设、模型发现、参数与草稿测试
 
-文件：新增 `agent/provider/catalog.rs`、`agent/provider/capabilities.rs`；修改 `agent/provider.rs`、`provider/wire.rs`、`profiles.rs`、`src-tauri/src/commands/agent.rs`、`src/services/agent.ts`、`useAgentSettings.ts`、`AgentSetupDialog.tsx`、`AgentSettingsPanel.tsx`；扩展 `tests/agent_provider.rs`，新增 `tests/agent_model_catalog.rs`（均在核心 Cargo tests 下）。
+文件：新增 `agent/provider/catalog.rs`、`configuration.rs`、`discovery.rs`、`usage.rs` 和 `agent/profiles/connections.rs`；修改 `agent/provider.rs`、`provider/wire.rs`、`profiles.rs`、`src-tauri/src/commands/agent.rs`、`src/services/agent.ts`、`useAgentSettings.ts`、`AgentSetupDialog.tsx`、`AgentSettingsPanel.tsx`；配置逻辑在 `useAgentConfiguration.ts`。核心测试为 `agent_provider.rs`、`agent_model_parameters.rs`、`agent_model_probe.rs`、`agent_provider_usage.rs`。
 
 接口：消费 T1 类型，实现 list_models/test_model/save_provider/save_model；产出 `RunConfigSnapshot` 参数解析。
 
 - [ ] 本机 mock 先覆盖分页/空列表/401/429/不支持列表、未知能力、超限参数、思考不兼容组合、编辑未保存测试、换主机不泄漏旧 Key。
-- [ ] 实现官方预设与多模型启用；去掉 Anthropic 写死输出值，三协议参数按能力发送，保留不透明协议块。
+- [x] 实现官方预设与多模型启用；去掉 Anthropic 写死输出值，三协议参数按能力发送，保留不透明协议块。
 - [ ] 验证迟到发现/测试结果不覆盖新表单；删除共享连接不破坏历史；运行参数在设置变更后保持冻结。
-- [ ] 执行 `cargo test -p gitmaster-core --offline --test agent_model_catalog --test agent_provider`、`pnpm typecheck`；原生配置页验证只填 Key 的路径（真实 Key 由用户在应用中输入）。
+- [ ] 执行 `cargo test -p gitmaster-core --offline --test agent_model_parameters --test agent_model_probe --test agent_provider --test agent_provider_usage`、`pnpm typecheck`；原生配置页验证只填 Key 的路径（真实 Key 由用户在应用中输入）。
 
 ### T3：工作区选择与权限策略
 
@@ -406,18 +418,18 @@ SRT 文档标注 Windows 为 alpha，且说明了网络和身份切换等限制�
 - [ ] 先测默认生成物目录、只读安装根、非 Git 文件夹、关闭历史项目、切项目时旧审批失效、普通 Git 刷新不失效、同一路径别名与重解析点。
 - [ ] 将 FileTools 根与可选 GitContext 解耦；打开目录入口保留当前文件夹身份，Git 探测失败中的“非仓库”状态不丢弃已选文件夹，其他权限/路径错误照常报告。新状态保存/恢复与编辑离开保护协作，默认工作区会话在打开其他项目后仍可运行。
 - [ ] 实现三模式矩阵和 v1 fullAccess 升级提示；受限系统路径与真实 gitdir 始终受保护。
-- [ ] 执行 `cargo test -p gitmaster-core --offline --test agent_workspace --test agent_policy --test agent_files`；对临时普通目录与临时 Git 仓库分别验收。
+- [ ] 执行 `cargo test -p gitmaster-core --offline --test agent_workspace_scope --test agent_policy --test agent_files --test agent_chat_configuration` 及桌面 `commands::agent::workspaces::tests`；对临时普通目录与临时 Git 仓库分别验收。
 
 ### T4：上下文预算、压缩与可管理记忆
 
-文件：新增 `agent/context.rs`、`agent/memory.rs`；修改 `runtime.rs`、`store.rs`、`provider/wire.rs`、`src/services/agent.ts`；新增 `src/hooks/useAgentContext.ts`、`useAgentMemory.ts`、`src/components/AgentContextPanel.tsx`、`AgentMemoryPanel.tsx`；新增核心 `agent_context.rs`、`agent_memory.rs` 测试。
+文件：新增 `agent/context.rs`、`agent/references.rs`、`agent/store/context_store.rs`、`agent/store/memory.rs` 与 `agent/runtime/inference.rs`；修改 `runtime.rs`、`store.rs`、`provider/wire.rs`、`src/services/agent.ts`；新增 `src/hooks/useAgentContext.ts`、`useAgentMemory.ts`、`src/components/AgentContextPanel.tsx`、`AgentMemoryPanel.tsx`；新增核心 `agent_context.rs`、`agent_memory.rs`、`agent_references.rs`、`agent_runtime_context.rs` 测试。
 
 接口：消费 T1/T2/T3 的有效模型与工作区快照，实现 ContextBuilder/MemoryStore 及 context/memory IPC。
 
 - [ ] 先写上下文刚好达到 80% 阈值、输入预算非正、单项超限、中文估算、完整工具配对、摘要失败/取消、模型切换协议重投影用例。
-- [ ] 实现 checkpoint 与原始历史分离，摘要调用计入总预算；内存保持当前运行的有效上下文，避免每个流片重读全历史。
+- [x] 实现 checkpoint 与原始历史分离，摘要调用计入总预算；内存保持当前运行的有效上下文，避免每个流片重读全历史。
 - [ ] 测跨工作区检索隔离、8 条/2048 token 上限、来源可追踪、并发 revision 冲突、记忆删除后 checkpoint 不复活、恶意工具文字不变成权限规则。
-- [ ] 接入上下文清单、手动记忆与建议确认卡；设置/本轮排除真实影响下一请求。
+- [x] 接入上下文清单、手动记忆与建议确认卡；设置/本轮排除真实影响下一请求。
 - [ ] 执行 `cargo test -p gitmaster-core --offline --test agent_context --test agent_memory --test agent_runtime`；以长聊天 mock 检查实际请求体，而非只检查 UI 数字。
 
 ### T5：受限命令执行、接管与退出
@@ -437,7 +449,7 @@ SRT 文档标注 Windows 为 alpha，且说明了网络和身份切换等限制�
 文件：修改 `src/components/SettingsPanel.tsx`、`src/types/settings.ts`、`src/hooks/useSettingsForm.ts`、`src/ui/settingsField.ts`、`src/styles.css`、`useAgentSettings.ts`、`AgentSetupDialog.tsx`；根据职责增加 `AgentSettingsPanel` 的分区子组件，不新建第二个设置窗口。
 
 - [ ] 用现有本地 UI harness 重现长 Agent 配置把滚动区域挤占的情况，再检查高级折叠、嵌套弹窗和焦点锁；未复现的原因不写成已定位。
-- [ ] 移动 AI 设置并统一右侧滚动容器；固定 header/footer 不遮挡末尾字段，错误定位可达。
+- [x] 移动 AI 设置并统一右侧滚动容器；固定 header/footer 不遮挡末尾字段，错误定位可达。
 - [ ] 冷启动/打开项目/恢复项目不弹首配；首次点击 AI 未配置才显示引导；取消后可回 Git，重进 AI 不重复强制弹窗。
 - [ ] 验证 860×620、常规窗口、125%/150% 缩放，鼠标滚轮、触控板与键盘 PageDown；打开/关闭配置 10 次后仍可滚动。
 - [ ] 执行 `pnpm typecheck`、目标 UI 夹具和 Windows 原生 WebView 验收。
@@ -458,22 +470,22 @@ SRT 文档标注 Windows 为 alpha，且说明了网络和身份切换等限制�
 文件：复用聊天列表、diff 预览、Agent 事件视图，修改 `AgentSidebar`、`agentPresentation`、`useAgent`；核心修改 `agent/runtime.rs`、`agent/store.rs`、`agent/provider.rs`、`agent/models.rs`，新增 `agent/run_summary.rs`、`agent/chat_search.rs`；扩展 `src/types/agent.ts`、`src/services/agent.ts`、`src-tauri/src/commands/agent.rs`。测试扩展核心 `agent_runtime.rs`、`agent_provider.rs`，新增 `agent_run_summary.rs`、`agent_chat_search.rs`。
 
 - [ ] 先写 A11 回归：预先存在脏文件、并发修改、命令失败但文件已变、非 Git 文件夹、二进制与缺失基线；摘要只陈述有证据的改动，diff 入口与实际基线一致。
-- [ ] 实现每轮改动摘要和文件/diff 跳转，重启可回读；历史摘要与当前文件状态分别展示。
+- [x] 实现结构化写入的每轮改动摘要和只读 diff，重启可回读；历史摘要与当前文件状态分别展示。命令改动仍依赖 T5。
 - [ ] 先写 A12 回归：写工具成功后模型断线、写结果未知后重启、429 重试与取消、流式部分输出、usage 重复/缺失及思考 token 子集；断言没有重复写入、重复提交或重复计量。
-- [ ] 实现有界重试与运行/会话用量统计，调用次数与用量在压缩及重试时正确累计，未知值不伪装为零。
+- [x] 实现有界重试与运行/会话用量统计，调用次数与用量在压缩及重试时正确累计，未知值不伪装为零。
 - [ ] 先写 A13 回归：标题/正文命中、归档筛选、工作区切换的迟到结果、聊天删除后的索引失效、最近模型去重/5 项上限/重启恢复/失效模型移除。
-- [ ] 实现本地搜索与最近模型入口，搜索结果可定位消息，选择最近模型不改变其他聊天设置。
+- [x] 实现本地搜索与最近模型入口，搜索结果可定位消息，选择最近模型不改变其他聊天设置。
 - [ ] 执行 `cargo test -p gitmaster-core --offline --test agent_run_summary --test agent_chat_search --test agent_runtime --test agent_provider`、`pnpm typecheck` 和对应 UI 夹具；目标用例全部通过。
 - [ ] 测量中断后重开、模型配置删除后历史可读、无网络目录获取失败、额度错误、长输出截断、失败重试不重放工具。
 - [ ] 手动走通“只填 Key → 默认工作区聊天 → 打开文件夹 → 换模型/强度 → 审批沙箱命令 → 接管 → 查看改动 → 压缩 → 记忆确认 → 归档/恢复 → 重启续聊”。
 
 ### T9：全量验证与文档交付
 
-- [ ] 执行 `pnpm typecheck`、`pnpm build`、`pnpm format:check`。
+- [x] 执行 `pnpm typecheck`、`pnpm build`、`pnpm format:check`。
 - [ ] 执行 `cargo fmt --all -- --check`、`cargo test -p gitmaster-core --offline`、`cargo test -p gitmaster-sandbox --offline`、`cargo check -p gitmaster-desktop --offline`；涉及桌面命令与退出的适配测试一并运行。
 - [ ] 对 Git TIMEOUT 记录并行/串行及单项结果，区分基线与新增回归；不通过放大生产超时或删断言制造通过。
 - [ ] Windows 与 macOS 分别执行原生 UI、沙箱边界、进程回收与 `pnpm tauri build --no-bundle` 验证；缺少平台则明确列未验收项。
-- [ ] 更新 `README.md`、本文任务状态、`docs/verification.md` 与必要的 `AGENTS.md` 产品约束，使旧的设置分类、无 shell 边界描述与实际 v2 一致。
+- [x] 更新 `README.md`、本文任务状态、`docs/verification.md` 和接手文档，使设置分类、能力与沙箱未启用边界和实际 v2 一致；本轮无需修改 `AGENTS.md`。
 - [ ] 核对 diff、依赖许可证、实际改动范围和残余风险；未获新的提交/发布指令时保留工作区供审阅。
 
 ## 12. 验收矩阵与重点审查
@@ -515,6 +527,33 @@ SRT 文档标注 Windows 为 alpha，且说明了网络和身份切换等限制�
 - 仅编写新计划并给总计划添加索引；未修改功能、安装依赖、启动 dev 或运行真实命令沙箱。本文架构与额外建议仍需用户审阅，不代表功能已上线或安全验收已通过。
 
 ## 14. 开发执行记录
+
+- 2026-11-05 提交交付：用户明确要求提交前检查后将全部内容提交 GitHub。本轮复核类型、构建、格式、暂存范围与常见凭据特征；保持先前取消运行测试的决定。代码、手写回归用例、计划和接手文档一起交付至 `ai-agent`，本地下载依赖、构建产物与原始日志不纳入。已知 Git 超时、T5 禁用及原生验收缺口继续保留；不把推送开发快照等同于功能全部完成。
+
+- 2026-11-05 超时专项暂停验证：用户明确要求“取消测试”。两轮定向复跑先 0/3、后 2/3，通过情况仍不稳定；版本探测也可超时，普通 Git 与受管 Git 均有长尾。实时日志移出仓库减少了一组采样的延迟，但仍存在超时；不作为修复结论。WPR CPU 采样被系统策略拒绝，未修改系统策略。保留诊断与结果，停止后续测试，不勾选 T9 或宣称三项修复完成。
+
+- 2026-11-05 Git 超时专项：定位并修复 `queued_file_write_does_not_execute_after_cancel`、`branch_switch_requires_approval_and_rejects_stale_prepared_state` 和 `shutdown_waits_for_git_write_result_delivery`。前两项失败于准备仓库的 `revParse`，第三项失败于关闭前等待工具结果通知；先用既有脱敏阶段日志对照普通/受管 Git 的准备、创建、执行、管道、回收耗时，再追踪运行状态、工具调用和终态通知。接口及数据结构保持现有契约，仅在证据指向的执行或同步边界修复。验收要求保留现有期限和断言，三项重复通过、相关进程/队列/运行回归通过；所有 Git 写入只发生在临时测试仓库，最终结果同步验证与接手文档。
+
+- 聊天创建在后端一次保存模型、权限和参数，先校验再建目录，避免先建空聊天、后配失败导致重复会话。归档聊天的会话配置及记忆开关均为只读。草稿上下文预览只使用已保存聊天配置，配置未保存时提示先保存；模型/连接修订、参数或记忆变更使旧预览失效。
+
+- 引用审查补充：Git 差异、提交查看和开发总结需与文件工具共用敏感路径拒绝规则；整仓差异先审核路径清单，再只读取已审核的明确路径，防止两次读取之间新增敏感文件混入。已分页工具结果保留原始序号与 `nextOffset`，不再次截断成指向分页结果本身的续读提示。摘要接受、落盘及实际上下文事件之前均重新检查取消与工作区身份。
+
+- A1/A12 接入合同：`ContextPrepared` 记录每次请求的实际估算、输入预算、摘要边界、截断工具序号和记忆选中/排除清单；`ModelAttempt` 按独立 attempt ID 保存开始与唯一终态，并标注主回复、历史压缩或开发总结用途。所有 HTTP 尝试共用每轮 20 次预算，未知 usage 保留未知；界面按 ID 去重，缓存/推理只作子项。历史压缩最多一次后重新计量，仍超预算则阻止发送，原始事件不被摘要覆盖。
+- A1 引用合同：每轮最多 8 个引用、合计最多 64 KiB，支持工作区文件行范围、用户显式文本选区和当前 Git 差异。后端复用受限只读工具预览，返回版本；发送时再次读取并核对版本和当前工作区身份，文件变化须重新选择。引用保存为带来源与版本的历史资料，不授予额外权限。`read_tool_result` 仅分页读取本聊天指定工具结果，单页最多 8 KiB，不接受文件路径。
+
+- A11 结构化写入证据：文件工具以实际写入前版本为基线，原子替换后再次读取并确认字节一致，再返回前/后文本和版本；已有脏改动不与 Git HEAD 比较归属，失去版本或落盘核验失败则标记结果未知并停止本轮。前/后快照原子保存至聊天自有 `changes/` 工件，`FileChanged` 历史事件只记录工件 ID、内容哈希、路径和版本，普通模型上下文不重放这些大文本；`agent_read_file_change(id, artifactId)` 必须先验证同聊天事件引用和哈希。界面按需复用已安装的 Monaco 只读差异编辑器展示本次操作前后，并明确这不是文件当前状态。同文件多次写入逐次显示，不把中间并发改动自动合并归属。命令执行未获可用沙箱前，不伪造命令改动或退出码。
+- A12 usage 口径核验（2026-11-05）：OpenAI cached/reasoning 为输入/输出子集，Anthropic 缓存读取和创建与基础 input 合并；流式累计值覆盖而非逐帧相加。缺失计数保留未知，不按零收费推断。参考 [OpenAI usage](https://developers.openai.com/api/reference/resources/responses/methods/retrieve)、[Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming)、[Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)、[DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/)。
+- A12 Git 写后结果：复用核心 `OperationResult::Succeeded` 内的刷新结果，不再在已确认成功后额外读取状态并把读取失败改报成写失败；返回的 `state` 是核心该次操作的快照，刷新失败明确保留在结果中。多步拉取在首步完成后中断或失败时，必须停止本轮并提示核验部分结果，不能按普通可重试错误重新执行整套写操作。
+- T4 记忆接口细化：聊天保存 `memory: { enabled, includeUser, excludedIds }`，旧聊天缺省启用工作区记忆、关闭跨工作区偏好。排除仅供下一轮，运行启动后冻结本轮选择配置，结束时清空排除项；编辑/停用/删除记忆在下一次上下文构建读取最新版本。`agent_list_memories`、`agent_save_memory`、`agent_delete_memory` 为显式用户管理入口；`agent_select_memories` 返回选中项/排除原因/估算量；`agent_set_chat_memory` 只在聊天空闲时变更下一轮选项。模型不调用持久化入口，建议记忆需另经用户保存。
+- 2026-11-05 沙箱决策：用户明确回复“暂不授权，继续其他功能开发”，因此不启动 Docker、不下载镜像、不创建容器，不改变原生产品部署路线。T5 命令执行及接管仍受 T0 边界验收前置门禁约束，禁止裸宿主回退；其他独立任务继续。隔离候选证据保留在本地 `tests/sandbox-evaluation/resume-report-2026-11-05.md`。
+- 2026-11-05 T3 接口细化：`agent_list_workspaces` 仅返回后端签发的 `default` 和当前已打开目录的稳定 ID；`agent_create_chat(workspaceId)` 不接收任意路径。默认根为当前可执行文件所在目录，只读；专用 `agent-output/` 目录位于应用数据目录，与 Agent 私有存储分离。文件工具相对路径以工作区根解释，默认生成物使用返回的绝对输出路径；范围外目标在所有权限模式下拒绝。无 Git 的目录仍能使用文件工具，Git 工具仅在存在匹配仓库时提供。历史聊天保留可读性，不因历史路径重新授予执行权。
+- T3 会话契约：`agent_configure_chat(id, modelConfigId, permissionMode, parameters)` 保存下一轮配置；`parameters: null` 继承模型默认值，非空对象是完整会话参数快照，其中空字段恢复供应商默认。变更模型时必须显式重设覆盖；运行中拒绝改配置。运行开始固定连接、模型修订、参数、权限和工作区代次，不能读取后来修改的默认值。旧聊天缺失覆盖字段时按继承处理。模型和权限切换只影响本聊天，其他聊天保持原值。
+- T3 权限收尾：新安装默认使用第 8 节已确定的“工作区协作”（`autoApprove`）；已有 v2 配置和旧聊天保留原选择，v1 `fullAccess` 仍降为工作区协作并要求复核。三档分别使用盾牌、文件夹勾选和盾牌闪电图标，名称不改变磁盘枚举。沙箱未接入时自主执行不会获得额外宿主命令权限；联网与高风险 Git 操作继续逐次审批。验收覆盖新安装默认、显式逐次审批配置及会话间隔离。
+- T3 定向验收：默认工作区可读程序目录但不可写；输出目录可写；文件夹外访问和链接逃逸被拒绝；默认聊天不受打开项目影响；旧目录聊天失去执行权后仍能阅读；两个聊天模型/权限/参数互不污染，重启后保存值一致。
+- 2026-11-05 续作：用户明确要求继续完成开发，已核对 `ai-agent` / `b6f92a3` 且工作区干净。继续沿用本文合并方案、既有工作树与第 14 节进度账本；不新建重复 spec/plan，不自动提交、推送或发布。
+- 本轮分工：主 Agent 负责 T1/T2 数据契约和模型接口整合；独立子任务修复无模型连接共享凭据删除回归、T7 过程折叠/权限说明以及 T0 固定候选评估。所有子 Agent 使用 GPT-6 Luna / Low，禁止 Fast。共享文件按单一负责人串行修改，Rust 构建统一调度。
+- 接口约束复核：T2 的模型参数使用 `null` 表示供应商默认，已知能力由后端核验，未知能力不能冒充支持；v2 新增字段须有明确兼容默认值。T3 工作区仍由桌面签发，历史路径哈希不是执行授权；T5 必须等待 T0 真实边界验证，不把手动终端当沙箱。
+- 续作验收：先以失败回归修复共享 Key，再完成三协议参数映射、多模型保存/发现/草稿测试的 mock 验证；T6/T7 用 Node/SSR 和真实窗口各自验证，T0 未授权系统变更之前仅进行获批隔离评估。全量核心、双平台和安装验收仍保持未完成。
 
 - 2026-11-04 开始：工作区基线为 `981f86c`，已有改动仅为本计划和总计划索引。T1 由主 Agent 实施；独立的 T6 设置与 T7 输入体验先行推进，T0 沙箱候选同时只读核查。
 - 接口核查：T2 消费 T1 连接/模型结构；T3 提供 T4/T5 的工作区身份与权限；T5 在 T0 真实沙箱验证之前不开放执行入口。T6/T7 的现有 UI 可独立改善，但不能据此标记 T1～T9 完成。

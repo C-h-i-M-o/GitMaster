@@ -1,0 +1,80 @@
+.agent-context-panel {
+  display: grid;
+  gap: 0.65rem;
+  max-height: min(70vh, 42rem);
+  overflow: auto;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--surface);
+}
+
+.agent-context-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.agent-context-panel > p {
+  margin: 0;
+}
+
+.agent-context-file-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 8rem 8rem;
+  gap: 0.5rem;
+}
+
+.agent-context-file-fields label,
+.agent-context-text {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.agent-context-text textarea {
+  min-height: 5rem;
+}
+
+.agent-context-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.agent-context-reference-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.agent-context-reference-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.agent-context-reference-list > li > div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.agent-context-reference-list pre {
+  max-height: 12rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 620px) {
+  .agent-context-file-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}

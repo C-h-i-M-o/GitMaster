@@ -1,0 +1,129 @@
+.agent-changes,
+.agent-run-configuration {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-change-entry {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.agent-change-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-change-toggle > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mono, monospace);
+}
+
+.agent-change-toggle > small,
+.agent-change-versions,
+.agent-run-revisions {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-change-history-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-change-state,
+.agent-change-error p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-change-error {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border-left: 2px solid var(--danger);
+  padding-left: 8px;
+}
+
+.agent-change-diff {
+  width: 100%;
+  height: min(420px, 55vh);
+  min-height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.agent-run-warnings {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-run-warnings > p {
+  margin: 0;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 7%, var(--paper));
+  font-size: 12px;
+}
+
+.agent-run-configuration > div {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.agent-run-configuration strong {
+  font-size: 12px;
+}
+
+.agent-run-revisions {
+  margin: 0;
+}
+
+.agent-run-configuration dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.agent-run-configuration dl > div {
+  min-width: 0;
+}
+
+.agent-run-configuration dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-run-configuration dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}

@@ -1,3 +1,4 @@
+use super::{FileChangeArtifact, ModelParameters};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -174,10 +175,34 @@ pub struct ChatSession {
     pub workspace_id: String,
     #[serde(default)]
     pub model_config_id: String,
+    /// 空对象整体表示继承默认；非空对象内的空字段使用供应商默认。
+    #[serde(default)]
+    pub parameters: Option<ModelParameters>,
+    #[serde(default)]
+    pub memory: ChatMemoryConfig,
     pub permission_mode: PermissionMode,
     pub archived: bool,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+/// 聊天只默认启用本工作区记忆；跨工作区偏好与本轮排除由用户明确选择。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatMemoryConfig {
+    pub enabled: bool,
+    pub include_user: bool,
+    pub excluded_ids: Vec<String>,
+}
+impl Default for ChatMemoryConfig {
+    /// 老聊天按保守默认恢复，不静默启用用户级偏好。
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            include_user: false,
+            excluded_ids: vec![],
+        }
+    }
 }
 
 /// 已完整解析的工具调用，参数仍需各工具的严格类型检查。
@@ -219,6 +244,33 @@ pub enum RunStatus {
     rename_all_fields = "camelCase"
 )]
 pub enum EventKind {
+    UserReferences {
+        references: Vec<super::references::VerifiedReference>,
+    },
+    MemorySuggested {
+        text: String,
+        tags: Vec<String>,
+    },
+    ModelAttempt {
+        purpose: String,
+        attempt: super::provider::ModelAttempt,
+    },
+    ContextPrepared {
+        preview: super::context::ContextPreview,
+        memories: super::MemorySelection,
+    },
+    FileChanged {
+        call_id: String,
+        change: FileChangeArtifact,
+    },
+    RunWarning {
+        message: String,
+    },
+    RunConfiguration {
+        parameters: ModelParameters,
+        model_revision: Option<u64>,
+        connection_revision: Option<u64>,
+    },
     RunStarted {
         profile: ProviderProfile,
         permission_mode: PermissionMode,

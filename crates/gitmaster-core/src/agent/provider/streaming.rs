@@ -1,3 +1,6 @@
+use super::usage::{
+    anthropic_total_input, merge_usage, parse_usage, parse_usage_object, usage_count,
+};
 use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -14,6 +17,8 @@ pub(super) struct Accumulator {
     blocks: Vec<Value>,
     arguments: BTreeMap<usize, String>,
     ended: bool,
+    usage: ModelUsage,
+    anthropic_input_base: Option<u64>,
 }
 impl Accumulator {
     /// 每个模型请求使用全新累积状态，失败不会污染下一次请求。
@@ -29,6 +34,8 @@ impl Accumulator {
             blocks: vec![],
             arguments: BTreeMap::new(),
             ended: false,
+            usage: ModelUsage::default(),
+            anthropic_input_base: None,
         }
     }
     /// 消费完整 SSE 事件；eventsource-stream 负责字节分片、UTF-8 与行边界。
@@ -49,7 +56,10 @@ impl Accumulator {
             return Err(protocol_error());
         }
         match self.protocol {
-            ProviderProtocol::ChatCompletions => self.chat(value, delta)?,
+            ProviderProtocol::ChatCompletions => {
+                merge_usage(&mut self.usage, parse_usage(self.protocol, &value));
+                self.chat(value, delta)?;
+            }
             ProviderProtocol::Responses => match value["type"].as_str() {
                 Some("response.output_text.delta") => {
                     if let Some(text) = value["delta"].as_str() {
@@ -57,6 +67,10 @@ impl Accumulator {
                     }
                 }
                 Some("response.completed") => {
+                    merge_usage(
+                        &mut self.usage,
+                        parse_usage(self.protocol, &value["response"]),
+                    );
                     self.response = Some(value["response"].clone());
                     self.ended = true;
                 }
@@ -115,6 +129,7 @@ impl Accumulator {
                 if let Some(blocks) = value["message"]["content"].as_array() {
                     self.blocks = blocks.clone();
                 }
+                self.merge_anthropic_usage(&value["message"]["usage"]);
             }
             Some("content_block_start") => {
                 let index = value["index"].as_u64().ok_or_else(protocol_error)? as usize;
@@ -164,13 +179,29 @@ impl Accumulator {
                 }
             }
             Some("message_delta") => {
-                self.finish_reason = value["delta"]["stop_reason"].as_str().map(str::to_owned)
+                self.finish_reason = value["delta"]["stop_reason"].as_str().map(str::to_owned);
+                self.merge_anthropic_usage(&value["usage"]);
             }
             Some("message_stop") => self.ended = true,
             Some("ping") => {}
             _ => return Err(protocol_error()),
         }
         Ok(())
+    }
+    /// 将 Anthropic 累计 usage 字段覆盖到当前快照并重算含缓存的输入总量。
+    fn merge_anthropic_usage(&mut self, usage: &Value) {
+        if let Some(input_tokens) = usage_count(usage, "input_tokens") {
+            self.anthropic_input_base = Some(input_tokens);
+        }
+        merge_usage(
+            &mut self.usage,
+            parse_usage_object(ProviderProtocol::AnthropicMessages, usage),
+        );
+        self.usage.input_tokens = anthropic_total_input(
+            self.anthropic_input_base,
+            self.usage.cached_input_tokens,
+            self.usage.cache_creation_input_tokens,
+        );
     }
     /// 缺失结束标记或参数块未结束时明确拒绝，不将部分输出视为完成。
     pub(super) fn finish(self) -> AgentResult<ModelReply> {
@@ -197,7 +228,9 @@ impl Accumulator {
                 json!({"choices":[{"message":message,"finish_reason":self.finish_reason}]})
             }
         };
-        parse_response(self.protocol, raw)
+        let mut reply = parse_response(self.protocol, raw)?;
+        reply.usage = self.usage;
+        Ok(reply)
     }
 }
 

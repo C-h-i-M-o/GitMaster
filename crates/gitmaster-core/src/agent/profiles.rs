@@ -1,4 +1,6 @@
 use super::*;
+mod connections;
+pub use connections::*;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -33,6 +35,9 @@ pub struct SaveProfile {
 pub struct AgentSettingsView {
     pub settings: AgentSettings,
     pub has_api_keys: BTreeMap<String, bool>,
+    pub provider_has_api_keys: BTreeMap<String, bool>,
+    pub presets: Vec<provider::catalog::ProviderPreset>,
+    pub recent_model_config_ids: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -41,6 +46,7 @@ pub struct ProfileService<V: CredentialVault> {
     store: Arc<AgentStore>,
     vault: V,
     gate: Mutex<()>,
+    capability_cache: Mutex<BTreeMap<(String, String), ModelCapabilities>>,
 }
 impl<V: CredentialVault> ProfileService<V> {
     /// 注入真实平台密钥库，测试仅替代这一边界。
@@ -49,6 +55,7 @@ impl<V: CredentialVault> ProfileService<V> {
             store,
             vault,
             gate: Mutex::new(()),
+            capability_cache: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -58,11 +65,30 @@ impl<V: CredentialVault> ProfileService<V> {
         let mut view = AgentSettingsView {
             settings,
             has_api_keys: BTreeMap::new(),
+            provider_has_api_keys: BTreeMap::new(),
+            presets: provider::catalog::presets(),
+            recent_model_config_ids: vec![],
             warnings: vec![],
         };
+        match self.store.recent_model_ids() {
+            Ok(ids) => view.recent_model_config_ids = ids,
+            Err(_) => view
+                .warnings
+                .push("最近模型列表暂时无法读取，仍可从完整模型列表选择。".into()),
+        }
         if view.settings.permission_review_required {
             view.warnings
                 .push("AI 配置已升级；原完全访问权限已收紧，请检查新权限设置。".into());
+        }
+        for connection in &view.settings.providers {
+            view.provider_has_api_keys.insert(
+                connection.id.clone(),
+                self.vault
+                    .read(&connection.credential_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|key| !key.is_empty()),
+            );
         }
         for profile in &view.settings.profiles {
             match self.vault.read(&profile.credential_id) {
@@ -133,8 +159,30 @@ impl<V: CredentialVault> ProfileService<V> {
             credential_id: credential_id.clone(),
         };
         profile.validate()?;
+        let previous_key = if key.is_none() {
+            old.map(|previous| self.vault.read(&previous.credential_id))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        if key.is_none()
+            && old.is_some_and(|previous| {
+                url::Url::parse(&previous.base_url)
+                    .ok()
+                    .map(|url| url.origin())
+                    != url::Url::parse(&profile.base_url)
+                        .ok()
+                        .map(|url| url.origin())
+            })
+        {
+            return Err(AgentError::new(
+                "AGENT_KEY_HOST_CHANGED",
+                "服务主机已改变，请在供应商配置中明确确认密钥授权，或重新填写新主机的 API Key。",
+            ));
+        }
         for text in [&profile.name, &profile.model, &profile.base_url] {
-            super::privacy::ensure_safe_text(text, key)?;
+            super::privacy::ensure_safe_text(text, key.or(previous_key.as_deref()))?;
         }
         if let Some(key) = key {
             self.vault.write(&credential_id, key)?;
@@ -164,7 +212,7 @@ impl<V: CredentialVault> ProfileService<V> {
         Ok(view)
     }
 
-    /// 删除密钥失败时保留配置；配置删除失败则恢复原有密钥。
+    /// 其他模型或连接仍引用凭据时保留密钥；存储删除失败则恢复原密钥。
     pub fn delete(&self, id: &str) -> AgentResult<AgentSettingsView> {
         let _guard = self.gate.lock().map_err(AgentError::storage)?;
         let settings = self.store.settings()?;
@@ -173,17 +221,20 @@ impl<V: CredentialVault> ProfileService<V> {
             .iter()
             .find(|p| p.id == id)
             .ok_or_else(|| AgentError::new("AGENT_PROFILE_MISSING", "API 配置不存在。"))?;
-        let shared = settings
+        let provider_id = settings
             .models
             .iter()
-            .filter(|model| model.id != id)
-            .any(|model| {
-                settings.providers.iter().any(|provider| {
-                    provider.id == model.provider_id
-                        && provider.credential_id == profile.credential_id
-                })
-            });
-        if shared {
+            .find(|model| model.id == id)
+            .map(|model| model.provider_id.as_str())
+            .ok_or_else(|| AgentError::new("AGENT_PROFILE_MISSING", "API 配置不存在。"))?;
+        let shared_by_model = settings
+            .models
+            .iter()
+            .any(|model| model.id != id && model.provider_id == provider_id);
+        let shared_by_connection = settings.providers.iter().any(|provider| {
+            provider.id != provider_id && provider.credential_id == profile.credential_id
+        });
+        if shared_by_model || shared_by_connection {
             self.store.delete_profile(id)?;
             return self.view();
         }

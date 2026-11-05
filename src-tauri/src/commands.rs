@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -61,6 +61,8 @@ pub struct Session {
     repository_request: u64,
     /// Agent 只在切换项目时失效，普通刷新不能终止其运行。
     agent_repository_request: u64,
+    /// Agent 允许打开非 Git 文件夹；始终只有这一项当前目录能力。
+    agent_folder: Option<PathBuf>,
     /// 只读能力生命周期；普通状态刷新不递增，避免无关读取失效。
     readonly_request: u64,
     /// 上一次已消费的监听域版本。
@@ -133,6 +135,7 @@ impl Session {
         if changed {
             self.coordinator.invalidate()?;
             self.epoch += 1;
+            self.agent_repository_request += 1;
             self.repository_request += 1;
             self.active = None;
             self.editor_files.clear();
@@ -440,6 +443,7 @@ pub async fn open_repository(
             .ok_or_else(|| OperationError::new("GIT_NOT_FOUND"))?;
         s.begin_repository_request()?;
         s.agent_repository_request += 1;
+        s.agent_folder = None;
         (git, s.epoch, s.repository_request)
     };
     blocking("open_repository", move || {
@@ -449,10 +453,12 @@ pub async fn open_repository(
         let snapshot = git::repository::read_repository_state(&git, &handle)?;
         let mut s = shared.lock()?;
         s.publish_repository(epoch, token, handle, snapshot.clone())?;
+        s.agent_folder = Some(PathBuf::from(&snapshot.root_path));
         s.monitor = Some(monitor);
         s.watch_seen = watch_seen;
         let versions = s.versions;
         drop(s);
+        let _ = app.emit("agent:workspaces-changed", ());
         if let Err(error) =
             crate::recent_projects::record_opened_project(&app, Path::new(&snapshot.root_path))
         {

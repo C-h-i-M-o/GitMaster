@@ -30,26 +30,21 @@ pub fn decide(mode: PermissionMode, risk: ToolRisk) -> PolicyDecision {
     if matches!(risk, ToolRisk::Forbidden) {
         return Deny;
     }
-    if mode == PermissionMode::FullAccess {
-        return Allow;
-    }
     match risk {
         ToolRisk::File {
-            outside, sensitive, ..
+            outside,
+            sensitive,
+            write,
         } => {
-            if sensitive || (outside && mode == PermissionMode::RequestApproval) {
+            if sensitive {
+                Deny
+            } else if mode == PermissionMode::RequestApproval && (write || outside) {
                 Ask
             } else {
                 Allow
             }
         }
-        ToolRisk::Network { private } => {
-            if private || mode == PermissionMode::RequestApproval {
-                Ask
-            } else {
-                Allow
-            }
-        }
+        ToolRisk::Network { .. } => Ask,
         ToolRisk::Git {
             changes_worktree_or_remote,
         } => {

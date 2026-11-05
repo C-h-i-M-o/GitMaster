@@ -1,47 +1,17 @@
-import {
-  useCallback,
-  useEffect,
-  useState,
-  type ChangeEvent,
-  type FormEvent,
-} from "react";
+import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import { agentApi, agentError } from "../services/agent";
+import { useAgentConfiguration } from "./useAgentConfiguration";
 import type {
   AgentSettingsView,
   DeviceUsage,
   PermissionMode,
-  ProviderProfile,
-  ProviderProtocol,
-  SaveProfile,
 } from "../types/agent";
-/** 创建未持久化配置草稿；API Key 始终只存在于当前表单内存。 */
-function emptyProfile(): SaveProfile {
-  return {
-    id: null,
-    name: "",
-    protocol: "chatCompletions",
-    baseUrl: "https://api.openai.com/v1",
-    model: "",
-    apiKey: "",
-  };
-}
-/** 三种协议使用各自官方默认根地址，用户可改为兼容服务。 */
-function baseUrl(protocol: ProviderProtocol): string {
-  return protocol === "anthropicMessages"
-    ? "https://api.anthropic.com/v1"
-    : "https://api.openai.com/v1";
-}
-/** 管理 API 配置、权限、首配和此设备统计，所有写入均经桌面后端。 */
+/** 管理兼容聊天设置入口、模型配置流程、权限和此设备统计。 */
 export function useAgentSettings(enabled: boolean) {
   const [view, setView] = useState<AgentSettingsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [deletePending, setDeletePending] = useState<ProviderProfile | null>(
-    null,
-  );
-  const [setupOpen, setSetupOpen] = useState(false);
-  const [draft, setDraft] = useState<SaveProfile>(emptyProfile);
   const [usage, setUsage] = useState<DeviceUsage | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
   const [usageBusy, setUsageBusy] = useState(false);
@@ -63,6 +33,22 @@ export function useAgentSettings(enabled: boolean) {
       live = false;
     };
   }, [enabled]);
+  const configuration = useAgentConfiguration(
+    enabled,
+    view,
+    setView,
+    setError,
+    setNotice,
+  );
+  /** 完成对话后重读模型列表与最近使用记录。 */
+  const refreshSettings = useCallback(async () => {
+    if (!enabled) return;
+    try {
+      setView(await agentApi.settings());
+    } catch (cause) {
+      setError(agentError(cause));
+    }
+  }, [enabled]);
   /** 设置操作统一保留失败提示和旧快照。 */
   async function change(
     task: () => Promise<AgentSettingsView>,
@@ -81,83 +67,11 @@ export function useAgentSettings(enabled: boolean) {
       setBusy(false);
     }
   }
-  /** 只允许修改表单定义的字段。 */
-  function field(name: "name" | "baseUrl" | "model" | "apiKey") {
-    return (event: ChangeEvent<HTMLInputElement>) =>
-      setDraft((current) => ({ ...current, [name]: event.target.value }));
-  }
-  /** 协议切换仅替换官方默认地址，不覆盖用户的兼容服务地址。 */
-  function protocolChanged(event: ChangeEvent<HTMLSelectElement>) {
-    const protocol = event.target.value;
-    if (
-      protocol !== "chatCompletions" &&
-      protocol !== "responses" &&
-      protocol !== "anthropicMessages"
-    )
-      return;
-    setDraft((current) => ({
-      ...current,
-      protocol,
-      baseUrl:
-        current.baseUrl === baseUrl(current.protocol)
-          ? baseUrl(protocol)
-          : current.baseUrl,
-    }));
-  }
-  /** 新增配置，密码输入默认空白。 */
-  function add() {
-    setDraft(emptyProfile());
+  /** 保留聊天入口的兼容控制器并打开新版配置流程。 */
+  function add(): void {
     setError(null);
     setNotice(null);
-    setSetupOpen(true);
-  }
-  /** 编辑只回填普通字段，不读取已保存密钥。 */
-  function edit(profile: ProviderProfile) {
-    return () => {
-      setDraft({
-        id: profile.id,
-        name: profile.name,
-        protocol: profile.protocol,
-        baseUrl: profile.baseUrl,
-        model: profile.model,
-        apiKey: "",
-      });
-      setError(null);
-      setNotice(null);
-      setSetupOpen(true);
-    };
-  }
-  /** 关闭清除密码，失败后也不把密码保留在后台页面。 */
-  function closeSetup() {
-    if (busy) return;
-    setDraft(emptyProfile());
-    setSetupOpen(false);
-  }
-  /** 保存后清除密码；不在浏览器缓存、日志或 URL 中留下草稿。 */
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    const success = await change(() => agentApi.save(draft));
-    setDraft((current) => ({ ...current, apiKey: "" }));
-    if (success) {
-      setSetupOpen(false);
-      setNotice("API 配置已保存，密钥由系统密钥库管理。");
-    }
-  }
-  /** 打开明确的删除确认，聊天记录仍保留。 */
-  function remove(profile: ProviderProfile) {
-    return () => setDeletePending(profile);
-  }
-  /** 取消删除不更改系统密钥库。 */
-  function keepProfile() {
-    setDeletePending(null);
-  }
-  /** 只删除确认中绑定的配置和凭据。 */
-  async function confirmDelete() {
-    if (
-      deletePending &&
-      (await change(() => agentApi.deleteProfile(deletePending.id)))
-    )
-      setDeletePending(null);
+    configuration.add();
   }
   /** 后续运行使用选中的配置，当前运行不变。 */
   function select(event: ChangeEvent<HTMLSelectElement>) {
@@ -174,23 +88,6 @@ export function useAgentSettings(enabled: boolean) {
     )
       void change(() => agentApi.permission(mode));
   }
-  /** 明确由用户触发连接测试，可能消耗一次模型调用。 */
-  function test(profile: ProviderProfile) {
-    return async () => {
-      if (busy) return;
-      setBusy(true);
-      setError(null);
-      setNotice(null);
-      try {
-        await agentApi.test(profile.id);
-        setNotice(`“${profile.name}”连接成功。`);
-      } catch (cause) {
-        setError(agentError(cause));
-      } finally {
-        setBusy(false);
-      }
-    };
-  }
   /** 每次打开或刷新时读取实际磁盘占用，失败保留错误而非伪造零。 */
   const refreshUsage = useCallback(async () => {
     if (!enabled) return;
@@ -206,29 +103,20 @@ export function useAgentSettings(enabled: boolean) {
   }, [enabled]);
   return {
     enabled,
-    deletePending,
-    keepProfile,
-    confirmDelete,
     view,
     error,
     notice,
-    busy,
-    setupOpen,
-    draft,
+    busy: busy || configuration.busy,
+    setupOpen: configuration.setupOpen,
+    configuration,
     usage,
     usageError,
     usageBusy,
     refreshUsage,
-    field,
-    protocolChanged,
+    refreshSettings,
     add,
-    edit,
-    closeSetup,
-    save,
-    remove,
     select,
     permission,
-    test,
   };
 }
 export type AgentSettingsController = ReturnType<typeof useAgentSettings>;
@@ -239,20 +127,20 @@ export const permissionOptions: {
 }[] = [
   {
     value: "requestApproval",
-    label: "请求批准",
+    label: "逐次审批",
     description:
-      "项目内普通读写可自动执行；项目外文件、联网及风险 Git 操作询问。",
+      "工作区普通文件与 Git 读取自动；文件和 Git 写入、网络访问均需审批。",
   },
   {
     value: "autoApprove",
-    label: "帮我批准",
+    label: "工作区协作",
     description:
-      "低风险项目外读写和公开联网自动执行；敏感路径、私网及风险 Git 操作询问。",
+      "工作区普通文件写入、本地暂存和提交可自动；联网、分支切换、push/pull 等风险操作仍需审批。",
   },
   {
     value: "fullAccess",
-    label: "完全访问权限",
+    label: "自主执行",
     description:
-      "注册工具可访问任意文件和网络，不逐次询问；仍受系统权限、文件版本和工具范围约束。",
+      "当前已启用工具按“工作区协作”的规则执行；工作区边界、敏感及程序文件保护仍有效，沙箱命令尚未启用。",
   },
 ];

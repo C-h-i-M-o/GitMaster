@@ -1,27 +1,39 @@
 import type { AgentController } from "../hooks/useAgent";
-import { permissionOptions } from "../hooks/useAgentSettings";
-import { eventPresentation, runPhase } from "../ui/agentPresentation";
-import type { AgentEvent } from "../types/agent";
-/** 展示持久事件；仓库或网页内容始终作为纯文本，不执行 HTML。 */
-function AgentMessage({ event }: { event: AgentEvent }) {
-  const item = eventPresentation(event);
-  if (!item) return null;
-  return (
-    <article className={`agent-message agent-message-${item.kind}`}>
-      <small>{item.role}</small>
-      {item.details ? (
-        <details>
-          <summary>{item.text}</summary>
-          <pre>{item.details}</pre>
-        </details>
-      ) : (
-        <div className="agent-message-text">{item.text}</div>
-      )}
-    </article>
-  );
-}
+import { useAgentTranscript } from "../hooks/useAgentTranscript";
+import type { AgentEvent, PermissionMode } from "../types/agent";
+import { formatTranscriptValue } from "../ui/agentPresentation";
+import { AgentPermissionControl } from "./AgentPermission";
+import { AgentTurn } from "./AgentTurn";
+import { AgentModelParameters } from "./AgentModelParameters";
+import { AgentMemoryPanel } from "./AgentMemoryPanel";
+import { AgentUsage } from "./AgentUsage";
+import { AgentContextPanel } from "./AgentContextPanel";
+import { latestPreparedContext } from "../ui/agentUsage";
+import "./agentModels.css";
+
+const emptyAgentEvents: AgentEvent[] = [];
 /** 基础聊天工作台，审批卡直接展示后端绑定的真实目标与参数。 */
 export function AgentPanel({ a }: { a: AgentController }) {
+  const events = a.record?.events ?? emptyAgentEvents;
+  const { turns, activeTurn } = useAgentTranscript(
+    events,
+    a.run?.runId ?? null,
+  );
+  const defaultPermission: PermissionMode =
+    a.settings.view?.settings.defaultPermissionMode ?? "requestApproval";
+  const workspace = a.record ? a.currentChatWorkspace : a.selectedWorkspace;
+  const modelAttempts = events.flatMap((event) =>
+    event.kind === "modelAttempt"
+      ? [
+          {
+            sequence: event.sequence,
+            purpose: event.purpose,
+            attempt: event.attempt,
+          },
+        ]
+      : [],
+  );
+  const preparedContext = latestPreparedContext(events);
   return (
     <section className="agent-panel" aria-label="AI Agent">
       <div className="agent-conversation">
@@ -29,16 +41,36 @@ export function AgentPanel({ a }: { a: AgentController }) {
           <div>
             <strong>{a.record?.session.title ?? "从一个任务开始"}</strong>
             <small className="agent-path">
-              {a.record?.session.repositoryPath ??
-                a.repositoryPath ??
-                "未打开项目"}
+              {workspace?.rootPath ??
+                a.record?.session.repositoryPath ??
+                "未选择工作区"}
             </small>
+            {workspace && (
+              <small className="agent-path">
+                默认输出：{workspace.writePath}
+              </small>
+            )}
           </div>
           <button className="secondary" onClick={a.settings.add}>
             配置 API
           </button>
+          <AgentMemoryPanel
+            enabled={a.settings.enabled}
+            workspaceId={workspace?.id ?? a.workspaceId}
+            chat={a.record?.session ?? null}
+            running={a.run !== null}
+            ensureChat={a.ensureChatForMemory}
+            onChatUpdated={a.updateChatSession}
+            onMemoriesChanged={a.context.refreshPreview}
+          />
+          <AgentUsage
+            attempts={modelAttempts}
+            context={preparedContext}
+            label="本聊天用量与上下文"
+          />
         </header>
         <div
+          ref={a.messagesRoot}
           className="agent-messages"
           onScroll={a.scroll}
           tabIndex={0}
@@ -50,7 +82,7 @@ export function AgentPanel({ a }: { a: AgentController }) {
                 ? "暂时无法读取模型配置。"
                 : "正在读取模型配置…"}
             </p>
-          ) : !a.settings.view.settings.activeProfileId ? (
+          ) : a.enabledModels.length === 0 ? (
             <div className="agent-empty">
               <span className="eyebrow">AI AGENT</span>
               <h2>先连接一个 AI 模型</h2>
@@ -71,14 +103,23 @@ export function AgentPanel({ a }: { a: AgentController }) {
               </p>
             </div>
           ) : null}
-          {a.record?.events.map((event) => (
-            <AgentMessage key={event.sequence} event={event} />
+          {turns.map((turn) => (
+            <AgentTurn
+              key={turn.sessionId + ":" + turn.runId}
+              turn={turn}
+              workspaceId={a.record?.session.workspaceId ?? a.workspaceId}
+              activeRun={turn.runId === a.run?.runId ? a.run : null}
+              onMemorySaved={a.context.refreshPreview}
+            />
           ))}
-          {a.run?.text && (
-            <article className="agent-message agent-message-assistant">
-              <small>GitMaster · 正在生成</small>
-              <div className="agent-message-text">{a.run.text}</div>
-            </article>
+          {a.run && !activeTurn && (
+            <p className="agent-turn-alert" role="status">
+              {a.run.phase === "awaitingApproval"
+                ? "等待审批"
+                : a.run.phase === "executingTool"
+                  ? "正在执行工具"
+                  : "正在生成回复"}
+            </p>
           )}
           {a.run?.approval && (
             <section className="agent-approval" aria-label="工具批准">
@@ -88,13 +129,13 @@ export function AgentPanel({ a }: { a: AgentController }) {
               <details>
                 <summary>{a.run.approval.call.name} · 查看参数</summary>
                 <pre>
-                  {JSON.stringify(a.run.approval.call.arguments, null, 2)}
+                  {formatTranscriptValue(a.run.approval.call.arguments)}
                 </pre>
               </details>
               {a.run.approval.preview !== null && (
                 <details>
                   <summary>查看 Git 操作预览</summary>
-                  <pre>{JSON.stringify(a.run.approval.preview, null, 2)}</pre>
+                  <pre>{formatTranscriptValue(a.run.approval.preview)}</pre>
                 </details>
               )}
               <div className="button-row">
@@ -129,7 +170,14 @@ export function AgentPanel({ a }: { a: AgentController }) {
             </p>
           )}
           {a.mismatched && (
-            <p role="status">请先打开此聊天关联的项目，或新建聊天。</p>
+            <p role="status">
+              此聊天关联的文件夹工作区已更换；历史仍可阅读，请选择有效工作区新建聊天。
+            </p>
+          )}
+          {a.missingModel && (
+            <p role="alert">
+              此聊天使用的模型已删除或停用，请重新选择模型后保存聊天配置。
+            </p>
           )}
           {a.record?.session.archived && (
             <p role="status">聊天已归档，恢复后可以继续。</p>
@@ -149,36 +197,81 @@ export function AgentPanel({ a }: { a: AgentController }) {
             disabled={a.disabled}
           />
           <div className="agent-composer-toolbar">
+            <AgentContextPanel
+              context={a.context}
+              enabled={a.settings.enabled}
+              running={a.run !== null}
+              workspaceId={a.record?.session.workspaceId ?? a.workspaceId}
+              hasChat={a.record !== null}
+              hasText={a.draft.trim().length > 0}
+              configurationDirty={a.configurationDirty}
+            />
             <select
-              aria-label="本轮模型配置"
-              value={a.settings.view?.settings.activeProfileId ?? ""}
-              onChange={a.settings.select}
-              disabled={a.settings.busy || !!a.run}
+              aria-label="当前聊天模型"
+              value={a.configuration.modelConfigId ?? ""}
+              onChange={a.changeModelConfig}
+              disabled={a.settings.busy || a.configurationBusy || !!a.run}
             >
-              <option value="" disabled>
-                选择模型
-              </option>
-              {a.settings.view?.settings.profiles.map((profile) => (
-                <option value={profile.id} key={profile.id}>
-                  {profile.name} · {profile.model}
+              {a.missingModel && a.record && (
+                <option value={a.configuration.modelConfigId ?? ""} disabled>
+                  模型已删除或停用 · 请重新选择
                 </option>
-              ))}
+              )}
+              {a.recentModels.length > 0 && (
+                <optgroup label="最近使用">
+                  {a.recentModels.map((model) => (
+                    <option value={model.id} key={model.id}>
+                      {model.label} · {model.modelId}
+                      {model.capabilities.toolSupport === false
+                        ? "（明确不支持 Agent 工具）"
+                        : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {a.otherModels.length > 0 && (
+                <optgroup label="所有启用模型">
+                  {a.otherModels.map((model) => (
+                    <option value={model.id} key={model.id}>
+                      {model.label} · {model.modelId}
+                      {model.capabilities.toolSupport === false
+                        ? "（明确不支持 Agent 工具）"
+                        : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
-            <select
-              aria-label="AI 权限"
-              value={
-                a.settings.view?.settings.defaultPermissionMode ??
-                "requestApproval"
-              }
-              onChange={a.settings.permission}
-              disabled={a.settings.busy || !!a.run}
-            >
-              {permissionOptions.map((option) => (
-                <option value={option.value} key={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <AgentPermissionControl
+              mode={a.configuration.permissionMode ?? defaultPermission}
+              disabled={a.settings.busy || a.configurationBusy || !!a.run}
+              onChange={a.changePermissionMode}
+            />
+            {a.record && a.configurationDirty && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void a.saveChatConfiguration()}
+                disabled={
+                  a.configurationBusy ||
+                  !!a.run ||
+                  a.mismatched ||
+                  a.missingModel
+                }
+              >
+                {a.configurationBusy ? "保存中…" : "保存聊天配置"}
+              </button>
+            )}
+            {a.configuration.modelConfigId && (
+              <details className="agent-chat-parameters">
+                <summary>思考与高级参数</summary>
+                <AgentModelParameters
+                  configuration={a.chatParameterEditor()}
+                  readOnlyModel
+                  disabled={!!a.run || a.configurationBusy}
+                />
+              </details>
+            )}
             {a.run ? (
               <button
                 type="button"
@@ -198,11 +291,6 @@ export function AgentPanel({ a }: { a: AgentController }) {
               </button>
             )}
           </div>
-          {a.run && (
-            <p role="status" className="small muted">
-              {runPhase(a.run.phase)}
-            </p>
-          )}
         </form>
       </div>
     </section>

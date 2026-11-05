@@ -1,0 +1,130 @@
+.agent-setup {
+  width: min(760px, calc(100vw - 32px));
+  max-width: 760px;
+  max-height: min(90vh, 900px);
+}
+
+.agent-setup .agent-form {
+  display: grid;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.agent-setup h3 {
+  margin: 0 0 8px;
+  font-size: 0.98rem;
+}
+
+.agent-connection-models,
+.agent-model-discovery,
+.agent-model-editor,
+.agent-test-report {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+}
+
+.agent-model-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-model-choice small {
+  color: var(--muted, #888);
+  overflow-wrap: anywhere;
+}
+
+.agent-model-choice.is-selected {
+  outline: 1px solid var(--accent, #d4a72c);
+  outline-offset: 3px;
+}
+
+.agent-model-select {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+}
+
+.agent-consent,
+.agent-model-parameters label,
+.agent-model-editor > label {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-consent {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.agent-inline-actions,
+.agent-setup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-setup-actions {
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.agent-model-field-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--danger, #d66);
+}
+
+.agent-test-report p {
+  margin: 0;
+}
+
+.agent-setup .settings-advanced {
+  margin: 0;
+}
+
+.agent-workspace-picker {
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px;
+}
+
+.agent-workspace-paths {
+  display: grid;
+  gap: 4px;
+  padding: 0 10px 8px;
+  overflow-wrap: anywhere;
+}
+
+.agent-workspace-paths small,
+.agent-sidebar-path {
+  color: var(--muted, #888);
+}
+
+.agent-choose-folder {
+  margin: 0 10px 10px;
+}
+
+.agent-chat-parameters {
+  flex: 1 1 100%;
+  min-width: 100%;
+  text-align: left;
+}
+
+.agent-chat-parameters > summary {
+  cursor: pointer;
+  padding: 6px 0;
+}
+
+.agent-panel .agent-chat-parameters .agent-model-editor {
+  margin-top: 8px;
+}

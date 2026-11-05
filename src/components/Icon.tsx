@@ -19,7 +19,10 @@ export type IconName =
   | "minus"
   | "center"
   | "folder"
+  | "folderCheck"
   | "check"
+  | "shield"
+  | "shieldBolt"
   | "activity"
   | "merge";
 
@@ -84,7 +87,20 @@ const iconPaths: Record<IconName, ReactNode> = {
     </>
   ),
   folder: <path d="M3 7V5h6l2 3h10v12H3V7Z" />,
+  folderCheck: (
+    <>
+      <path d="M3 7V5h6l2 3h10v12H3V7Z" />
+      <path d="m8 13 2.5 2.5L16 10" />
+    </>
+  ),
   check: <path d="m5 12 4 4L19 6" />,
+  shield: <path d="m12 3 7 3v5c0 4.5-2.9 7.6-7 10-4.1-2.4-7-5.5-7-10V6l7-3Z" />,
+  shieldBolt: (
+    <>
+      <path d="m12 3 7 3v5c0 4.5-2.9 7.6-7 10-4.1-2.4-7-5.5-7-10V6l7-3Z" />
+      <path d="m13 7-3 5h3l-2 5 4-6h-3l1-4Z" />
+    </>
+  ),
   activity: <path d="M3 12h4l2-6 4 12 2-6h6" />,
   merge: (
     <>

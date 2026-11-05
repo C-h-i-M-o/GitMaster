@@ -64,6 +64,7 @@ async fn shutdown_drains_all_chats_and_rejects_new_runs() {
 /// 真实 Git 提交已完成但结果通知被延迟时，关闭必须继续等待收尾。
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_waits_for_git_write_result_delivery() {
+    enable_git_timing_diagnostics();
     use gitmaster_core::agent::tools::git::GitContext;
     use gitmaster_core::git::{
         coordinator::RepositoryCoordinator, environment::resolve_git, repository::open_repository,
@@ -134,10 +135,19 @@ async fn shutdown_waits_for_git_write_result_delivery() {
             guard: Arc::new(|| Ok(())),
         })
         .unwrap();
-    // Windows Git 夹具本轮实测可超过 73 秒；这里只放宽到达测试屏障的等待。
-    tokio::task::spawn_blocking(move || waiting.recv_timeout(Duration::from_secs(120)).unwrap())
-        .await
-        .unwrap();
+    // 保持原有等待预算，失败时区分工具尚未结束与通知未送达。
+    let arrived =
+        tokio::task::spawn_blocking(move || waiting.recv_timeout(Duration::from_secs(120)))
+            .await
+            .unwrap();
+    assert!(
+        arrived.is_ok(),
+        "Git 结果通知未到达：等待={arrived:?}，运行快照={:?}，末条事件={:?}",
+        runtime
+            .snapshot(&chat.id)
+            .map(|snapshot| snapshot.map(|state| state.phase)),
+        store.read_chat(&chat.id).unwrap().events.last()
+    );
     let owner = runtime.clone();
     let shutdown = tokio::spawn(async move { owner.shutdown().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -151,13 +161,20 @@ async fn shutdown_waits_for_git_write_result_delivery() {
     worker.join().unwrap();
     assert_eq!(git(&["log", "-1", "--format=%s"]), "受控收尾");
     let record = store.read_chat(&chat.id).unwrap();
-    assert!(record.events.iter().any(|event| matches!(
-        event.payload,
-        EventKind::ToolResult {
-            is_error: false,
-            ..
-        }
-    )));
+    let has_successful_tool_result = record.events.iter().any(|event| {
+        matches!(
+            event.payload,
+            EventKind::ToolResult {
+                is_error: false,
+                ..
+            }
+        )
+    });
+    assert!(
+        has_successful_tool_result,
+        "未记录成功工具结果，持久事件为：{:#?}",
+        record.events
+    );
     assert!(matches!(
         record.events.last().unwrap().payload,
         EventKind::RunEnded {
@@ -165,6 +182,39 @@ async fn shutdown_waits_for_git_write_result_delivery() {
             ..
         }
     ));
+}
+
+/// 专项诊断复用核心脱敏阶段日志，普通回归不输出额外信息。
+fn enable_git_timing_diagnostics() {
+    if std::env::var_os("GITMASTER_TEST_TIMINGS").is_none() {
+        return;
+    }
+    struct TimingLogger;
+    impl log::Log for TimingLogger {
+        /// 只接受已有阶段日志，不输出 HTTP 请求或环境变量。
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.target() == "gitmaster::diagnostic"
+        }
+        /// 给每条阶段日志附加测试启动后的相对时间。
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                eprintln!(
+                    "t={} {}",
+                    START
+                        .get_or_init(std::time::Instant::now)
+                        .elapsed()
+                        .as_millis(),
+                    record.args()
+                );
+            }
+        }
+        /// 标准错误直接输出，不持有额外缓冲。
+        fn flush(&self) {}
+    }
+    static LOGGER: TimingLogger = TimingLogger;
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Trace);
 }
 
 /// 构造独立磁盘与真实回环 HTTP 服务，不接触真实仓库和服务密钥。
@@ -562,7 +612,20 @@ async fn rejection_and_cancellation_never_execute_pending_tool() {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|error| {
+            let snapshot = runtime
+                .snapshot(&chat.id)
+                .ok()
+                .flatten()
+                .and_then(|value| serde_json::to_value(value).ok());
+            let last_event = store.read_chat(&chat.id).ok().and_then(|record| {
+                record
+                    .events
+                    .last()
+                    .map(|event| format!("{:?}", event.payload))
+            });
+            panic!("等待审批超时：{error}; snapshot={snapshot:#?}; last_event={last_event:#?}");
+        });
         if cancelled {
             if closing {
                 runtime.shutdown().await.unwrap();

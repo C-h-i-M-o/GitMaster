@@ -1,7 +1,61 @@
 # Agent v2 开发接手文档
 
-> 交接日期：2026-11-04（Asia/Shanghai）。仓库：`C-h-i-M-o/GitMaster`，分支：`ai-agent`。
-> 本文随阶段性代码提交，当前功能尚未完成，不是 Release，也未合并 `main`。开发起点为 `981f86c9d819cfd0c71b9c292d2793eeb3e4874b`；包含本文的提交可用 `git log -1 -- docs/agent-v2-handoff-2026-11-04.md` 精确定位。
+> 最新续作状态：2026-11-05（Asia/Shanghai）。仓库：`C-h-i-M-o/GitMaster`，分支：`ai-agent`。
+> 本轮工作基线为 `b6f92a3`。用户要求将续作代码、手写回归用例和文档一起提交到 `ai-agent`；本次交付是开发快照，不是 Release，也不合并 `main`。实际提交以远端分支记录为准。
+
+## 0. 2026-11-05 续作快照
+
+以下为当前续作状态。后面的 11 月 4 日交接内容保留作历史快照，和本节不一致时以本节及[验证记录](verification.md)为准。详细需求仍以[合并需求与计划](agent-v2-spec-plan-2026-11-04.md)为准。
+
+最新超时专项：用户已要求“取消测试”，当前无本轮测试进程，恢复测试须等待新指示。最新定向轮次为 2/3 通过，但前一轮 0/3；三项仍未达到稳定通过门槛。版本探测和独立 Git 也可超时，未修改生产期限或认定具体系统组件为根因；WPR 被策略拒绝。诊断日志与未解决边界见验证记录顶部，不能用单次通过关闭问题。
+
+### 当前已实现
+
+- **T2 模型配置：**供应商/模型分离存储、多模型配置、协议预设、按 endpoint 绑定能力、模型发现和草稿连接探测已实现。共享凭据删除边界问题已修复。
+- **工作区与聊天：**默认/文件夹工作区、聊天绑定、工作区/会话切换和聊天级配置已接入。
+- **上下文与工具：**输入预算、压缩、经过版本校验的引用、工具结果分页已实现。
+- **记忆：**记忆 CRUD、选择预览、用户显式保存模型建议已实现。
+- **A11：**每轮展示真实文件写入记录，按需读取并校验历史前后快照后显示差异；不把历史快照描述为文件当前状态。
+- **A12：**有限重试、单次尝试事件及供应商 usage 统计已实现。
+- **A13：**聊天搜索和最近模型列表已实现。
+- **权限：**新安装默认 `AutoApprove`；已有聊天与权限选择保留。该行为按当前实现记录，最终验证状态以验证记录为准。
+
+### 明确保持关闭或未验收的范围
+
+- **T5 沙箱命令保持禁用。**Docker 评估已被用户拒绝；不启动 Docker、不下载新组件，也不回退到裸宿主执行。不得根据模型响应调用宿主命令。
+- 本机曾编译并启动原生开发版，但 `useAgent` 内部 helper 命名遮蔽曾导致首屏白屏；问题已修复，新增的真实 hook SSR 启动回归通过。该回归不能替代原生窗口验收。
+- Sky 两次激活失败，原生交互仍未验收；开发版已关闭。不要把浏览器 SSR/Node 测试或编译成功写成桌面交互通过。
+- 前端 36 项回归通过；Agent 集成按各目标最近一次结果汇总为 123 通过、3 项 Git 相关超时未通过。另修复 Git 成功写入后状态读取失败被误报的问题，补丁后的核心单元 4/4 通过。最终命令、局限及平台范围以[验证记录](verification.md)为准，不宣称全量通过。
+
+### 新代码入口
+
+- **配置与请求：**`src/hooks/useAgentConfiguration.ts`、`src/ui/agentModelConfiguration.ts`、`src/services/agent.ts`；Rust provider 实现在 `crates/gitmaster-core/src/agent/provider/`。
+- **工作区、上下文和记忆：**`src/hooks/useAgent.ts`、`src/hooks/useAgentContext.ts`、`src/hooks/useAgentMemory.ts`、`src/hooks/useAgentSearch.ts`；核心入口在 `crates/gitmaster-core/src/agent/context.rs`、`references.rs`、`store/`、`runtime/`。
+- **摘要与过程 UI：**`src/ui/agentTranscript.ts`、`src/components/AgentTurn.tsx`、`AgentChanges.tsx`、`AgentRunContext.tsx`、`AgentUsage.tsx`。
+- **启动白屏回归：**`tests/agent-startup.test.mjs`。其他 Agent 专项测试集中在 `tests/` 和 `crates/gitmaster-core/tests/`；最终验收清单见 `verification.md`。
+
+### 新环境恢复顺序
+
+1. 先保留当前工作区，检查分支、HEAD 和未提交修改；不要用 `reset`、`clean`、stash 或拉取覆盖现有状态：
+
+   ```powershell
+   git status --short
+   git branch --show-current
+   git rev-parse --short HEAD
+   ```
+
+2. 阅读 [AGENTS.md](../AGENTS.md)、[合并需求与计划](agent-v2-spec-plan-2026-11-04.md) 和[验证记录](verification.md)，再按“新代码入口”定位模块。
+3. 从验证记录核对命令、日志、通过/失败和未验收范围；优先复现三个 Git 相关超时，不能以删除断言或扩大生产超时作为修复。不要并行启动重 Git 集成测试。
+4. 确认当前分支仍是 `ai-agent`，保留已有本地改动，并核对 `origin/ai-agent` 的实际提交。本次交付包含基线 `b6f92a3` 之后的续作；以交付提交和本文最新状态恢复，不以旧快照的“尚未推送”描述判断当前远端。
+5. T5 继续关闭。Docker 被拒绝，不能以旧交接中出现的固定候选版本或下载评估记录推导出恢复授权。
+6. 原生交互验收需另行安排；Sky 激活失败的两次尝试及开发版关闭状态都保留在交接记录中，不要宣称桌面已验收。
+
+## 11 月 4 日历史快照
+
+> 以下内容记录 2026-11-04 的阶段状态与当时恢复建议。T2/A11/A12/A13、T5、共享凭据修复及本轮验证状态已由上方 11 月 5 日续作快照更新；历史段落不作为当前完成度依据。
+
+> 历史交接日期：2026-11-04（Asia/Shanghai）。当时记录的仓库分支为 `ai-agent`。
+> 当时开发起点为 `981f86c9d819cfd0c71b9c292d2793eeb3e4874b`；保留该信息仅供追溯，不代表当前续作基线。
 
 ## 1. 先看什么
 
@@ -65,13 +119,13 @@
 
 评估产物全部在本机忽略目录，未放入仓库。它们不是构建应用所需依赖，新环境可先完成项目安装，再单独恢复评估。
 
-| 对象                   | 固定标识与现有证据                                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| SRT                    | `@anthropic-ai/sandbox-runtime@0.0.81`，tag commit `c40cf14a65d025e3cd27f071f13a73c12b3b1f92`                   |
-| SRT tarball            | 4,836,387 bytes；SHA-256 `0E0B8249062047F7B592C7995F8EC2F251F3BBEBDC0402DB1EE23AF09983953F`                     |
-| SRT registry integrity | `sha512-bjHDu87gjIR7+Oxy9jPiK3v8CvSELCzfpXa3fjqfSKdvlZET2iF51xcXILWPayTpowB3xtZeQVf2JR916nVW/w==`，本机重算一致 |
-| Codex                  | `71a4c070369fb761e51fd71009107f398d9f0f81`，源码 HEAD 已核对，尚未构建                                          |
-| Codex MXC 传递依赖     | workspace 引用 Microsoft mxc Git rev `6cd3d58f05d3447e67109cfb75e042803b843ca4`，尚未取得并验证实现             |
+| 对象                   | 固定标识与现有证据                                                                                                                                                               |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SRT                    | `@anthropic-ai/sandbox-runtime@0.0.81`，tag commit `c40cf14a65d025e3cd27f071f13a73c12b3b1f92`                                                                                    |
+| SRT tarball            | 4,836,387 bytes；SHA-256 `0E0B8249062047F7B592C7995F8EC2F251F3BBEBDC0402DB1EE23AF09983953F`                                                                                      |
+| SRT registry integrity | `sha512-bjHDu87gjIR7+Oxy9jPiK3v8CvSELCzfpXa3fjqfSKdvlZET2iF51xcXILWPayTpowB3xtZeQVf2JR916nVW/w==`，本机重算一致                                                                  |
+| Codex                  | `71a4c070369fb761e51fd71009107f398d9f0f81`，源码 HEAD 已核对，尚未构建                                                                                                           |
+| Codex MXC 传递依赖     | 2026-11-05 复核固定 Codex HEAD 的 Cargo.toml/Cargo.lock 为 `b21120168d70befe12356411423266bfef168446`；原记录 `6cd3d58f...` 来源不明，已更正。源码已取得，尚未构建或完成边界验收 |
 
 来源：[SRT 固定发布](https://github.com/anthropics/sandbox-runtime/releases/tag/v0.0.81)、[npm 元数据](https://registry.npmjs.org/@anthropic-ai%2fsandbox-runtime/0.0.81)、[固定分发包](https://registry.npmjs.org/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-0.0.81.tgz)、[Codex 固定源码](https://github.com/openai/codex/tree/71a4c070369fb761e51fd71009107f398d9f0f81)。
 
