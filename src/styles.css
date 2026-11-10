@@ -499,6 +499,10 @@ p[role="alert"] {
   border: 1px solid color-mix(in srgb, var(--surface) 85.1%, transparent);
   box-shadow: 0 4px 25px color-mix(in srgb, black 1.6%, transparent);
 }
+/* AI 模式下隐藏提交图，避免 flex 布局覆盖 hidden 的默认显示规则。 */
+.canvas-area[hidden] {
+  display: none;
+}
 .graph-canvas {
   position: relative;
   flex: 1;

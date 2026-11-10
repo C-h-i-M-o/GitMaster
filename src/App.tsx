@@ -37,7 +37,7 @@ export default function App() {
           <nav className="workspace-nav">
             {agentMode ? (
               <>
-                <button onClick={w.returnToGit}>
+                <button onClick={w.returnToGit()}>
                   <Icon name="history" />
                   <span>返回 Git 工作台</span>
                 </button>

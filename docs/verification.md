@@ -2429,3 +2429,19 @@ git::write::tests::stages_selected_mm_and_preserves_other_index_entries
 ```
 
 </details>
+
+## 2026-11-10：AI Agent 与 Git 工作台切换修复
+
+用户实测确认 AI 对话正常，问题为进入 AI 后 Git 历史未隐藏且不可交互，以及返回 Git 工作台按钮无效；随后授权按 `docs/spec-plan.md` 第 36 节实施最小修复。
+
+- `src/App.tsx`：返回按钮绑定 `w.returnToGit()` 生成的导航回调，点击时才执行返回动作。
+- `src/styles.css`：新增 `.canvas-area[hidden] { display: none; }`，防止原有 `display: flex` 覆盖默认隐藏效果；继续保持 Git 视图挂载及原有 `inert` 交互保护。
+- 静态检查：`git diff --check`、本机 Prettier 对本次涉及的代码与方案文档的格式检查通过；未下载依赖。
+
+按用户要求，本轮未运行测试、类型检查或构建，未启动或操作应用，未使用 computer use；以下实际交互验收交由用户完成，不宣称原生或双平台验证通过：
+
+- [ ] 进入 AI Agent 后 Git 历史完全隐藏，AI 对话及输入操作区可达。
+- [ ] 返回 Git 工作台后原视图恢复，历史图及面板可交互，原有选择与缩放保留。
+- [ ] 多次往返切换，聊天记录与未发送草稿保留，AI 对话正常。
+
+未修改 Rust、模型请求、聊天存储或动画逻辑；未提交、推送或操作用户仓库数据。
