@@ -104,6 +104,10 @@ impl Default for SaveMode {
     deny_unknown_fields
 )]
 pub enum SettingsPatch {
+    AiChat {
+        transcript_view: Option<TranscriptView>,
+        collapse_timing: Option<CollapseTiming>,
+    },
     Git {
         git_path: Option<String>,
     },
@@ -138,6 +142,34 @@ pub enum SettingsPatch {
     ExternalOpen {
         external_open: ExternalOpenPreferences,
     },
+}
+
+/// 与固定版本 DSH 保持一致的四档过程展示。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptView {
+    Compact,
+    #[default]
+    Standard,
+    Detailed,
+    Verbose,
+}
+/// 正常结束过程的自动收起时机，失败和中断不自动隐藏。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CollapseTiming {
+    #[default]
+    Completion,
+    NextInput,
+}
+/// 过程显示偏好独立于模型和权限配置。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiChatPreferences {
+    #[serde(default)]
+    pub transcript_view: TranscriptView,
+    #[serde(default)]
+    pub collapse_timing: CollapseTiming,
 }
 impl Default for EditorPreferences {
     /// 用系统等宽字体显示原有内容，默认不折行。

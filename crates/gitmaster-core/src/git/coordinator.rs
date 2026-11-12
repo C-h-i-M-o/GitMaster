@@ -317,7 +317,14 @@ impl QueueReservation {
             let waited = self
                 .gate
                 .changed
-                .wait_timeout(state, remaining)
+                .wait_timeout(
+                    state,
+                    if self.writer && self.cancellation.is_some() {
+                        remaining.min(Duration::from_millis(100))
+                    } else {
+                        remaining
+                    },
+                )
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = waited.0;
         }
@@ -400,6 +407,12 @@ pub struct RepositoryCoordinator {
     queues: RepositoryQueues,
 }
 
+/// 外部 Agent 写入持有的独占租约；释放时一并撤销会话忙碌状态。
+pub struct ExternalWriteLease {
+    _reservation: QueueReservation,
+    _session: FileWriteSession,
+}
+
 impl Default for RepositoryCoordinator {
     /// 默认构造一个独立会话，同时复用全应用队列。
     fn default() -> Self {
@@ -408,6 +421,35 @@ impl Default for RepositoryCoordinator {
 }
 
 impl RepositoryCoordinator {
+    /// 为进程外工具预留仓库写入权，后台命令结束前必须保留返回值。
+    pub fn acquire_external_write(
+        &self,
+        key: &CoordinationKey,
+    ) -> Result<ExternalWriteLease, OperationError> {
+        self.acquire_external_write_cancellable(key, Arc::new(AtomicBool::new(false)))
+    }
+    /// 可取消的外部租约允许进程断开时撤回队列预留。
+    pub fn acquire_external_write_cancellable(
+        &self,
+        key: &CoordinationKey,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<ExternalWriteLease, OperationError> {
+        {
+            let mut session = lock(&self.session);
+            ensure_idle(&session)?;
+            session.file_write = true;
+            session.generation += 1;
+            session.pending = None;
+        }
+        let session = FileWriteSession(self.session.clone());
+        let mut reservation = self.queues.reserve_write(key)?;
+        reservation.cancellation = Some(cancelled);
+        let reservation = reservation.enter_until(Instant::now() + Duration::from_secs(120))?;
+        Ok(ExternalWriteLease {
+            _reservation: reservation,
+            _session: session,
+        })
+    }
     /// 普通文件保存与 Git 写共享排他队列，但不创建需要 Git 核实的计划。
     pub fn write_file<T>(
         &self,
@@ -1384,5 +1426,70 @@ mod tests {
             drop(reservation.enter());
         }
         drop(replacement.enter());
+    }
+
+    #[test]
+    /// 外部任务持有租约时，另一个协调会话的真实写闭包必须等待。
+    fn external_agent_lease_blocks_shared_repository_writes() {
+        let parent = tempfile::tempdir().unwrap();
+        let key = CoordinationKey::clone_target(parent.path(), "agent-fixture").unwrap();
+        let owner = RepositoryCoordinator::new();
+        let lease = owner.acquire_external_write(&key).unwrap();
+        let writer = RepositoryCoordinator::new();
+        let second_key = key.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            writer
+                .write_file(&second_key, || {
+                    sender.send(()).unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        });
+        let gate = owner.queues.gate(&key);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lock(&gate.state).waiting.is_empty() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(lock(&gate.state).waiting.len(), 1);
+        assert!(receiver.try_recv().is_err());
+        drop(lease);
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    /// 排队中的外部任务取消后应及时撤回，不等待前一个写任务结束。
+    fn cancelled_external_lease_releases_its_queue_slot() {
+        let parent = tempfile::tempdir().unwrap();
+        let key = CoordinationKey::clone_target(parent.path(), "cancel-agent").unwrap();
+        let owner = RepositoryCoordinator::new();
+        let lease = owner.acquire_external_write(&key).unwrap();
+        let waiting = RepositoryCoordinator::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let cancelled = flag.clone();
+        let second_key = key.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = waiting.acquire_external_write_cancellable(&second_key, cancelled);
+            sender.send(result.err().map(|error| error.code)).unwrap();
+        });
+        let gate = owner.queues.gate(&key);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lock(&gate.state).waiting.is_empty() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(lock(&gate.state).waiting.len(), 1);
+        flag.store(true, Ordering::Release);
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .as_deref(),
+            Some("REQUEST_CANCELLED")
+        );
+        worker.join().unwrap();
+        assert!(lock(&gate.state).waiting.is_empty());
+        drop(lease);
     }
 }

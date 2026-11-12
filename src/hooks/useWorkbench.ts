@@ -168,6 +168,8 @@ export function useWorkbench() {
     }
   }
   const [drawer, setDrawer] = useState<Drawer>(null);
+  const [aiVisible, setAiVisible] = useState(false);
+  const [aiRunning, setAiRunning] = useState(false);
   const [changeDetailOpen, setChangeDetailOpen] = useState(false);
   const changeDetailFocus = useChangeDetailFocus(
     drawer === "changes" && changeDetailOpen && repo.selected !== null,
@@ -353,6 +355,11 @@ export function useWorkbench() {
   }
   /** 退出依次经过文件、冲突、设置确认，最后才交给终端结束流程。 */
   function guardExit(action: () => Promise<void>): void {
+    if (
+      aiRunning &&
+      !window.confirm("AI 仍有生成或后台任务。结束这些任务并退出？")
+    )
+      return;
     if (
       (operations.getSnapshot().busy &&
         !editor.controller.getSnapshot().savingPath) ||
@@ -747,6 +754,7 @@ export function useWorkbench() {
   }
   const canOpenWrite =
     Boolean(repository) &&
+    !aiRunning &&
     !workspace.preview &&
     !blocked &&
     !conflicts.dirty &&
@@ -823,7 +831,18 @@ export function useWorkbench() {
   }
   /** 为展示组件提供不含业务判断的导航回调。 */
   function openDrawer(next: Drawer): () => void {
-    return () => navigate(next);
+    return () => {
+      setAiVisible(false);
+      navigate(next);
+    };
+  }
+  /** AI 导航不卸载 Git 视图，保留编辑器和图谱状态。 */
+  function openAi(): void {
+    setAiVisible(true);
+  }
+  /** 返回之前的 Git 视图，不重置抽屉、编辑草稿或 AI 任务。 */
+  function closeAi(): void {
+    setAiVisible(false);
   }
   /** 弹窗只在无任务和无草稿时打开。 */
   function openModal(next: Modal): () => void {
@@ -1537,6 +1556,11 @@ export function useWorkbench() {
   );
   return {
     ...workspace,
+    aiVisible,
+    aiRunning,
+    setAiRunning,
+    openAi,
+    closeAi,
     restoreFiles,
     prepareClean,
     cleanSelectionCount:
@@ -1571,6 +1595,7 @@ export function useWorkbench() {
     guardEditor,
     guardExit,
     exitProtected:
+      aiRunning ||
       editor.dirty ||
       Boolean(editor.savingPath) ||
       conflicts.dirty ||

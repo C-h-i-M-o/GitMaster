@@ -12,8 +12,11 @@
   },
   "scripts": {
     "dev": "vite",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
-    "build": "pnpm typecheck && vite build",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && pnpm --filter @gitmaster/agent-host typecheck",
+    "build:agent": "pnpm --filter @gitmaster/agent-host build && node scripts/prepareAgent.ts",
+    "test:agent": "pnpm --filter @gitmaster/agent-host test",
+    "test:agent:bundle": "node scripts/testAgentBundle.ts",
+    "build": "pnpm typecheck && pnpm build:agent && vite build",
     "preview": "vite preview",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -28,7 +31,9 @@
     "monaco-editor": "0.56.0",
     "motion": "13.4.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.5",

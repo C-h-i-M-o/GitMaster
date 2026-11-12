@@ -11,6 +11,7 @@ export function defaultSettings(): AppSettings {
     gitPath: null,
     logLevel: null,
     uiPreferences: {
+      aiChat: { transcriptView: "standard", collapseTiming: "completion" },
       elasticity: 6,
       showLabels: true,
       colorMode: "system",
@@ -52,14 +53,26 @@ export function resetSettingsCategory(
 ): AppSettings {
   const defaults = defaultSettings();
   switch (category) {
+    case "ai":
+      return draft;
     case "git":
       return { ...draft, gitPath: defaults.gitPath };
     case "appearance":
-      return { ...draft, uiPreferences: defaults.uiPreferences };
+      return {
+        ...draft,
+        uiPreferences: {
+          ...defaults.uiPreferences,
+          aiChat: draft.uiPreferences.aiChat,
+        },
+      };
     case "general":
       return {
         ...restoreTerminalDefaults(draft, defaults),
         logLevel: defaults.logLevel,
+        uiPreferences: {
+          ...draft.uiPreferences,
+          aiChat: defaults.uiPreferences.aiChat,
+        },
         editor: defaults.editor,
         externalOpen: defaults.externalOpen,
       };
@@ -148,6 +161,8 @@ function canonicalSettings(value: AppSettings): unknown {
     value.uiPreferences.colorMode,
     value.uiPreferences.lightTheme,
     value.uiPreferences.darkTheme,
+    value.uiPreferences.aiChat.transcriptView,
+    value.uiPreferences.aiChat.collapseTiming,
     value.terminal.defaultProfileId,
     value.terminal.fontFamily,
     value.terminal.fontSize,

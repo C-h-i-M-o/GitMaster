@@ -9,11 +9,14 @@ import type { SettingsCategory } from "../types/settings";
 import { settingsFieldLocation } from "../ui/settingsField";
 import { shortcutLabel } from "../ui/shortcuts";
 import { CacheSettingsPanel } from "./CacheSettingsPanel";
+import { AiModelsSettings } from "./ai/AiModelsSettings";
+import { AiSandboxSettings } from "./ai/AiSandboxSettings";
 
 const categories: { id: SettingsCategory; label: string }[] = [
   { id: "general", label: "通用" },
   { id: "appearance", label: "外观" },
   { id: "git", label: "Git 环境" },
+  { id: "ai", label: "AI 模型" },
 ];
 
 /** 设置分类共享草稿与应用入口，输入控件只负责呈现。 */
@@ -54,7 +57,12 @@ export function SettingsPanel({ w }: { w: Workbench }) {
       >
         {w.preview && <p role="status">请在桌面应用中配置设置。</p>}
         {s.activity === "loading" && <p role="status">正在读取设置…</p>}
-        <fieldset className="settings-fields" disabled={!s.editable}>
+        {w.settingsCategory === "ai" && <AiModelsSettings />}
+        <fieldset
+          className="settings-fields"
+          disabled={!s.editable}
+          hidden={w.settingsCategory === "ai"}
+        >
           {w.settingsCategory === "git" && (
             <section>
               <h3>Git 环境</h3>
@@ -150,6 +158,44 @@ export function SettingsPanel({ w }: { w: Workbench }) {
           )}
           {w.settingsCategory === "general" && (
             <section>
+              <AiSandboxSettings
+                repositoryId={w.repo.repository?.repositoryId ?? null}
+              />
+              <h3>AI 对话</h3>
+              <label className="settings-row">
+                <span>
+                  工作步骤展示
+                  <small className="settings-description">
+                    选择希望看到多少工具调用细节
+                  </small>
+                </span>
+                <select
+                  data-settings-field="uiPreferences.aiChat.transcriptView"
+                  value={d.uiPreferences.aiChat.transcriptView}
+                  onChange={f.transcriptView}
+                >
+                  <option value="compact">简洁</option>
+                  <option value="standard">标准</option>
+                  <option value="detailed">详细</option>
+                  <option value="verbose">完整</option>
+                </select>
+              </label>
+              <label className="settings-row">
+                <span>
+                  工作步骤收起时机
+                  <small className="settings-description">
+                    选择何时自动收起工作步骤
+                  </small>
+                </span>
+                <select
+                  data-settings-field="uiPreferences.aiChat.collapseTiming"
+                  value={d.uiPreferences.aiChat.collapseTiming}
+                  onChange={f.collapseTiming}
+                >
+                  <option value="completion">回答结束后</option>
+                  <option value="next-input">下一次输入后</option>
+                </select>
+              </label>
               <h3>文件编辑器</h3>
               <p className="settings-description">
                 调整阅读与编辑文件时的习惯。

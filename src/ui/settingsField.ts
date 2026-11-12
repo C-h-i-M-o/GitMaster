@@ -4,6 +4,8 @@ import type { SettingsCategory } from "../types/settings";
 export function settingsFieldLocation(
   field: string,
 ): { category: SettingsCategory; label: string } | null {
+  if (field.startsWith("uiPreferences.aiChat"))
+    return { category: "general", label: "AI 对话" };
   const categories: Record<
     string,
     { category: SettingsCategory; label: string }

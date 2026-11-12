@@ -1,3 +1,7 @@
+mod ai_git;
+mod ai_runtime;
+mod ai_sandbox;
+mod ai_settings;
 mod commands;
 mod logging;
 #[cfg(test)]
@@ -64,11 +68,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(commands::DesktopState::default())
         .manage(commands::TerminalState::default())
+        .manage(ai_runtime::AiState::default())
+        .manage(ai_sandbox::SandboxRepairs::default())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle().clone();
                 let owner = window.label().to_owned();
                 tauri::async_runtime::spawn_blocking(move || {
+                    app.state::<ai_runtime::AiState>().close(&owner);
                     if let Ok(mut registry) = app.state::<commands::TerminalState>().0.lock() {
                         registry.close_window(&owner);
                     }
@@ -82,6 +89,28 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_info,
+            commands::read_ai_settings,
+            commands::read_ai_sandbox_status,
+            commands::prepare_ai_sandbox_repair,
+            commands::execute_ai_sandbox_repair,
+            commands::save_ai_provider,
+            commands::delete_ai_provider,
+            commands::update_ai_defaults,
+            commands::list_ai_sessions,
+            commands::create_ai_session,
+            commands::read_ai_session,
+            commands::subscribe_ai_events,
+            commands::send_ai_message,
+            commands::cancel_ai_run,
+            commands::update_ai_session,
+            commands::delete_ai_session,
+            commands::resolve_ai_approval,
+            commands::answer_ai_question,
+            commands::read_ai_jobs,
+            commands::read_ai_activity,
+            commands::test_ai_provider,
+            commands::stop_ai_job,
+            commands::compact_ai_session,
             commands::read_app_settings,
             commands::apply_app_settings,
             commands::apply_settings_patch,

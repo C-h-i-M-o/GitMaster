@@ -26,3 +26,6 @@ Thumbs.db
 
 # 临时验收测试默认仅在本机保留
 /tests/
+
+# 桌面 AI 运行时由构建脚本从锁定依赖生成。
+/src-tauri/resources/agent/

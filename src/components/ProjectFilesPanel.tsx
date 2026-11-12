@@ -191,6 +191,7 @@ export function ProjectFilesPanel({ w }: { w: Workbench }) {
                 compositionStart={w.editorCompositionStart}
                 compositionEnd={w.editorCompositionEnd}
                 readOnly={
+                  w.aiRunning ||
                   w.choosing ||
                   w.editorLeaving ||
                   (w.repo.loading && w.repo.openingPath !== null) ||

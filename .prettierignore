@@ -5,3 +5,5 @@ src-tauri/gen/
 pnpm-lock.yaml
 Cargo.lock
 LICENSE
+services/agent-host/licenses/
+src-tauri/resources/agent/

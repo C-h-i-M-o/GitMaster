@@ -1,6 +1,6 @@
 import type { LogLevel, UiPreferences } from "./git";
 
-export type SettingsCategory = "general" | "appearance" | "git";
+export type SettingsCategory = "general" | "appearance" | "git" | "ai";
 export type TerminalDirectory =
   { kind: "project" } | { kind: "home" } | { kind: "fixed"; path: string };
 export interface TerminalProfile {
@@ -36,9 +36,10 @@ export interface AppSettings {
   externalOpen: { defaultAppId: "fileManager" | "vsCode" | "terminal" };
 }
 export type SettingsPatch =
+  | ({ kind: "aiChat" } & Partial<UiPreferences["aiChat"]>)
   | { kind: "git"; gitPath: string | null }
   | { kind: "logging"; logLevel: LogLevel | null }
-  | ({ kind: "appearance" } & Partial<UiPreferences>)
+  | ({ kind: "appearance" } & Partial<Omit<UiPreferences, "aiChat">>)
   | {
       kind: "terminalProfiles";
       profiles: TerminalProfile[];

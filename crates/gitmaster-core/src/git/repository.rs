@@ -170,7 +170,7 @@ pub fn read_repository_state(
 }
 
 /// 写业务中的状态核验与调用方共享剩余时间预算。
-pub(crate) fn read_repository_state_until(
+pub fn read_repository_state_until(
     git: &GitExecutable,
     repository: &RepositoryHandle,
     deadline: Instant,

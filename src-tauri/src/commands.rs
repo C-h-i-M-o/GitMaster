@@ -4,7 +4,9 @@ use gitmaster_core::git::{
     environment::{describe_git, resolve_git},
     *,
 };
+mod ai;
 mod cache;
+pub use ai::*;
 mod diff;
 mod external;
 mod monitoring;

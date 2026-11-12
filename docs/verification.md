@@ -2068,3 +2068,79 @@ Windows 桌面自动化通过 @oai/sky 读取窗口两次超时，备用 cua.get
 - 保留既有 Vite 大分块提示及 Rust 未使用变量/方法警告。日志位于本机 /tmp/gitmaster-review-*.log；浏览器功能证据沿用上文，本轮审查仅修正测试断言，没有重跑已通过的 UI 用例。
 
 当前分支已经是 main，无需额外合并提交。本次集成不恢复 Windows 打包，也不新增安装、签名、双平台 Release 验收声明。新增本地测试脚本和截图继续按仓库约定不纳入提交，已有受版本管理的回归夹具随功能更新。
+
+## 基础 AI Agent 实施与验证（2026-11-11）
+
+用户已确认专项 spec-plan 并授权代码、文档及依赖安装。本轮沿用 agent 分支，未提交、推送或发布，未操作真实数据库。只实现 Harness 标准模式的基础组合；没有启用 PTC、子 Agent、MCP、持久 PTY 或完整上游 Web。
+
+| 检查               | 实际结果与证据                                                                                                                                                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 前端与宿主类型     | pnpm typecheck 通过，包含 React、Node 构建脚本和 agent-host；最新日志 target/ai-typecheck-close.log。                                                                                                                                                                          |
+| 前端和独立资源构建 | pnpm build 通过；target/ai-build-final.log。新一轮 Release 还会重跑同一入口。保留既有 Vite 大 chunk 警告。                                                                                                                                                                     |
+| Agent 自动回归     | pnpm test:agent：14 项通过，target/ai-tests-scoped.log。三协议真实本地 HTTP 分片工具调用；真实临时文件与 Windows ACL 写入边界；审批拒绝/取消/迟到响应；问题多选/文本回填；后台任务停止、会话归属、写租约及 UI/模型独立游标；会话幂等、缺失模型的历史恢复、受控删除及协议分帧。 |
+| 独立运行包         | pnpm test:agent:bundle 通过，target/ai-bundle-wrapper.log / ai-bundle-complete.log。实际执行资源目录的 node.exe 和 dist/main.js，Node 同步模块钩子拒绝资源目录以外的文件模块，阻止从开发 node_modules 补齐遗漏依赖；不是仅测试源码。                                           |
+| 外部写队列         | 两项精确核心测试通过：external_agent_lease_blocks_shared_repository_writes 与 cancelled_external_lease_releases_its_queue_slot；target/ai-lease-final.log、ai-cancel-final.log。只使用临时队列键，未在用户仓库试写。                                                           |
+| 原生配置/凭据      | cargo test -p gitmaster-desktop ai_settings::tests -- --test-threads=1：3 项通过；target/ai-settings-test-current.log。真实 Windows 系统凭据保存、读取、清除，版本冲突、URL/容量/字段边界拒绝和普通 JSON 无明文密钥；只创建并清理自己的测试引用。                              |
+| 桌面编译           | cargo check -p gitmaster-desktop 通过，target/ai-desktop-check-current.log。                                                                                                                                                                                                   |
+| Windows Release    | 首轮 pnpm tauri build --no-bundle 成功，target/ai-release.log；target/release/gitmaster-desktop.exe 与 agent/node.exe、agent/dist/main.js 已生成。中途一轮为修正配置边界而主动中断，ai-release-final.log 的 0xffffffff 不是成功；最新源码构建结果在本节后续补记。              |
+| 浏览器 UI          | 观察到 AI 空态、会话轴、输入卡片、权限入口与模型设置外壳；Git 工作台入口保留。浏览器没有真实 Agent 执行能力，未把预览当成桌面验证。                                                                                                                                            |
+| 原生 UI / 视觉基准 | Debug 应用启动且 UI 树可读取。自动化截图返回黑屏、激活报 failed to activate captured window，无法完成原生端到端或视觉对照。已确认安装的参考应用为 0.2.2-rc.1，其截图同样不可用；不能据此断言两个应用本身均渲染失败。                                                           |
+
+资源测量：Windows x64，Node v24.18.0，AI 资源约 336 MiB、19290 个文件、0 个符号链接。Node SHA-256 为 9a4eb5f1c29c6a2e93852ead46b999e284a6a5ca8bab4d4e241d587d025a52de；依赖、平台与 Node 摘要记录在资源根 .gitmaster-runtime.json，缓存只复用同一依赖摘要的部署结果。完整 Node 许可与第三方声明随资源复制。模块隔离钩子仅用于测试，参照 [Node 模块 API](https://nodejs.org/download/release/v24.1.0/docs/api/module.html)，生产启动不依赖该钩子。
+
+完整 Git 回归未通过：首次匹配 external_ 的并发测试为 2 项通过、9 项失败，包含 gitQuery TIMEOUT，日志 target/ai-cancel-test.log；全套串行尝试出现分支用例失败后中止，target/ai-core-tests.log。独立串行复跑 create_rejects_unborn_invalid_names_and_existing_namespaces 仍以 gitQuery TIMEOUT 失败，耗时 52.48 秒，target/ai-core-isolated.log；未定位根因，不将失败归结为已证实的环境问题，也不以两项 AI 租约测试替代 Git 全套通过。
+
+尚未验收：真实收费服务商、401/429/断流和重试组合、推理数据回放、所有符号链接/硬链接与 ACL 崩溃残留、PowerShell 5.1/7 分别覆盖、macOS Bash/Seatbelt/Keychain/进程回收、干净系统无 Node 启动、完整安装包/签名，以及 1120×760/860×620、深浅模式、125% 缩放的全部视觉状态。Windows 沙箱测试使用临时目录，未对真实用户项目执行 AI 写入；UI 测试的本地假模型服务没有收到请求，原生端到端未执行。
+
+清理记录：本轮假模型测试服务已停止。自动审批两次拒绝删除临时界面测试仓库，第二次已使用核验后的确切路径，仍只返回 blocked by policy，未尝试绕过；保留目录 C:/Users/刘逸伦RGFCHINA/AppData/Local/Temp/gitmaster-ai-ui-97a2b557eb6d4e2cbd685a2a54199df5。该目录只含本轮初始化的临时 Git 仓库和测试文本，未写入真实凭据或用户业务数据。
+
+补充回归：共享 Git 公共目录的不同工作树列表隔离测试先失败后通过；原生同根目录、兄弟目录、失效目录核验新增精确测试。目录与 common_dir 同时校验，未确认发送只能保留更严格的草稿保护。额外 Windows Job Object 内运行两项真实运行时/沙箱用例通过（target/ai-job-compat.log），用于验证进程归属与受限 Shell 兼容，不替代窗口 IPC 或完整进程树崩溃验收。空白会话在缺失模型配置时也能恢复和删除，独立运行包回归已覆盖。
+
+收尾定向证据：14 项宿主测试见 target/ai-tests-scoped.log；最新独立包测试 1 项通过见 target/ai-bundle-scoped.log；原生目录归属测试 1 项通过见 target/ai-scope-native.log；状态观察测试先编译失败、实现后 1 项通过，见 target/ai-observer-red.log / ai-observer-final.log。状态与任务轮询不启动或重启宿主，进程回收及租约释放后才解除忙碌；手动重载历史不重发任务。最新类型检查通过见 target/ai-typecheck-delivery.log，桌面 check 通过见 target/ai-desktop-delivery.log。随包 rg.exe 已直接运行并报告 ripgrep 15.0.0（target/ai-rg-check.log）。
+
+原有设置回归补跑 14 项通过（tests/settingsAutosaveController.test.ts、supplement-settings-picker.test.ts、supplement-settings-reset.test.ts），见 target/ai-settings-ui-regression.log。未把这些原有用例计入 14 项新增 Agent 测试。
+
+最终交付检查：包含观察/恢复修正的 pnpm tauri build --no-bundle 成功，Rust Release 阶段耗时 5 分 44 秒，见 target/ai-release-delivery.log；beforeBuildCommand 已重跑类型检查、宿主构建、运行资源生成与 Vite 构建。产物为 target/release/gitmaster-desktop.exe，运行需要旁边的 agent 资源目录。该输出目录的内置宿主也通过模块隔离会话回归（1 项，target/ai-release-resource-test.log）。前端格式、Rust 格式与 git diff --check 通过，证据分别为 target/ai-format-delivery.log、ai-rust-format-delivery.log、ai-diff-delivery.log。以上不替代仍未完成的原生交互、视觉、安装器和双平台验收。
+
+## AI 首轮使用问题修正（2026-11-11）
+
+本轮只修复供应商编辑滚动、Release 宿主启动和 AI 导航重复三项反馈；不提交或推送。保留上文各轮历史结果与尚未完成的平台/模型工具验收。
+
+- 滚动根因：原设置页由 settings-fields 提供滚动，而 AI 表单作为其兄弟节点，没有自己的高度约束和滚动容器，被 overflow:hidden 的弹窗裁切。现在 ai-model-settings 自身 flex:1 / min-height:0 / overflow-y:auto，不更改其他设置页。
+- 启动根因：Node 24.18.0 使用普通入口路径正常握手；传入 Windows 扩展路径后，在入口加载前发生 EISDIR（lstat C:）并退出，Rust 只收到 EOF。使用现有 dunce::simplified 处理 Node 程序、入口及 home 路径。Rust 与测试共用 launch，覆盖 Windows Job Object、实际 stdio 解码和配置握手。
+- 原生回归：先将内置资源根 std::fs::canonicalize，修复前精确失败 AI_RUNTIME_STOPPED（target/ai-native-path-red-1111.log）；修复后 2 项通过（target/ai-fixes-native-final-1111.log）。内置包测试需先构建资源，默认标记忽略；本轮用 cargo test -p gitmaster-desktop --lib ai_runtime::tests -- --include-ignored 显式执行，不能将默认忽略当作通过。
+- 浏览器回归：使用真实 App 导航和模型组件，模型配置存取由本地夹具模拟，无网络模型调用。1120×760、860×620、1120×760 页面 CSS 125% 缩放均能滚动到底部并真实点击保存；夹具各收到 1 次保存。AI 左栏替换 Git 导航/分支，主内容没有重复会话侧栏；返回后原 Git 画布 DOM 保留。脚本 tests/ai-fixes-layout-check.js，证据 target/ai-fixes-ui-1111.log，截图 ai-fixes-navigation-1111.png / ai-fixes-model-scroll-1111.png。页面 CSS 缩放不替代 Windows 系统 DPI 验收。
+- 工程：pnpm typecheck、cargo check -p gitmaster-desktop 通过，分别见 target/ai-fixes-typecheck-1111.log、ai-fixes-check-1111.log。Release 与最终原生窗口复核在本节补记。
+
+已能通过 WebView2 本地 CDP 读取并操作本轮自行启动的 Release 窗口，原版窗口真实复现了用户的持续退出提示；这补充了之前 CUA 黑屏/激活失败之外的检查途径，不意味着完整视觉和真实 Agent 工具端到端已经验收。本轮没有发送真实模型消息、执行 AI Shell 或修改用户仓库，表单保存测试只操作内存夹具。
+
+修正版 Windows Release 构建成功，Rust Release 阶段耗时 8 分 10 秒，见 target/ai-fixes-release-1111.log；包含本轮滚动、单侧导航及 Node 路径兼容修正。产物为 target/release/gitmaster-desktop.exe，需保留同级 agent 资源目录。随后“启动修正版 Release 并连接本地调试端口”的验证命令被自动审批拒绝，仅返回 blocked by policy；命令未执行，未改换方式绕过。tests/ai-fixes-native-check.js 已准备，但没有在新产物上执行，不能把原生扩展路径测试与浏览器检查写成新 exe 窗口验收通过。先前本轮测试桌面进程、浏览器及 Vite 服务已停止；没有遗留本轮启动的桌面测试实例。
+
+## 系统证书信任与真实错误原因（2026-11-12）
+
+本轮用户授权启用系统证书信任、显示实际错误原因、重新构建并验证真实 AI 调用；不提交、不推送，不修改模型配置或用户仓库。
+
+排查证据：已有会话持久记录为 TRANSPORT / SELF_SIGNED_CERT_IN_CHAIN。同一个内置 Node 24.18.0 只建立无密钥 TLS 连接时，默认失败；加入 --use-system-ca 后 authorized=true、TLSv1.3。修正是在 Node 入口前加入该参数，继续执行证书校验，不安装证书或修改系统信任配置。参数语义见 [Node 官方文档](https://nodejs.org/download/release/v24.18.0/docs/api/cli.html#--use-system-ca)。
+
+- 连接测试保留 16 token / 30 秒预算，推理响应可证明连通性；流内失败/中止终态不因先前收到文本而被忽略。失败通过 AiModelTestResult.error 返回，UI 检查 ok 后显示具体原因。
+- 实时会话和历史 turn/end 失败恢复统一识别证书、HTTP 状态及网络原因；只展示识别后的事实和中文说明，原始服务商正文、URL、认证头与凭据不对外回传。
+- 新增三项宿主回归修复前失败，修复后通过；最新完整宿主回归 19 项通过（target/ai-ca-agent-final-1112.log），含 HTTP 认证/余额/限流、证书和 DNS 原因识别、敏感值不外泄、推理响应和历史恢复。独立包隔离回归 1 项通过（target/ai-ca-bundle-1112.log）。
+- 浏览器真实模型组件接入本地 IPC 夹具，返回 ok=false 时能显示 SELF_SIGNED_CERT_IN_CHAIN，且不显示成功通知（target/ai-ca-error-ui-1112.log / ai-ca-error-ui-1112.png）。夹具不调用真实模型、不保存实际配置。
+- 类型、前端格式、Rust 格式与 git diff --check 通过：target/ai-ca-typecheck-1112.log、ai-ca-format-1112.log、ai-ca-rustfmt-1112.log、ai-ca-diff-1112.log。原生状态观察测试通过（target/ai-ca-native-compile-1112.log）。
+
+真实验证采用显式忽略的原生测试 saved_model_real_connection_and_readonly_reply：仅用户授权后运行，读取当前已保存模型，凭据通过 Rust 系统凭据桥接在私有管道内解析，不输出密钥。连接测试后仅向临时目录中的只读会话发送一条禁止工具的验证消息，检查最终文本、错误及工具事件，结束时回收宿主与临时历史。Release 和真实调用结果在此节补记，不能将尚未执行的真实验证视作通过。
+
+最终结果：pnpm tauri build --no-bundle 成功，Rust Release 阶段 14 分 22 秒，见 target/ai-ca-release-1112.log。产物 target/release/gitmaster-desktop.exe 更新于 2026-11-12 10:22，保留同级 agent 资源目录。cargo check -p gitmaster-desktop 通过（target/ai-ca-desktop-check-1112.log）。保留既有 Rust 未使用代码/导入和 Vite 大分块警告。
+
+构建后执行 cargo test -p gitmaster-desktop --lib ai_runtime::tests::saved_model_real_connection_and_readonly_reply -- --ignored --nocapture：1 项通过、0 失败，真实调用阶段 21.64 秒（target/ai-ca-real-model-1112.log）。使用当前保存的模型，通过同一 Runtime::launch、内置 Node、系统 CA、私有 RPC 和原生系统凭据桥接，连接测试 ok=true；临时只读会话收到 15 字节最终文本，未出现工具事件。测试不输出密钥或完整凭据数据，临时宿主由作用域守卫回收，未修改用户项目、已保存模型或原有会话历史。
+
+本轮真实验证通过原生后端测试驱动，UI 错误展示通过浏览器中的真实模型组件与 IPC 夹具验证；未把它表述为新 Release 窗口完整点击流程或所有工具端到端验收。因资源更新时间，Cargo 再次编译了测试程序；原流程最终自行完成，未取消、改换方式执行真实请求或重复触发真实验证。此前的全部 Git 回归 TIMEOUT 与未测 macOS/干净系统/安装器边界仍保留。
+
+## AI 第二阶段与提交前检查（2026-11-12）
+
+- 审查前 Windows `pnpm tauri build --no-bundle` 成功，Release 阶段 7 分 51 秒。产物 `target/release/gitmaster-desktop.exe` 为 11575296 字节，SHA256 `2E6BAD217D0F850A51CDA19A8F94E4FA955FB690230E238479D1E8BCA44F00FD`；同级 `agent/` 为运行依赖，不进入 Git。日志 `target/iteration-2-release-build.log`。
+- 审查前 Agent 回归 26 项通过，独立包隔离回归 1 项通过。使用实际 Release 内置 Node 和原生私有桥接连接本机模拟模型，终端、Git 状态、内置 Skill、先预览后确认暂存及租约交接通过（1 项、61.82 秒），6 次本机请求，无真实模型费用；仅操作临时仓库，真实项目 ACL 未修改。
+- 原生 Git 暂存、提交、创建分支、切换分支临时仓库回归通过（216.91 秒）。完整核心并行回归仍为 80 通过、171 失败、7 忽略；多项历史 TIMEOUT 未解决，不能描述为全量核心通过。
+- 新 exe 已启动至 `http://tauri.localhost/`。老大随后明确取消 UI 和功能测试，因此未继续窗口点击验收；本机模拟服务已停止。没有宣称完整 GUI、macOS、干净系统、安装包或签名验收通过。
+- 提交前审查修正只读 Git 自动签名验证、Git 审批预览截断、修复与模型接纳的互斥及折叠状态重置，验收服务移至 `services/agent-host/fixtures/release-acceptance.ts`，避免提交引用缺失的临时脚本。
+- 审查后仅执行 `pnpm typecheck`、`pnpm format:check`、Rust 格式和 `cargo check -p gitmaster-desktop`，均通过；桌面静态检查临时覆盖资源列表以避免重复部署，生产配置文件不变。未再执行 UI/功能测试；上面的构建与功能结果对应审查修正前的代码。日志 `target/iteration-2-precommit-*.log`。

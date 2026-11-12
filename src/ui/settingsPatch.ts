@@ -7,6 +7,14 @@ export function mergeSettingsPatch(
 ): AppSettings {
   const { kind, ...values } = patch;
   switch (kind) {
+    case "aiChat":
+      return {
+        ...settings,
+        uiPreferences: {
+          ...settings.uiPreferences,
+          aiChat: { ...settings.uiPreferences.aiChat, ...values },
+        },
+      };
     case "git":
       return {
         ...settings,
@@ -44,6 +52,12 @@ export function changedSettingsPatches(
   next: AppSettings,
 ): SettingsPatch[] {
   const patches: SettingsPatch[] = [];
+  for (const field of ["transcriptView", "collapseTiming"] as const)
+    if (old.uiPreferences.aiChat[field] !== next.uiPreferences.aiChat[field])
+      patches.push({
+        kind: "aiChat",
+        [field]: next.uiPreferences.aiChat[field],
+      });
   if (old.gitPath !== next.gitPath)
     patches.push({ kind: "git", gitPath: next.gitPath });
   if (old.logLevel !== next.logLevel)
@@ -108,6 +122,8 @@ export function settingsPatchKey(patch: SettingsPatch): string {
 export function settingsPatchField(patch: SettingsPatch): string {
   if (patch.kind === "git") return "gitPath";
   if (patch.kind === "logging") return "logLevel";
+  if (patch.kind === "aiChat")
+    return `uiPreferences.aiChat.${Object.keys(patch).find((key) => key !== "kind") ?? ""}`;
   if (patch.kind === "terminalProfiles") return "terminal.profiles";
   if (patch.kind === "externalOpen") return "externalOpen.defaultAppId";
   const field = Object.keys(patch).find((key) => key !== "kind") ?? "";

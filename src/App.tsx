@@ -10,16 +10,24 @@ import { WriteConfirmation } from "./components/WriteConfirmation";
 import { WorkspaceNotices } from "./components/WorkspaceNotices";
 import { OperationFeedback } from "./components/OperationFeedback";
 import { openingFeedback } from "./ui/operationFeedback";
+import { Suspense } from "react";
+import { useAiWorkspace } from "./hooks/useAiWorkspace";
+import { AiWorkspace } from "./ui/aiLoader";
+import { AiSessionSidebar } from "./components/ai/AiSessionSidebar";
 /** 按 HTML 设计稿组合真实工作台，事件与副作用交给独立 hook。 */
 export default function App() {
   const w = useWorkbench();
+  const ai = useAiWorkspace(w);
   const repository = w.repo.repository;
   const opening = openingFeedback(w);
   return (
     <div className="app-shell">
       <WorkspaceToolbar workbench={w} />
       <div className="workspace" id="workspace">
-        <aside className="sidebar" aria-label="项目导航">
+        <aside
+          className={`sidebar ${w.aiVisible ? "ai-sidebar" : ""}`}
+          aria-label="项目导航"
+        >
           <div className="project-heading">
             <span className="eyebrow">WORKSPACE</span>
             <strong title={repository?.rootPath}>
@@ -27,113 +35,136 @@ export default function App() {
                 "尚未打开项目"}
             </strong>
           </div>
-          <nav className="workspace-nav">
-            <button
-              className={
-                w.drawer === null || w.drawer === "detail" ? "active" : ""
-              }
-              onClick={w.openDrawer(null)}
-            >
-              <Icon name="history" />
-              <span>提交历史</span>
-            </button>
-            <button
-              className={w.drawer === "changes" ? "active" : ""}
-              disabled={!repository}
-              onClick={w.openDrawer("changes")}
-            >
-              <Icon name="changes" />
-              <span>本地修改</span>
-              <b>{repository?.changes.length ?? 0}</b>
-            </button>
-            <button
-              className={w.drawer === "files" ? "active" : ""}
-              disabled={!repository}
-              onClick={w.openDrawer("files")}
-            >
-              <Icon name="files" />
-              <span>项目文件</span>
-            </button>
-            {repository?.operations.includes("merge") && (
-              <button
-                className={w.drawer === "conflicts" ? "active" : ""}
-                onClick={w.openDrawer("conflicts")}
-              >
-                <Icon name="merge" />
-                <span>合并与冲突</span>
-              </button>
-            )}
-          </nav>
-          <section className="branches">
-            <div className="section-heading">
-              <button
-                className="eyebrow branch-collapse"
-                aria-expanded={w.branchesExpanded}
-                onClick={w.toggleBranches}
-              >
-                <Icon name="chevron" />
-                分支
-              </button>
-              <button
-                className="icon-button"
-                title="新建分支"
-                aria-label="新建分支"
-                disabled={!w.canOpenWrite}
-                onClick={w.openModal("branch")}
-              >
-                <Icon name="plus" />
-              </button>
-            </div>
-            {w.branchesExpanded &&
-              w.branches?.branches.map((branch) => (
+          {w.aiVisible ? (
+            <AiSessionSidebar f={ai} onReturn={w.closeAi} />
+          ) : (
+            <>
+              <nav className="workspace-nav">
                 <button
-                  key={branch.branchId}
-                  className={`branch-item ${branch.current ? "current" : ""}`}
-                  onClick={w.switchBranch(branch.branchId)}
-                  disabled={
-                    branch.current ||
-                    branch.kind === "remote" ||
-                    branch.occupiedByOtherWorktree ||
-                    !w.canSwitchBranch
-                  }
-                  title={`${branch.name}${branch.occupiedByOtherWorktree ? " · 其他工作树正在使用" : ""}`}
+                  className={w.aiVisible ? "active" : ""}
+                  onClick={w.openAi}
                 >
-                  <span className={`branch-dot ${branch.kind}`} />
-                  <span>{branch.name}</span>
-                  {branch.current && <Icon name="check" />}
-                  {branch.occupiedByOtherWorktree && <small>占用</small>}
+                  <Icon name="activity" />
+                  <span>AI 助手</span>
                 </button>
-              ))}
-            {repository?.head.kind === "unborn" && (
-              <p className="muted small">
-                {repository.head.name} · 等待首次提交
-              </p>
-            )}
-            {repository?.head.kind === "detached" && (
-              <p className="warning-card small">
-                分离头指针 · {repository.head.oid.slice(0, 7)}
-              </p>
-            )}
-          </section>
-          <div className="sidebar-bottom">
-            <span
-              className={`status-dot ${w.git.environment?.status === "ready" ? "ready" : ""}`}
-            />
-            <span>
-              {w.preview
-                ? "浏览器预览，Git 功能不可用"
-                : w.git.environment?.status === "ready"
-                  ? `Git ${w.git.environment.version}`
-                  : "Git 尚未就绪"}
-            </span>
-            {!w.preview && w.git.environment?.status !== "ready" && (
-              <button onClick={w.openModal("settings")}>配置 Git</button>
-            )}
-          </div>
+                <button
+                  className={
+                    !w.aiVisible && (w.drawer === null || w.drawer === "detail")
+                      ? "active"
+                      : ""
+                  }
+                  onClick={w.openDrawer(null)}
+                >
+                  <Icon name="history" />
+                  <span>提交历史</span>
+                </button>
+                <button
+                  className={w.drawer === "changes" ? "active" : ""}
+                  disabled={!repository}
+                  onClick={w.openDrawer("changes")}
+                >
+                  <Icon name="changes" />
+                  <span>本地修改</span>
+                  <b>{repository?.changes.length ?? 0}</b>
+                </button>
+                <button
+                  className={w.drawer === "files" ? "active" : ""}
+                  disabled={!repository}
+                  onClick={w.openDrawer("files")}
+                >
+                  <Icon name="files" />
+                  <span>项目文件</span>
+                </button>
+                {repository?.operations.includes("merge") && (
+                  <button
+                    className={w.drawer === "conflicts" ? "active" : ""}
+                    onClick={w.openDrawer("conflicts")}
+                  >
+                    <Icon name="merge" />
+                    <span>合并与冲突</span>
+                  </button>
+                )}
+              </nav>
+              <section className="branches">
+                <div className="section-heading">
+                  <button
+                    className="eyebrow branch-collapse"
+                    aria-expanded={w.branchesExpanded}
+                    onClick={w.toggleBranches}
+                  >
+                    <Icon name="chevron" />
+                    分支
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="新建分支"
+                    aria-label="新建分支"
+                    disabled={!w.canOpenWrite}
+                    onClick={w.openModal("branch")}
+                  >
+                    <Icon name="plus" />
+                  </button>
+                </div>
+                {w.branchesExpanded &&
+                  w.branches?.branches.map((branch) => (
+                    <button
+                      key={branch.branchId}
+                      className={`branch-item ${branch.current ? "current" : ""}`}
+                      onClick={w.switchBranch(branch.branchId)}
+                      disabled={
+                        branch.current ||
+                        branch.kind === "remote" ||
+                        branch.occupiedByOtherWorktree ||
+                        !w.canSwitchBranch
+                      }
+                      title={`${branch.name}${branch.occupiedByOtherWorktree ? " · 其他工作树正在使用" : ""}`}
+                    >
+                      <span className={`branch-dot ${branch.kind}`} />
+                      <span>{branch.name}</span>
+                      {branch.current && <Icon name="check" />}
+                      {branch.occupiedByOtherWorktree && <small>占用</small>}
+                    </button>
+                  ))}
+                {repository?.head.kind === "unborn" && (
+                  <p className="muted small">
+                    {repository.head.name} · 等待首次提交
+                  </p>
+                )}
+                {repository?.head.kind === "detached" && (
+                  <p className="warning-card small">
+                    分离头指针 · {repository.head.oid.slice(0, 7)}
+                  </p>
+                )}
+              </section>
+              <div className="sidebar-bottom">
+                <span
+                  className={`status-dot ${w.git.environment?.status === "ready" ? "ready" : ""}`}
+                />
+                <span>
+                  {w.preview
+                    ? "浏览器预览，Git 功能不可用"
+                    : w.git.environment?.status === "ready"
+                      ? `Git ${w.git.environment.version}`
+                      : "Git 尚未就绪"}
+                </span>
+                {!w.preview && w.git.environment?.status !== "ready" && (
+                  <button onClick={w.openModal("settings")}>配置 Git</button>
+                )}
+              </div>
+            </>
+          )}
         </aside>
         <main className="main-content">
           <WorkspaceNotices w={w} />
-          <div className="canvas-area">
+          {w.aiVisible && (
+            <Suspense fallback={<p role="status">正在加载 AI 工作区…</p>}>
+              <AiWorkspace f={ai} />
+            </Suspense>
+          )}
+          <div
+            className="canvas-area"
+            style={{ display: w.aiVisible ? "none" : undefined }}
+          >
             <CommitGraph workbench={w} />
             <WorkbenchDrawer workbench={w} />
             <ChangeDetailDrawer workbench={w} />

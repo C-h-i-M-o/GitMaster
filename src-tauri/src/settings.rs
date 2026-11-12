@@ -36,6 +36,8 @@ pub struct Settings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UiPreferences {
     #[serde(default)]
+    pub ai_chat: AiChatPreferences,
+    #[serde(default)]
     pub color_mode: ColorMode,
     #[serde(default)]
     pub light_theme: LightTheme,
@@ -50,6 +52,7 @@ pub struct UiPreferences {
 impl Default for UiPreferences {
     fn default() -> Self {
         Self {
+            ai_chat: AiChatPreferences::default(),
             elasticity: 6,
             show_labels: true,
             color_mode: ColorMode::System,
@@ -252,6 +255,17 @@ pub fn save_patch(
     }
     let mut next = current.settings;
     match patch {
+        SettingsPatch::AiChat {
+            transcript_view,
+            collapse_timing,
+        } => {
+            if let Some(value) = transcript_view {
+                next.ui_preferences.ai_chat.transcript_view = value;
+            }
+            if let Some(value) = collapse_timing {
+                next.ui_preferences.ai_chat.collapse_timing = value;
+            }
+        }
         SettingsPatch::Git { git_path } => next.git_path = git_path,
         SettingsPatch::Logging { log_level } => next.log_level = log_level,
         SettingsPatch::Appearance {
@@ -463,6 +477,48 @@ pub fn save_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 旧配置补齐 AI 默认值；独立字段补丁不能覆盖主题、编辑器或彼此。
+    #[test]
+    fn ai_chat_defaults_and_independent_patches() {
+        let p = path();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(
+            &p,
+            br#"{"version":2,"gitPath":null,"uiPreferences":{"elasticity":8,"showLabels":false}}"#,
+        )
+        .unwrap();
+        let snapshot = read_snapshot(&p).unwrap();
+        assert_eq!(
+            snapshot.settings.ui_preferences.ai_chat,
+            AiChatPreferences::default()
+        );
+        let first = save_patch(
+            &p,
+            &snapshot.revision,
+            serde_json::from_str(r#"{"kind":"aiChat","transcriptView":"verbose"}"#).unwrap(),
+        )
+        .unwrap();
+        let second = save_patch(
+            &p,
+            &first.revision,
+            serde_json::from_str(r#"{"kind":"aiChat","collapseTiming":"next-input"}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            second.settings.ui_preferences.ai_chat.transcript_view,
+            TranscriptView::Verbose
+        );
+        assert_eq!(
+            second.settings.ui_preferences.ai_chat.collapse_timing,
+            CollapseTiming::NextInput
+        );
+        assert_eq!(second.settings.ui_preferences.elasticity, 8);
+        assert_eq!(second.settings.editor, snapshot.settings.editor);
+        assert!(serde_json::from_str::<SettingsPatch>(
+            r#"{"kind":"aiChat","transcriptView":"invalid"}"#
+        )
+        .is_err());
+    }
 
     /// 旧设置读取补齐模式与双主题，不改写原始文件。
     #[test]

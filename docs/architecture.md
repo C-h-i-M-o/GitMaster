@@ -139,3 +139,15 @@ process_windows.rs 通过 CreateProcessW 挂起创建、Job KILL_ON_JOB_CLOSE、
 二级差异焦点由 useChangeDetailFocus 按实际媒体查询隔离覆盖层下的控件，保留第一层状态；分支标签由 ResizeObserver 回报 HTML 尺寸到 SVG foreignObject。退出保护顺序为文件→冲突→设置→终端，各步取消均终止后续退出；设置入口保留尚未应用草稿。
 
 提交图每个data-oid节点保留模拟位置的外层group，内层button负责提交选择；引用与按钮同级，避免读屏树折叠。键盘导航聚焦内button，指针仍按最近data-oid定位。
+
+## 基础 AI Agent（2026-11-11）
+
+独立 Git 核心继续只负责仓库与文件。新增 `services/agent-host` 以固定的 Harness 0.2.2-rc.1 组合提供 AgentLoop、native executor、文件/搜索、问题/审批、Shell/jobs、PiAi 三协议和基础压缩；不启动完整上游 Web，不加载项目插件、MCP、子 Agent 或 PTC。
+
+`src-tauri/src/commands/ai.rs` 只暴露具体业务动作；`ai_runtime.rs` 管理延迟进程、私有 stdio、窗口归属和外部写租约，`ai_settings.rs` 负责配置事务与系统凭据。Git 写队列以 common_dir 为键；AI 文件写入和 Shell 均申请租约，后台任务结束前不释放，取消等待每 100ms 核验一次。Windows 进程树归入 kill-on-close Job Object，窗口销毁先正常关闭，超时再回收。macOS 分支有进程组处理，实际回收效果尚未验证。
+
+AI 配置存于应用 config/ai/settings.json，历史存于应用 data/ai/session-index.json 与 sessions/ 下的上游 JSONL；不引入数据库。密钥存于 Windows Credential Store/macOS Keychain，配置只存引用。模型参数供后续请求使用；活动任务期间拒绝密钥替换/清除和提供商删除，避免悬空凭据引用；配置提交和任务接纳串行化。
+
+前端 `useAiWorkspace.ts`、`useAiModels.ts`、`useAiSelectors.ts` 承担状态和事件；TSX 只展示。AI 工作区按需加载，切回 Git 保留原画布挂载。任务结束并释放写租约后合并刷新一次，隐藏且空闲时停止任务轮询。浏览器预览没有 Agent 执行能力。
+
+Release 资源由 pnpm deploy 生成 hoisted 生产依赖，再复制当前平台 Node 24 与完整许可；资源不入 Git，按依赖哈希复用。开发机首次部署需要依赖网络，最终应用使用内置运行时。Windows x64 实测约 336 MiB、19290 个文件、0 个符号链接；带模块隔离钩子的进程回归拒绝开发目录模块后仍通过。此结果不能替代干净系统、签名安装和 macOS 验收。

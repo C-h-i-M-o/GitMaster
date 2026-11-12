@@ -12,6 +12,7 @@ pub mod coordinator;
 pub mod diff;
 pub mod files;
 pub mod history;
+pub mod inspect;
 pub mod merge;
 pub mod remote;
 pub mod repository;

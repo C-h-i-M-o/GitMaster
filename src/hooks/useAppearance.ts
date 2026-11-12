@@ -14,7 +14,14 @@ export function useAppearance(
     /** 系统变化只通过解析影响实际模式，手动模式保持原选择。 */
     const update = (): void =>
       applyAppearance(
-        { colorMode, lightTheme, darkTheme, elasticity: 6, showLabels: true },
+        {
+          colorMode,
+          lightTheme,
+          darkTheme,
+          elasticity: 6,
+          showLabels: true,
+          aiChat: { transcriptView: "standard", collapseTiming: "completion" },
+        },
         media.matches,
       );
     update();

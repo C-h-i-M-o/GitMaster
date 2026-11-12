@@ -10,6 +10,7 @@ import { readUiPreferences, setUiPreferences } from "../services/git";
 import type { OperationError, UiPreferences } from "../types/git";
 
 const DEFAULT_PREFERENCES: UiPreferences = {
+  aiChat: { transcriptView: "standard", collapseTiming: "completion" },
   elasticity: 6,
   showLabels: true,
   colorMode: "system",

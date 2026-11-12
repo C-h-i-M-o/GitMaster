@@ -310,6 +310,10 @@ export interface OperationRecord {
   result: OperationResult | null;
 }
 export interface UiPreferences {
+  aiChat: {
+    transcriptView: "compact" | "standard" | "detailed" | "verbose";
+    collapseTiming: "completion" | "next-input";
+  };
   colorMode: ColorMode;
   lightTheme: LightTheme;
   darkTheme: DarkTheme;

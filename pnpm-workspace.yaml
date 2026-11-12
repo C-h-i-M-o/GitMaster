@@ -1,3 +1,15 @@
+packages:
+  - .
+  - services/agent-host
+
+# 仅允许本次 Agent 必需的原生资源构建，其余传递依赖不执行安装脚本。
+allowBuilds:
+  "@deepseek-ai/dsh-subprocess-local": true
+  koffi: true
+  node-pty: false
+  "@google/genai": false
+  protobufjs: false
+
 minimumReleaseAgeExclude:
   - "@tauri-apps/cli-darwin-arm64@2.11.5"
   - "@tauri-apps/cli-darwin-x64@2.11.5"

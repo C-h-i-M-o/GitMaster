@@ -249,3 +249,33 @@ CloneParent 为 `{parentDirectoryId, displayPath}`；UiPreferences 为 `{elastic
 - 分支读取等待历史就绪和写入/刷新门禁释放；已成功的仓库/history 版本不因文件保存重复读取。被取消的当前请求最多三次尝试，间隔 250/500ms，生命周期结束清理重试计时器并拒绝迟到响应。真实错误或连续取消耗尽后保留错误与手动刷新入口，不循环读取。
 - 启动先正常打开仓库，再按路径逐级读取目录页取得新能力，恢复标签与位置。树内折叠复用同会话页，刷新跨会话仅迁移路径；迟到页面不得安装。Windows 扩展长度路径与普通规范路径按同一项目匹配。
 - 参考 Git 官方 [gitattributes 文档](https://git-scm.com/docs/gitattributes) 处理内建 EOL 语义；参考 VS Code [编辑器视图状态接口](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/editorBrowser.ts) 使用 Monaco 模型及视图状态保留当前会话撤销/滚动，跨启动仅保存位置。
+
+## AI IPC 与私有宿主协议（2026-11-11）
+
+共享类型来源为 `services/agent-host/src/contracts.ts`，前端 `src/types/ai.ts` 重新导出；Rust 类型在 ai_settings.rs 中严格拒绝未知配置字段。
+
+| 命令组     | 当前接口与约束                                                                                                                                                                                                                |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 模型       | read_ai_settings / save_ai_provider / delete_ai_provider / update_ai_defaults；写入需 expectedRevision，凭据动作为 keep、replace 或 remove，快照只返回存在性。保存后的运行时同步失败以 warning 返回，不把已落盘误报为未保存。 |
+| 连接       | test_ai_provider 只测试已保存的 providerId/modelId；主动触发 30 秒内的最小生成，可能产生真实 API 费用。                                                                                                                       |
+| 会话       | list_ai_sessions 按公共目录和真实工作树双重筛选后分页；create_ai_session、read_ai_session、send_ai_message 捕获当前项目，前端不能传执行目录；update/delete 只改受控会话。                                                     |
+| 实时       | subscribe_ai_events 使用 Tauri Channel；runtimeEpoch+sequence 去重，assistant.messageId 和 toolCallId 合并，迟到增量不能覆盖终态。                                                                                            |
+| 取消与交互 | cancel_ai_run 绑定 runId；resolve_ai_approval / answer_ai_question 绑定当前会话的未过期闭包，超时或取消后撤回；审批允许一次/拒绝，问题支持原始选项、多选和自定义回答。                                                        |
+| 命令       | read_ai_jobs / stop_ai_job、read_ai_activity；UI 用非消费 readAt 游标观察输出；任务面板返回最近 20 项，每项展示输出最多约 4 KiB，其余结果仍由上游机制保留。                                                                   |
+| 压缩       | compact_ai_session 返回 runId，完成与失败经事件投递；可用同一取消接口停止，原始历史保留。                                                                                                                                     |
+
+私有 JSON-RPC 单帧最多 256 KiB，分片解码，普通读取分页约 96 KiB；超长帧/非法 JSON/EOF 断开，响应仅携带稳定码。Node 只能向 Rust 请求当前已保存凭据引用、申请和释放已绑定仓库租约，不能向 WebView 暴露通用 shell/任意路径执行器。
+
+会话删除使用上游持久化位置，核验真实路径仍为应用历史根下对应 UUID 的两级目录后移除；不拼接用户传来的路径，不删除项目文件。重启只恢复历史；缺失的后台进程展示为未恢复，不自动重跑。
+
+补充归属约束：common_dir 只用于写队列共享，不作为工作树身份。历史绑定和发送同时核验真实根目录，目录失效时拒绝；被拒绝或结果不明的发送不能降低原任务的草稿保护。发送等待期间按输入版本保留新草稿，切项目后不应用旧响应，未确认发送保留原 clientMessageId 以便幂等重试。
+
+### AI 运行时观察与恢复补充
+
+read_ai_jobs 仅访问当前窗口已启动的宿主；read_ai_activity 未启动时返回 busy=false，停止过程中保持 busy=true，实际回收进程及释放租约后返回 false。观察命令不能自动启动或重启宿主。会话重载属于用户显式动作，只重建历史订阅，不重发模型请求或清除草稿。
+
+### 模型连接结果与错误原因（2026-11-12）
+
+test_ai_provider 返回 AiModelTestResult：成功为 {ok:true}，模型请求失败为 {ok:false,error:{code,message}}。具体业务错误走成功 RPC 的结果体，避免通用 OperationError 丢失公开中文原因；输入无效、运行忙碌和桥接错误继续走既有异常通道。前端必须检查 ok，不能将任意成功 RPC 当作连接成功。
+
+连接测试保留 16 token、30 秒预算，收到文本或推理内容可证明连通性；流的错误或中止终态始终失败，已收到部分文本也不覆盖该终态。证书、网络和 HTTP 错误从实际异常/错误链识别后映射为公开原因，不传递原始响应或认证头。会话实时与持久 turn/end 错误恢复使用同一映射。内置 Node 使用 --use-system-ca 信任系统 CA，仍执行 TLS 校验。
