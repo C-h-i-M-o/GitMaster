@@ -18,6 +18,7 @@ import type {
   AiJobSnapshot,
   AiProvider,
   AiSession,
+  AiSessionPage,
 } from "./contracts.ts";
 
 /** 受控模型只提出预定工具请求，实际执行、审批和后台回收由上游完成。 */
@@ -273,7 +274,9 @@ test("会话实时与重启历史均显示证书根因且不暴露凭据", async
     await restored.configure([f.provider]);
     const history = (await restored.dispatch("read", {
       sessionId: session.sessionId,
-    })) as { events: AiEventEnvelope[] };
+    })) as AiSessionPage;
+    assert.equal(typeof history.runtimeEpoch, "string");
+    assert.equal(history.activeRunId, null);
     const error = history.events.find((e) => e.event.kind === "error")?.event;
     assert.equal(error?.kind, "error");
     if (error?.kind === "error")
@@ -318,6 +321,13 @@ test(
         throw new Error(JSON.stringify(f.events));
       });
       assert.ok(approval?.event.kind === "approval");
+      const pendingPage = (await f.host.dispatch("read", {
+        sessionId: session.sessionId,
+        after: Number.MAX_SAFE_INTEGER,
+      })) as AiSessionPage;
+      assert.equal(pendingPage.activeRunId, id);
+      assert.equal(pendingPage.events.length, 0);
+      assert.equal(typeof pendingPage.runtimeEpoch, "string");
       await f.host.dispatch("decision", {
         sessionId: session.sessionId,
         decisionId: approval.event.approvalId,

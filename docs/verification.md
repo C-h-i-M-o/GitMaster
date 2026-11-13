@@ -1,5 +1,43 @@
 # 分阶段验证记录
 
+## 2026-11-13 AI 第三阶段实施验证（阶段收尾，验收未完成）
+
+老大已批准第三阶段 spec-plan，随后要求尽快结束开发、生成交接并全部推送 GitHub。基线 `debeebd6b744568928469945cf6590221ae2707d`；源码及文档交付到 `agent`，不合并主分支或发布。保留原有记录，不调用真实付费模型，不修改真实项目 ACL 或 Git 数据。剩余验收见 [开发交接](ai-agent-iteration-3-handoff.md)。
+
+- 历史错误、恢复动作、代次隔离的纯状态回归先失败后通过；最新 **6/6**，含不合适恢复动作和缺失协议字段拒绝，见 `target/iteration-3-review-green.log`。
+- 最终源码 Agent 回归 **32/32** 通过（最新约 34.02 秒，`target/iteration-3-agent-final.log`），含读取元数据断言、新增状态边界及三种模型协议、沙箱和 Git 桥接原有回归。该轮直接运行 Node 测试入口，不重新生成运行包；中期 pnpm 脚本回归 31 项也通过。
+- 真实工作区 hook/组件接本机 IPC 夹具，通过：历史错误保留且后续成功无误报、分页重载和草稿保留、连接测试失败后恢复、迟到结果隔离、重复选择当前会话、审批重载后使用正确 runId 停止，以及同代次已显示流式消息保留。重复选择和流式消息用例均先观察失败再修复。
+- 分页期间单次换代可恢复、反复换代最多两次读取重建后明确失败、旧会话迟到读取失败不污染当前会话、协议不匹配明确提示重启，**4 个真实 hook 场景通过**，见 `target/iteration-3-races.log`。
+- 两窗口尺寸、125% 缩放、深浅色、键盘焦点及沙箱设置路径布局通过；恢复按钮可点击且不溢出。日志 `target/iteration-3-ai-recovery-layout-check.log`，截图 `target/iteration-3-{recovery,settings}-layout-*.png`。上述均是本机组件/IPC 验证，不代替实际 Release 验收。
+- Git 预算回归先失败后通过：配置探测耗时 8 秒时，旧组合期限仅余约 2 秒；定点修正后 status/diff 组合最多 20 秒，两阶段各最多 10 秒，其余策略不变。日志 `target/iteration-3-budget-{red,green}.log`。
+- Git 独占采样 **50/50 成功**（138.11 秒）：普通仓库冷打开 P95 4965ms / 连续读取 P95 2309ms；链接工作树分别 4898ms / 2348ms。原对照采样调用数量不同，不宣称已证明等负载提速。见 `target/iteration-3-git-samples.log`。
+- 核心全套单线程执行至 **150 通过、2 失败后中止**，未完整跑完，见 `target/iteration-3-core-full.log`。两项原始合并失败独立证实为 Windows 系统级 autocrlf 导致 LF/CRLF 字节预期不符，仅固定这两条临时仓库夹具。后续分别通过，但 clean_divergence 在续跑中另有一次未捕获具体终态的失败，增加诊断后独立复测通过（61.80 秒），额外失败原因未确认。
+- 分段续跑也已停止。版本化覆盖清单 `services/agent-host/fixtures/iteration-3-core-coverage.json` 共 260 项：152 个不同用例有通过记录、100 项正常用例待完成、8 项默认忽略；不能称为全套通过。
+- 已有 TypeScript/格式检查通过记录；收尾结果另补下方。本轮原生定向回归、独立运行包、Release 重建及原生 UI/模拟模型链路未完成。现有 Release exe 不能视为包含此次修改，不沿用旧轮次产物验收。
+
+收尾检查：`corepack pnpm typecheck`、`corepack pnpm format:check`、`cargo fmt --all -- --check`、`git diff --check` 均通过。类型和全项目格式日志分别为 `target/iteration-3-handoff-typecheck.log`、`target/iteration-3-handoff-format-check.log`。新增归档布局脚本首次格式检查提示一处格式问题，已格式化并重跑全项目检查通过；无新增依赖。按老大最新要求停止长回归与 Release 重建，提交并推送全部相关源码、文档和合成夹具，不把未完成项标为通过。
+
+## 2026-11-13 AI 第二轮推送后补充验收
+
+本轮检查用户已推送的 `agent` 提交 `debeebd6b744568928469945cf6590221ae2707d`，开始时工作区干净；用户重新授权补齐 UI 和功能测试。本轮不提交、不推送，Git 写入及 ACL 修复仅使用临时仓库，不调用真实付费模型 API，不修复真实项目 ACL。以下结果覆盖此前停止测试的历史决定，不覆盖历史失败记录。
+
+已完成的当前提交检查：
+
+- `pnpm typecheck`、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop` 通过；保留既有警告。日志为 `target/post-push-1113-{typecheck,format,desktop-check}.log`。
+- Agent 回归 **26/26**、独立运行包 **1/1** 通过；包含三种协议的本机 HTTP 分片/工具回填、后台任务、审批拒绝、沙箱越界拒绝、具体错误脱敏、内置 Skill 和租约交接。日志为 `target/post-push-1113-{agent,bundle}.log`。
+- 新增 Git 查询核心集成 **2/2** 通过（109.08 秒），日志 `target/post-push-1113-inspect.log`。
+- 浏览器真实组件检查通过：移除模式标签、两尺寸及 125% 缩放停止按钮居中、停止中防重复、深浅色及键盘焦点、两项默认设置、单侧导航及返回保留 Git 画布、模型表单滚动及底部保存可点、证书具体原因可见且无假成功。
+- 四档展示 × 两种收起时机 **8/8** 通过；草稿不触发收起、失败轮次保持可见、完成回复保留、偏好切换清除旧手动展开状态。日志为 `target/post-push-1113-ui-{light,matrix}.log` 与 `target/post-push-1113-ai-*-check.log`；使用本机组件夹具，不能替代原生验收。
+
+核心全套门禁仍未通过：双线程复查已出现两个分支用例失败，随后主动停止整套，不能将其记为完整跑完。将 `create_rejects_unborn_invalid_names_and_existing_namespaces` 单独串行运行，仍在初始 `open_repository` 的 `status` 阶段出现 `TIMEOUT`（55.64 秒，0 通过/1 失败）。证据为 `target/post-push-1113-core.log` 和 `target/post-push-1113-core-isolated.log`。不将失败一律归因于并发，不为通过测试扩大超时或绕过进程保护；具体根因尚未确认。
+
+原生补测结果：
+
+- 当前原生 AI 回归 **6 通过 / 1 失败 / 3 默认忽略**（511.81 秒）：临时 ACL 修复、模型配置/凭据边界、展示偏好默认与独立 patch、只读观察不启动宿主通过；Git 写测试实际完成暂存、提交和创建分支后，在准备切换分支的 `status` 阶段报 `TIMEOUT`（`src-tauri/src/ai_git.rs:228`），切换及其后断言未取得通过。日志 `target/post-push-1113-desktop-tests.log`。不能沿用上轮单独通过结果覆盖本次失败。
+- 显式运行本机模拟模型的原生集成 **1/1 通过**（232.86 秒）：真正使用 Release 同级 `agent/node.exe` 和当前 `dist/main.js`，确认终端、Git 查询、内置 Skill、先预览后确认暂存与租约交接；确认前索引为空，确认后只有临时 `fixture.txt` 暂存。本机 HTTP 6 次请求，`terminal/git/skill/stage` 均为 true，`errors=[]`。日志 `target/post-push-1113-release-e2e.log`，指标 `target/post-push-1113-fixture-metrics.json`。未运行使用真实凭据的忽略测试。
+
+Windows Release 及桌面偏好持久化检查正在执行，待结束补记。macOS、干净系统、安装器/签名和人工中文输入法验收未覆盖。
+
 ## 2026-10-29 提交前工程检查
 
 用户授权检查通过后提交并推送 `liuyilun-m4-release`，不合并 `main`。本轮 `pnpm typecheck`、`pnpm build`、`pnpm format:check`、`cargo fmt --all -- --check`、`cargo check -p gitmaster-desktop` 均通过；保留已有 Vite 大 chunk 及 Rust 未使用代码警告。

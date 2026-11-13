@@ -59,6 +59,8 @@ fn finish(
 #[test]
 fn fast_forward_preparation_is_readonly_and_execution_uses_confirmed_oid() {
     let f = Fixture::new();
+    // 精确 LF 断言固定临时仓库设置，不继承 Windows 的系统级换行转换。
+    f.command(&["config", "core.autocrlf", "false"]);
     let base = commit(&f, "file", b"base\n");
     f.command(&["switch", "-c", "incoming"]);
     let target = commit(&f, "file", b"incoming\n");
@@ -104,6 +106,8 @@ fn fast_forward_preparation_is_readonly_and_execution_uses_confirmed_oid() {
 #[test]
 fn clean_divergence_stops_before_creating_merge_commit() {
     let f = Fixture::new();
+    // 本用例断言精确 LF 字节，必须隔离继承的 autocrlf，生产检出行为保持不变。
+    f.command(&["config", "core.autocrlf", "false"]);
     commit(&f, "base", b"base\n");
     f.command(&["branch", "incoming"]);
     let local = commit(&f, "local", b"local\n");
@@ -114,8 +118,10 @@ fn clean_divergence_stops_before_creating_merge_commit() {
     let coordinator = RepositoryCoordinator::new();
     let (repo, preview) = prepare(&f, &coordinator, IntegrateMode::Merge);
     assert_eq!(preview.parent_oids, [local.clone(), target.clone()]);
+    let result = finish(&coordinator, &repo, &preview);
     assert!(
-        matches!(finish(&coordinator, &repo, &preview), OperationResult::Succeeded { commit_oid: None, refresh: WriteRefresh::Ready { state }, .. } if state.operations == ["merge"])
+        matches!(&result, OperationResult::Succeeded { commit_oid: None, refresh: WriteRefresh::Ready { state }, .. } if state.operations == ["merge"]),
+        "整合终态：{result:?}"
     );
     assert_eq!(
         query(&f.git, &f.root, &["rev-parse", "HEAD"], 1024).unwrap(),

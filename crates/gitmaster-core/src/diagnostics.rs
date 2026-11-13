@@ -26,6 +26,14 @@ pub fn capture_context() -> Context {
     Context(CURRENT.get(), CURRENT_PARENT.get())
 }
 
+/// 仅记录固定读取阶段和数值预算，不接收命令、路径或任意配置正文。
+pub fn log_read_budget(phase: &'static str, remaining: std::time::Duration) {
+    if !matches!(phase, "configuration" | "command") {
+        return;
+    }
+    log::debug!(target: "gitmaster::diagnostic", "读取预算 id={} parent={} phase={} remaining_ms={}", CURRENT.get(), CURRENT_PARENT.get(), phase, remaining.as_millis());
+}
+
 /// 在给定诊断上下文中运行闭包，并在返回或 panic 后恢复原上下文。
 pub fn with_context<T>(context: Context, work: impl FnOnce() -> T) -> T {
     let _parent = Parent(

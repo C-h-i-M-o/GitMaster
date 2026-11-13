@@ -647,6 +647,64 @@ mod tests {
         }
     }
 
+    /// 独占采样普通临时仓库和链接工作树，仅输出类别、耗时和错误码。
+    #[test]
+    #[ignore = "仓库读取采样需独占运行，不与构建或完整回归并行"]
+    fn windows_repository_read_acceptance() {
+        let fixture = crate::git::repository::tests::Fixture::new();
+        fixture.write("fixture.txt", b"acceptance\n");
+        fixture.command(&["add", "fixture.txt"]);
+        fixture.command(&["commit", "-m", "fixture"]);
+        let linked_directory = tempfile::tempdir().unwrap();
+        let linked = linked_directory.path().join("linked");
+        fixture.command(&[
+            "worktree",
+            "add",
+            "-b",
+            "linked-fixture",
+            linked.to_str().unwrap(),
+        ]);
+        let mut failures = 0;
+        for (kind, root) in [("primary", &fixture.root), ("linked", &linked)] {
+            let mut repository = None;
+            for phase in ["cold", "warm"] {
+                let count = if phase == "cold" { 5 } else { 20 };
+                let mut samples = Vec::new();
+                for sample in 0..count {
+                    let started = Instant::now();
+                    let result = if phase == "cold" {
+                        crate::git::repository::open_repository(&fixture.git, root).map(
+                            |(value, _)| {
+                                repository = Some(value);
+                            },
+                        )
+                    } else {
+                        crate::git::repository::read_repository_state(
+                            &fixture.git,
+                            repository.as_ref().expect("冷打开未取得仓库身份"),
+                        )
+                        .map(|_| ())
+                    };
+                    let elapsed = started.elapsed().as_millis();
+                    samples.push(elapsed);
+                    if result.is_err() {
+                        failures += 1;
+                    }
+                    eprintln!("仓库采样 kind={kind} phase={phase} sample={sample} elapsed_ms={elapsed} result={}", result.as_ref().map(|_| "OK").unwrap_or_else(|error| error.code.as_str()));
+                }
+                samples.sort_unstable();
+                eprintln!(
+                    "仓库统计 kind={kind} phase={phase} count={} p50_ms={} p95_ms={} max_ms={}",
+                    samples.len(),
+                    samples[samples.len() / 2],
+                    samples[(samples.len() * 95).div_ceil(100) - 1],
+                    samples.last().unwrap()
+                );
+            }
+        }
+        assert_eq!(failures, 0, "存在仓库读取超时或失败，请查看阶段证据");
+    }
+
     /// 仅测试进程通过环境变量选定固定行为，不作为应用命令入口。
     #[test]
     #[ignore = "由 Windows 父测试启动的子进程夹具"]

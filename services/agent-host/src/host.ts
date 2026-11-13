@@ -888,6 +888,8 @@ export class AgentHost {
       return {
         session,
         events,
+        runtimeEpoch: this.epoch,
+        activeRunId: this.runs.get(session.sessionId) ?? null,
         status: this.runs.has(session.sessionId)
           ? latestStatus?.kind === "status"
             ? latestStatus.status

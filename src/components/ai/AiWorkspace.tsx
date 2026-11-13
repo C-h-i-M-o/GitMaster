@@ -121,7 +121,7 @@ function AiMessage({ row, f }: { row: AiRow; f: AiWorkspaceController }) {
     );
   if (event.kind === "error")
     return (
-      <p className="ai-error" role="alert">
+      <p className="ai-error" role="note">
         {event.message}
       </p>
     );
@@ -334,12 +334,64 @@ export default function AiWorkspace({ f }: { f: AiWorkspaceController }) {
           )}
           <div className="ai-composer-stack">
             {f.error && (
-              <p className="ai-error" role="alert">
-                {f.error}
-                <button type="button" onClick={f.reconnect}>
-                  重新载入会话
-                </button>
+              <div className="ai-recovery" role="alert">
+                <div className="ai-recovery-copy">
+                  <strong>{f.recovery?.title ?? "请求未完成"}</strong>
+                  <p>{f.error}</p>
+                  {f.recoveryAction === "connect" && (
+                    <small>会发送最小模型请求，可能产生 API 费用。</small>
+                  )}
+                </div>
+                {f.recoveryAction && (
+                  <button
+                    type="button"
+                    className="ai-recovery-button"
+                    onClick={f.recover}
+                    disabled={f.recoveryDisabled}
+                    title={
+                      f.recoveryAction === "connect" && f.recoveryDisabled
+                        ? "请等待当前 AI 任务或连接测试结束"
+                        : undefined
+                    }
+                  >
+                    <Icon
+                      name={
+                        f.recoveryAction === "settings" ? "settings" : "refresh"
+                      }
+                    />
+                    {f.recoveryLabel}
+                  </button>
+                )}
+              </div>
+            )}
+            {f.historyState === "loading" && (
+              <p className="ai-recovery-status" role="status">
+                正在加载对话…
               </p>
+            )}
+            {f.recoveryNotice && (
+              <p className="ai-recovery-status" role="status">
+                {f.recoveryNotice}
+              </p>
+            )}
+            {f.connectionDetail && (
+              <div
+                className="ai-connection-result"
+                role={
+                  f.connectionCheck?.state === "failed" ? "alert" : "status"
+                }
+                data-state={f.connectionCheck?.state}
+              >
+                {f.connectionCheck?.state === "succeeded" && (
+                  <Icon name="check" />
+                )}
+                <span>
+                  {f.connectionDetail}
+                  {f.connectionTime && (
+                    <small>测试时间：{f.connectionTime}</small>
+                  )}
+                </span>
+              </div>
             )}
             <div className="ai-composer-card">
               <textarea
@@ -395,6 +447,8 @@ export default function AiWorkspace({ f }: { f: AiWorkspaceController }) {
                       !f.draft.trim() ||
                       !f.validModel ||
                       !f.repositoryId ||
+                      f.historyState === "loading" ||
+                      f.connectionBusy ||
                       f.preview
                     }
                     onClick={f.send}

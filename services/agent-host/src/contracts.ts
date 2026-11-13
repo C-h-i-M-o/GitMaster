@@ -83,6 +83,16 @@ export interface AiEventEnvelope {
   runId: string | null;
   event: AiEvent;
 }
+/** 历史页同时携带当前宿主与活动运行标识，不从历史失败推测连接状态。 */
+export interface AiSessionPage {
+  session: AiSession;
+  events: AiEventEnvelope[];
+  status: AiRunStatus;
+  runtimeEpoch: string;
+  activeRunId: string | null;
+  nextSequence: number;
+  more: boolean;
+}
 /** 工具输出和助手消息使用判别联合，避免前端猜测数据形状。 */
 export type AiEvent =
   | {

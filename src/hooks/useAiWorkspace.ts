@@ -21,6 +21,15 @@ import * as api from "../services/ai";
 import { useAiModels } from "./useAiModels";
 import { useNativeDialog } from "./useNativeDialog";
 import { buildAiTurns } from "../ui/aiTurns";
+import {
+  aiFailureCode,
+  aiRecoveryAction,
+  aiRequestIssue,
+  mergeAiHistory,
+  type AiIssue,
+  type AiHistoryState,
+  type AiConnectionCheck,
+} from "../ui/aiRecovery";
 
 export interface AiRow {
   key: string;
@@ -87,7 +96,17 @@ export function useAiWorkspace(w: Workbench) {
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState<AiRunStatus>("idle");
   const [globalBusy, setGlobalBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [issue, setIssue] = useState<AiIssue | null>(null);
+  const [historyState, setHistoryState] = useState<AiHistoryState>("idle");
+  const [recoveryNotice, setRecoveryNotice] = useState("");
+  const [connectionCheck, setConnectionCheck] =
+    useState<AiConnectionCheck | null>(null);
+  const connectionGeneration = useRef(0);
+  const recovering = useRef(false);
+  const recoverRequested = useRef(false);
+  const [jobsVersion, setJobsVersion] = useState(0);
+  const [connectionBusy, setConnectionBusy] = useState(false);
+  const jobsRetryRequested = useRef(false);
   const [connectionVersion, setConnectionVersion] = useState(0);
   const [jobs, setJobs] = useState<AiJobSnapshot[]>([]);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -139,14 +158,55 @@ export function useAiWorkspace(w: Workbench) {
     ? JSON.stringify([chosen.providerId, chosen.modelId])
     : "";
   const validModel = options.some((option) => option.value === modelValue);
+  const connectionKey = JSON.stringify([
+    repositoryId,
+    session?.sessionId,
+    modelValue,
+    models.snapshot?.settings.revision,
+  ]);
+  const connectionContext = useRef(connectionKey);
+  connectionContext.current = connectionKey;
+  useEffect(() => {
+    connectionGeneration.current++;
+    setConnectionCheck(null);
+    setRecoveryNotice("");
+    return () => {
+      connectionGeneration.current++;
+    };
+  }, [connectionKey]);
   const efforts = models.snapshot?.settings.providers
     .find((provider) => provider.providerId === chosen?.providerId)
     ?.models.find(
       (model) => model.modelId === chosen?.modelId,
     )?.reasoningEfforts;
   /** 显式动作失败时保留原输入，错误不覆盖已显示的历史。 */
-  function report(cause: unknown): void {
-    setError(api.aiError(cause));
+  function report(cause: unknown, scope: AiIssue["scope"] = "runtime"): void {
+    setIssue({
+      scope,
+      code: aiFailureCode(cause),
+      message: api.aiError(cause),
+      title:
+        scope === "history"
+          ? "对话记录加载失败"
+          : scope === "job"
+            ? "后台任务状态读取失败"
+            : scope === "model-request"
+              ? "本次请求失败"
+              : "会话操作未完成",
+      sessionId: current.current?.sessionId ?? null,
+      runtimeEpoch: epoch.current,
+      runId: runId.current,
+      turn: null,
+    });
+  }
+  /** Promise 回调绑定调用时的代次，切换会话后不得回填旧错误。 */
+  function reportTo(
+    scope: AiIssue["scope"] = "runtime",
+  ): (cause: unknown) => void {
+    const token = generation.current;
+    return (cause) => {
+      if (token === generation.current) report(cause, scope);
+    };
   }
   /** 收到事件先隔离运行时代次，再按序号去重。 */
   const accept = useCallback((event: AiEventEnvelope): void => {
@@ -161,24 +221,25 @@ export function useAiWorkspace(w: Workbench) {
     seen.current.add(key);
     setEvents((old) => [...old.slice(-5999), event]);
     if (event.runId) runId.current = event.runId;
-    if (event.event.kind === "status") setStatus(event.event.status);
-    if (event.event.kind === "error") {
-      setError(event.event.message);
-      setStatus("failed");
+    if (event.event.kind === "status") {
+      setStatus(event.event.status);
+      if (event.event.status === "idle") runId.current = null;
     }
   }, []);
   /** 会话列表分页只在当前项目仍匹配时应用。 */
   const reload = useCallback(
-    async (offset = 0): Promise<void> => {
-      if (!repositoryId || w.preview) return;
+    async (offset = 0): Promise<boolean> => {
+      if (!repositoryId || w.preview) return false;
       const token = generation.current;
       try {
         const page = await api.listAiSessions(repositoryId, offset);
-        if (token !== generation.current) return;
+        if (token !== generation.current) return false;
         setSessions((old) => (offset ? [...old, ...page.items] : page.items));
         setNextOffset(page.nextOffset);
+        return true;
       } catch (cause) {
-        report(cause);
+        if (token === generation.current) report(cause, "history");
+        return false;
       }
     },
     [repositoryId, w.preview],
@@ -190,7 +251,11 @@ export function useAiWorkspace(w: Workbench) {
     setEvents([]);
     setStatus("idle");
     setJobs([]);
-    setError(null);
+    setIssue(null);
+    setHistoryState("idle");
+    recovering.current = false;
+    recoverRequested.current = false;
+    jobsRetryRequested.current = false;
     setModelChoice(null);
     seen.current.clear();
   }, [repositoryId]);
@@ -202,39 +267,103 @@ export function useAiWorkspace(w: Workbench) {
     let disposed = false;
     let unsubscribe: (() => void) | undefined;
     const token = generation.current;
+    let live: AiEventEnvelope[] = [];
+    // 仅在恢复开始时捕获已显示内容；增量由 live 缓冲接续，不能随消息变化重启此副作用。
+    const previousEvents = events;
     /** 先恢复并绑定项目，再订阅后补读，弥补历史读取与实时事件间的竞态。 */
     async function restore(): Promise<void> {
-      const first = await api.readAiSession(
-        repositoryId!,
-        session!.sessionId,
-        0,
-      );
-      if (disposed || token !== generation.current) return;
-      first.events.forEach(accept);
-      setStatus(first.status);
-      let cursor = first.nextSequence;
-      let more = first.more;
-      unsubscribe = await api.subscribeAiEvents(session!.sessionId, (event) => {
-        if (!disposed) accept(event);
-      });
-      if (disposed) {
-        unsubscribe();
-        return;
-      }
-      do {
-        const page = await api.readAiSession(
+      recovering.current = true;
+      setHistoryState("loading");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const first = await api.readAiSession(
           repositoryId!,
           session!.sessionId,
-          cursor,
+          0,
         );
         if (disposed || token !== generation.current) return;
-        page.events.forEach(accept);
-        cursor = page.nextSequence;
-        more = page.more;
-      } while (more);
+        let history = first.events;
+        let page = first;
+        let cursor = first.nextSequence;
+        live = [];
+        let buffering = true;
+        unsubscribe = await api.subscribeAiEvents(
+          session!.sessionId,
+          (event) => {
+            if (disposed || token !== generation.current) return;
+            if (buffering) live = [...live.slice(-5999), event];
+            else accept(event);
+          },
+        );
+        if (disposed || token !== generation.current) {
+          unsubscribe();
+          return;
+        }
+        do {
+          page = await api.readAiSession(
+            repositoryId!,
+            session!.sessionId,
+            cursor,
+          );
+          if (disposed || token !== generation.current) return;
+          if (page.runtimeEpoch !== first.runtimeEpoch) break;
+          history = mergeAiHistory(
+            history,
+            page.events,
+            session!.sessionId,
+            first.runtimeEpoch,
+          );
+          cursor = page.nextSequence;
+        } while (page.more);
+        if (
+          page.runtimeEpoch !== first.runtimeEpoch ||
+          live.some((event) => event.runtimeEpoch !== first.runtimeEpoch)
+        ) {
+          unsubscribe();
+          if (attempt === 1) throw { code: "AI_RUNTIME_STOPPED" };
+          continue;
+        }
+        const merged = mergeAiHistory(
+          [...previousEvents, ...history],
+          live,
+          session!.sessionId,
+          first.runtimeEpoch,
+        );
+        epoch.current = first.runtimeEpoch;
+        seen.current = new Set(
+          merged.map((event) => `${event.runtimeEpoch}/${event.sequence}`),
+        );
+        setEvents(merged);
+        const latestStatus = [...live]
+          .reverse()
+          .find((event) => event.event.kind === "status");
+        const restoredStatus =
+          latestStatus?.event.kind === "status"
+            ? latestStatus.event.status
+            : page.status;
+        runId.current =
+          restoredStatus === "idle"
+            ? null
+            : (latestStatus?.runId ?? page.activeRunId);
+        setStatus(restoredStatus);
+        buffering = false;
+        setHistoryState("ready");
+        setIssue((old) =>
+          old?.scope === "history" || old?.scope === "runtime" ? null : old,
+        );
+        if (recoverRequested.current)
+          setRecoveryNotice("对话记录已重新加载，任务不会重新执行。");
+        recoverRequested.current = false;
+        recovering.current = false;
+        return;
+      }
     }
     void restore().catch((cause: unknown) => {
-      if (!disposed && token === generation.current) report(cause);
+      if (!disposed && token === generation.current) {
+        unsubscribe?.();
+        recovering.current = false;
+        setHistoryState("failed");
+        report(cause, "history");
+      }
     });
     return () => {
       disposed = true;
@@ -252,7 +381,11 @@ export function useAiWorkspace(w: Workbench) {
       void api
         .readAiJobs(session!.sessionId)
         .then((value) => {
-          if (active)
+          if (active) {
+            setIssue((old) => (old?.scope === "job" ? null : old));
+            if (jobsRetryRequested.current)
+              setRecoveryNotice("后台任务状态已更新。");
+            jobsRetryRequested.current = false;
             setJobs((old) =>
               old.length === value.length &&
               old.every(
@@ -264,9 +397,14 @@ export function useAiWorkspace(w: Workbench) {
                 ? old
                 : value,
             );
+          }
         })
         .catch((cause: unknown) => {
-          if (active) report(cause);
+          if (active) {
+            jobsRetryRequested.current = false;
+            setRecoveryNotice("");
+            report(cause, "job");
+          }
           active = false;
         })
         .finally(() => {
@@ -285,6 +423,7 @@ export function useAiWorkspace(w: Workbench) {
     w.aiVisible,
     globalBusy,
     connectionVersion,
+    jobsVersion,
   ]);
   useEffect(() => {
     if (following.current && transcript.current)
@@ -302,7 +441,10 @@ export function useAiWorkspace(w: Workbench) {
         .then((value) => {
           if (active && !sending.current) {
             setGlobalBusy(value.busy);
-            if (!value.busy) setStatus("idle");
+            if (!value.busy) {
+              setStatus("idle");
+              runId.current = null;
+            }
           }
         })
         .catch((cause: unknown) => {
@@ -316,36 +458,64 @@ export function useAiWorkspace(w: Workbench) {
       active = false;
       clearInterval(timer);
     };
-  }, [w.preview, w.aiVisible, globalBusy]);
+  }, [
+    w.preview,
+    w.aiVisible,
+    globalBusy,
+    repositoryId,
+    session?.sessionId,
+    connectionVersion,
+  ]);
   useEffect(() => {
     w.setAiRunning(globalBusy);
   }, [globalBusy, w.setAiRunning]);
   useEffect(() => {
     const finished = previousBusy.current && !globalBusy;
     previousBusy.current = globalBusy;
-    if (finished && repositoryId) void w.refreshLocal().catch(report);
+    if (finished && repositoryId) void w.refreshLocal().catch(reportTo());
   }, [globalBusy, repositoryId, w.refreshLocal]);
   useEffect(() => {
     if (!session && models.snapshot)
       setPermissionChoice(models.snapshot.settings.defaultPermission);
   }, [models.snapshot, session]);
   /** 选择旧会话只恢复，不发送模型请求。 */
-  function select(item: AiSession): () => void {
+  function select(item: AiSession, preserveGeneration = false): () => void {
     return () => {
+      if (
+        !preserveGeneration &&
+        current.current?.sessionId === item.sessionId
+      ) {
+        reconnect();
+        return;
+      }
+      if (!preserveGeneration) generation.current++;
       current.current = item;
       setSession(item);
       setModelChoice(item.model);
       setPermissionChoice(item.permission);
       setEvents([]);
+      setJobs([]);
       seen.current.clear();
       epoch.current = null;
-      setError(null);
+      setIssue(null);
+      setHistoryState("loading");
+      recovering.current = false;
+      recoverRequested.current = false;
+      jobsRetryRequested.current = false;
+      setRecoveryNotice("");
       runId.current = null;
     };
   }
   /** 新会话只有真实模型可用时才可创建。 */
   async function create(): Promise<void> {
-    if (!repositoryId || !chosen || !validModel || busy) return;
+    if (
+      !repositoryId ||
+      !chosen ||
+      !validModel ||
+      busy ||
+      historyState === "loading"
+    )
+      return;
     const token = generation.current;
     try {
       const value = await api.createAiSession(
@@ -357,7 +527,7 @@ export function useAiWorkspace(w: Workbench) {
       select(value)();
       await reload();
     } catch (cause) {
-      report(cause);
+      if (token === generation.current) report(cause);
     }
   }
   /** 输入草稿只保存在内存中，不写 localStorage。 */
@@ -376,6 +546,8 @@ export function useAiWorkspace(w: Workbench) {
       !chosen ||
       !draft.trim() ||
       busy ||
+      historyState === "loading" ||
+      connectionBusy ||
       !validModel ||
       sending.current
     )
@@ -386,7 +558,8 @@ export function useAiWorkspace(w: Workbench) {
     const messageVersion = draftVersion.current;
     setStatus("running");
     setGlobalBusy(true);
-    setError(null);
+    setIssue(null);
+    setRecoveryNotice("");
     try {
       let target = session;
       if (!target) {
@@ -396,7 +569,7 @@ export function useAiWorkspace(w: Workbench) {
           permissionChoice,
         );
         if (token !== generation.current) return;
-        select(target)();
+        select(target, true)();
       }
       if (token !== generation.current) return;
       const previous = pendingMessage.current;
@@ -427,7 +600,7 @@ export function useAiWorkspace(w: Workbench) {
     } catch (cause) {
       if (token === generation.current) {
         setStatus("idle");
-        report(cause);
+        report(cause, "model-request");
       }
     } finally {
       sending.current = false;
@@ -447,22 +620,26 @@ export function useAiWorkspace(w: Workbench) {
   /** 停止生成保留后台任务，用户可在任务面板单独停止。 */
   async function stop(): Promise<void> {
     if (!session || !runId.current || status === "stopping") return;
+    const onError = reportTo();
     setStatus("stopping");
     try {
       await api.cancelAiRun(session.sessionId, runId.current);
     } catch (cause) {
-      report(cause);
+      onError(cause);
     }
   }
   /** 模型切换在会话空闲时应用，同时保存新会话默认值。 */
   async function chooseModel(value: string): Promise<void> {
     const choice = options.find((option) => option.value === value);
-    if (!choice || busy || !models.snapshot) return;
+    if (!choice || busy || historyState === "loading" || !models.snapshot)
+      return;
+    const token = generation.current;
     try {
-      if (session)
-        setSession(
-          await api.updateAiSession(session.sessionId, { model: choice.model }),
-        );
+      const updated = session
+        ? await api.updateAiSession(session.sessionId, { model: choice.model })
+        : null;
+      if (token !== generation.current) return;
+      if (updated) setSession(updated);
       setModelChoice(choice.model);
       await api.updateAiDefaults(
         models.snapshot.settings.revision,
@@ -471,20 +648,25 @@ export function useAiWorkspace(w: Workbench) {
       );
       window.dispatchEvent(new Event("gitmaster:ai-settings"));
     } catch (cause) {
-      report(cause);
+      if (token === generation.current) report(cause);
     }
   }
   /** 推理选择只接受当前模型已配置的档位。 */
   async function chooseEffort(
     event: ChangeEvent<HTMLSelectElement>,
   ): Promise<void> {
-    if (!chosen || busy || !models.snapshot) return;
+    if (!chosen || busy || historyState === "loading" || !models.snapshot)
+      return;
     const value = event.target.value;
     if (value && !Object.hasOwn(efforts ?? {}, value)) return;
     const model = { ...chosen, reasoningEffort: value || null };
+    const token = generation.current;
     try {
-      if (session)
-        setSession(await api.updateAiSession(session.sessionId, { model }));
+      const updated = session
+        ? await api.updateAiSession(session.sessionId, { model })
+        : null;
+      if (token !== generation.current) return;
+      if (updated) setSession(updated);
       setModelChoice(model);
       await api.updateAiDefaults(
         models.snapshot.settings.revision,
@@ -493,16 +675,18 @@ export function useAiWorkspace(w: Workbench) {
       );
       window.dispatchEvent(new Event("gitmaster:ai-settings"));
     } catch (cause) {
-      report(cause);
+      if (token === generation.current) report(cause);
     }
   }
   /** 真正写入权限选择前处理后台任务与完全访问确认。 */
   async function applyPermission(permission: AiPermission): Promise<void> {
+    const token = generation.current;
     try {
-      if (session)
-        setSession(
-          await api.updateAiSession(session.sessionId, { permission }),
-        );
+      const updated = session
+        ? await api.updateAiSession(session.sessionId, { permission })
+        : null;
+      if (token !== generation.current) return;
+      if (updated) setSession(updated);
       setPermissionChoice(permission);
       if (models.snapshot) {
         await api.updateAiDefaults(
@@ -513,12 +697,12 @@ export function useAiWorkspace(w: Workbench) {
         window.dispatchEvent(new Event("gitmaster:ai-settings"));
       }
     } catch (cause) {
-      report(cause);
+      if (token === generation.current) report(cause);
     }
   }
   /** 仅接受固定权限选项，不把任意字符串传给后端。 */
   function choosePermission(value: AiPermission): void {
-    if (busy) return;
+    if (busy || historyState === "loading") return;
     if (value === "danger-full-access") setFullAccess(true);
     else void applyPermission(value);
   }
@@ -547,7 +731,7 @@ export function useAiWorkspace(w: Workbench) {
       if (session)
         void api
           .resolveAiApproval(session.sessionId, id, decision)
-          .catch(report);
+          .catch(reportTo());
     };
   }
   /** 每个问题保留独立的文本回答，不转换为权限授权。 */
@@ -638,13 +822,14 @@ export function useAiWorkspace(w: Workbench) {
               custom: answers[`${id}/${question.id}`] ?? "",
             })),
           })
-          .catch(report);
+          .catch(reportTo());
     };
   }
   /** 任务停止后仍由真实快照确认结束状态。 */
   function stopJob(jobId: string): () => void {
     return () => {
-      if (session) void api.stopAiJob(session.sessionId, jobId).catch(report);
+      if (session)
+        void api.stopAiJob(session.sessionId, jobId).catch(reportTo());
     };
   }
   /** 全部停止仍逐一绑定当前会话，结果由后续真实任务快照确认。 */
@@ -654,7 +839,7 @@ export function useAiWorkspace(w: Workbench) {
         jobs
           .filter((job) => job.state === "running")
           .map((job) => api.stopAiJob(session.sessionId, job.jobId)),
-      ).catch(report);
+      ).catch(reportTo());
   }
   /** 删除包含运行任务的会话必须明确确认。 */
   function remove(item: AiSession): () => void {
@@ -665,41 +850,49 @@ export function useAiWorkspace(w: Workbench) {
         )
       )
         return;
+      const token = generation.current;
       void api
         .deleteAiSession(item.sessionId, true)
         .then(() => {
-          if (session?.sessionId === item.sessionId) {
+          if (token !== generation.current) return;
+          if (current.current?.sessionId === item.sessionId) {
             setSession(null);
             setEvents([]);
             setStatus("idle");
           }
           void reload();
         })
-        .catch(report);
+        .catch(reportTo());
     };
   }
   /** 重命名仅改变应用会话标题。 */
   function renameSession(): void {
     if (!session) return;
+    const token = generation.current;
     const title = window.prompt("会话名称", session.title)?.trim();
     if (title)
       void api
         .updateAiSession(session.sessionId, { title })
-        .then(setSession)
+        .then((value) => {
+          if (token === generation.current) setSession(value);
+        })
         .then(() => reload())
-        .catch(report);
+        .catch(reportTo());
   }
   /** 只有空闲会话可触发手动上下文压缩。 */
   function compact(): void {
     if (session && !busy) {
+      const token = generation.current;
       setStatus("running");
       void api
         .compactAiSession(session.sessionId)
         .then((result) => {
+          if (token !== generation.current) return;
           runId.current = result.runId;
           setGlobalBusy(true);
         })
         .catch((cause: unknown) => {
+          if (token !== generation.current) return;
           setStatus("failed");
           report(cause);
         });
@@ -727,16 +920,105 @@ export function useAiWorkspace(w: Workbench) {
   }
   /** 手动重建历史订阅，不清除输入，也不重发先前任务。 */
   function reconnect(): void {
-    if (sending.current) return;
+    if (sending.current || recovering.current) return;
     generation.current++;
-    seen.current.clear();
-    epoch.current = null;
-    runId.current = null;
-    setEvents([]);
-    setError(null);
+    recoverRequested.current = true;
+    setIssue(null);
+    setRecoveryNotice("");
+    setHistoryState("loading");
     setConnectionVersion((old) => old + 1);
-    void reload();
+    if (!session) {
+      recovering.current = true;
+      const token = generation.current;
+      void reload().then((ok) => {
+        if (token !== generation.current) return;
+        recovering.current = false;
+        setHistoryState(ok ? "ready" : "failed");
+        if (ok) setRecoveryNotice("会话列表已重新加载。");
+      });
+    }
   }
+  /** 主动测试当前模型，既不重发历史输入，也不触发任何工具。 */
+  async function testConnection(): Promise<void> {
+    if (!chosen || !validModel || connectionBusy || busy || globalBusy) return;
+    const token = ++connectionGeneration.current;
+    const key = connectionKey;
+    setConnectionBusy(true);
+    setRecoveryNotice("");
+    setConnectionCheck({ state: "testing", key, checkedAt: null, error: null });
+    try {
+      const result = await api.testAiProvider(
+        chosen.providerId,
+        chosen.modelId,
+      );
+      if (
+        token !== connectionGeneration.current ||
+        connectionContext.current !== key
+      )
+        return;
+      setConnectionCheck({
+        state: result.ok ? "succeeded" : "failed",
+        key,
+        checkedAt: Date.now(),
+        error: result.ok ? null : result.error,
+      });
+    } catch (cause) {
+      if (
+        token === connectionGeneration.current &&
+        connectionContext.current === key
+      )
+        setConnectionCheck({
+          state: "failed",
+          key,
+          checkedAt: Date.now(),
+          error: { code: aiFailureCode(cause), message: api.aiError(cause) },
+        });
+    } finally {
+      setConnectionBusy(false);
+    }
+  }
+  /** 仅重新启动任务快照读取，不重载对话或重新执行后台命令。 */
+  function retryJobs(): void {
+    jobsRetryRequested.current = true;
+    setIssue((old) => (old?.scope === "job" ? null : old));
+    setJobsVersion((old) => old + 1);
+    setRecoveryNotice("正在重新读取后台任务状态…");
+  }
+  const recovery =
+    issue ??
+    (historyState === "ready" ? aiRequestIssue(events, runId.current) : null);
+  const recoveryAction = recovery ? aiRecoveryAction(recovery) : null;
+  const recoveryLabel =
+    recoveryAction === "connect"
+      ? connectionBusy
+        ? "正在测试…"
+        : "测试模型连接"
+      : recoveryAction === "settings"
+        ? "打开模型设置"
+        : recoveryAction === "jobs"
+          ? "重新读取状态"
+          : historyState === "loading"
+            ? "正在加载…"
+            : recovery?.scope === "history"
+              ? "重新加载记录"
+              : "重新连接会话";
+  /** 恢复动作按错误来源分派，始终不重发任务或命令。 */
+  function recover(): void {
+    if (recoveryAction === "connect") void testConnection();
+    else if (recoveryAction === "settings") settings();
+    else if (recoveryAction === "jobs") retryJobs();
+    else if (recoveryAction === "reload") reconnect();
+  }
+  const visibleCheck =
+    connectionCheck?.key === connectionKey ? connectionCheck : null;
+  const connectionDetail =
+    visibleCheck?.state === "testing"
+      ? "正在测试所选模型连接…"
+      : visibleCheck?.state === "succeeded"
+        ? "本次模型连接测试通过；后续请求和工具以实际运行结果为准。"
+        : visibleCheck?.state === "failed"
+          ? (visibleCheck.error?.message ?? "本次模型连接测试失败。")
+          : "";
   return {
     presentation: w.appSettings.draft.uiPreferences.aiChat,
     turns: buildAiTurns(rows, w.appSettings.draft.uiPreferences.aiChat, busy),
@@ -746,7 +1028,27 @@ export function useAiWorkspace(w: Workbench) {
     draft,
     status,
     busy,
-    error,
+    error: recovery?.message ?? null,
+    recovery,
+    recoveryAction,
+    recoveryLabel,
+    recover,
+    recoveryDisabled:
+      recoveryAction === "connect"
+        ? connectionBusy || busy || globalBusy || !validModel
+        : recoveryAction === "reload"
+          ? historyState === "loading" || sending.current
+          : false,
+    historyState,
+    recoveryNotice,
+    connectionCheck: visibleCheck,
+    connectionDetail,
+    connectionTime: visibleCheck?.checkedAt
+      ? new Date(visibleCheck.checkedAt).toLocaleTimeString()
+      : "",
+    connectionBusy,
+    testConnection,
+    retryJobs,
     jobs,
     terminalOpen,
     modelValue,

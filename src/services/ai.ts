@@ -6,19 +6,13 @@ import type {
   AiModelRef,
   AiPermission,
   AiProvider,
-  AiRunStatus,
   AiSession,
   AiSettingsSnapshot,
   AiModelTestResult,
+  AiSessionPage,
 } from "../types/ai";
 
-export interface AiSessionPage {
-  session: AiSession;
-  events: AiEventEnvelope[];
-  status: AiRunStatus;
-  nextSequence: number;
-  more: boolean;
-}
+export type { AiSessionPage } from "../types/ai";
 /** 浏览器预览不伪造模型或 Agent 执行结果。 */
 function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return isTauri()
@@ -57,6 +51,7 @@ export function aiError(cause: unknown): string {
     AI_SESSION_PROJECT: "此会话属于其他项目，请切回所属项目。",
     AI_JOBS_RUNNING: "请先停止当前会话的后台任务，再切换权限。",
     AI_TIMEOUT: "等待 AI 运行时超时；请先核对任务状态，避免重复操作。",
+    AI_PROTOCOL: "AI 运行时返回的数据与界面不匹配，请重启应用后重试。",
     AI_CONFIRM_CLOSE: "会话中仍有任务，请确认结束后再删除。",
     SANDBOX_UNAVAILABLE: "本机沙箱不可用，受限命令没有执行。",
   };

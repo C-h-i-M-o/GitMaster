@@ -37,6 +37,15 @@ impl ExecutionPolicy {
     }
 }
 
+/// status/diff 包含安全配置探测与业务命令，两阶段各受原有单进程上限约束。
+fn operation_timeout(args: &[OsString], policy: ExecutionPolicy) -> Duration {
+    if policy == ExecutionPolicy::Read && args.iter().any(|arg| arg == "status" || arg == "diff") {
+        policy.timeout() + TIMEOUT
+    } else {
+        policy.timeout()
+    }
+}
+
 /// 内部进程输出；stderr 只供错误分类，不透传给前端。
 #[derive(Debug)]
 pub(crate) struct ProcessOutput {
@@ -136,7 +145,7 @@ pub(crate) fn run_git_with_policy(
         policy,
         limit,
         allow_truncate,
-        Instant::now() + policy.timeout(),
+        Instant::now() + operation_timeout(args, policy),
     )
 }
 
@@ -177,7 +186,7 @@ pub(crate) fn run_git_read_input(
         ExecutionPolicy::Read,
         limit,
         false,
-        Instant::now() + TIMEOUT,
+        Instant::now() + operation_timeout(args, ExecutionPolicy::Read),
     )
 }
 
@@ -200,20 +209,36 @@ fn run_git_until(
     if policy == ExecutionPolicy::Read && args.iter().any(|arg| arg == "status" || arg == "diff") {
         let mut config = command(git, cwd);
         config.env("GIT_CONFIG_NOSYSTEM", "0");
-        apply_read_configuration(&mut cmd, config, deadline)?;
+        crate::diagnostics::log_read_budget("configuration", remaining(deadline, TIMEOUT)?);
+        crate::diagnostics::measure("git_read_configuration", || {
+            apply_read_configuration(&mut cmd, config, deadline)
+        })?;
     }
 
     if policy == ExecutionPolicy::Network {
         cmd.env("GIT_ALLOW_PROTOCOL", "https:ssh");
     }
     cmd.args(args);
-    run_command_with_deadline(
-        cmd,
-        stdin,
-        limit,
-        allow_truncate,
-        remaining(deadline, policy.timeout())?,
-        policy == ExecutionPolicy::Network,
+    let command_budget = remaining(deadline, policy.timeout())?;
+    if policy == ExecutionPolicy::Read {
+        crate::diagnostics::log_read_budget("command", command_budget);
+    }
+    crate::diagnostics::measure(
+        if policy == ExecutionPolicy::Read {
+            "git_read_command"
+        } else {
+            "git_command"
+        },
+        || {
+            run_command_with_deadline(
+                cmd,
+                stdin,
+                limit,
+                allow_truncate,
+                command_budget,
+                policy == ExecutionPolicy::Network,
+            )
+        },
     )
 }
 
@@ -1109,6 +1134,32 @@ mod tests {
         assert_eq!(config.get("user.name").map(String::as_str), Some("测试"));
     }
     use super::*;
+
+    /// 配置安全探测与实际状态命令分别有读取上限，合法探测不能吞掉后续命令预算。
+    #[test]
+    fn status_configuration_has_its_own_bounded_budget() {
+        let args = [
+            OsString::from("-c"),
+            OsString::from("status.renames=true"),
+            OsString::from("status"),
+        ];
+        let budget = operation_timeout(&args, ExecutionPolicy::Read);
+        let after_configuration = Instant::now() + budget - Duration::from_secs(8);
+        assert_eq!(
+            remaining(after_configuration, Duration::from_secs(10)).unwrap(),
+            Duration::from_secs(10)
+        );
+        assert_eq!(budget, Duration::from_secs(20));
+        assert_eq!(
+            operation_timeout(&[OsString::from("log")], ExecutionPolicy::Read),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            operation_timeout(&args, ExecutionPolicy::LocalWrite),
+            Duration::from_secs(60)
+        );
+        assert!(remaining(Instant::now() - Duration::from_millis(1), TIMEOUT).is_err());
+    }
 
     /// 使用独立系统/全局配置探测真实换行转换，禁止过滤器和 textconv 执行。
     #[test]
