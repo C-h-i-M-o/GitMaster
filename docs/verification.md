@@ -15,9 +15,11 @@
 
 ### Windows x64
 
-原生 Windows 2022 runner 构建成功，运行链接 https://github.com/C-h-i-M-o/GitMaster/actions/runs/43616805678 。锁文件依赖安装、格式/类型/Rust 格式、NSIS EXE 构建、独立 Agent 测试及产物上传均通过。构建步骤约 13 分半，独立资源验证约 5 秒；artifact 274,511,226 字节，ID 14121974692，内含 NSIS EXE 和 CI 生成的 SHA256SUMS.txt。下载地址 https://github.com/C-h-i-M-o/GitMaster/actions/runs/43616805678/artifacts/14121974692 。本地回传速度较慢，停止可选回传并直接交付远端产物链接；未声称已在本机核对 Windows 文件哈希或运行安装。仅上传 Actions artifact（保留 14 天），没有公开 Release。
+原生 Windows 2022 runner 构建成功，运行链接 https://github.com/C-h-i-M-o/GitMaster/actions/runs/43616805678 。锁文件依赖安装、格式/类型/Rust 格式、NSIS EXE 构建、独立 Agent 测试及产物上传均通过。构建步骤约 13 分半，独立资源验证约 5 秒；artifact 274,511,226 字节，ID 14121974692，内含 NSIS EXE 和 CI 生成的 SHA256SUMS.txt。下载地址 https://github.com/C-h-i-M-o/GitMaster/actions/runs/43616805678/artifacts/14121974692 。首次本地回传较慢而暂停；用户要求继续后，通过分段传输完整取回构建产物，内部核对 GitHub ZIP 摘要和 CI 生成的 EXE 摘要均通过。EXE 已解包到 `target/installers/20261115/`；未在 macOS 运行 Windows 安装器。仅上传 Actions artifact（保留 14 天），没有公开 Release。
 
-当前未完成干净系统安装、正式签名/公证和双平台完整人工交互验收，不发布 GitHub Release 或合并主分支。
+用户随后明确授权上传 GitHub，已创建预发布版本 https://github.com/C-h-i-M-o/GitMaster/releases/tag/v0.1.0-agent-20261115 ，标签指向构建提交 471164d。仅有 EXE / DMG 两项安装包附件，状态均 uploaded，远端附件大小与摘要均与本地一致。依用户要求不上传 SHA 文件或展示校验码；中间分段和 ZIP 已清理。
+
+当前未完成干净系统安装、正式签名/公证和双平台完整人工交互验收；本次为预发布，不合并主分支。
 
 ## 2026-11-15 首次配置模型后新会话不可输入
 
