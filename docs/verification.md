@@ -1,5 +1,24 @@
 # 分阶段验证记录
 
+## 2026-11-15 安装包生成
+
+用户确认成果并授权生成 macOS DMG / Windows NSIS EXE；随后明确授权提交推送打包配置、运行 GitHub Actions 及下载构建工具/锁定依赖。源码基线为 agent / 5149c65；构建工作流提交为 471164d。
+
+### macOS Apple Silicon
+
+- Agent 回归 34/34、独立包 1/1 通过。类型/格式与 Release 编译通过（1 分 33 秒）。保留既有 chunk 与 unused variable 警告。
+- 旧资源目录缺少生成标记，脚本正确拒绝清理；完整保留至 `target/agent-resources-preserved-20261115/` 后重新生成，并恢复开发依赖，不绕过保护。
+- 首次 DMG 脚本失败且没有具体诊断；随后 `tauri bundle --bundles dmg --verbose` 成功。初始应用资源签名检查未通过，未交付该包。使用 `--config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'` 重新封装，`codesign --verify --deep --strict` 通过；应用标识 dev.gitmaster.desktop，ad-hoc 签名，非 Developer ID / 非公证。
+- 最终 DMG 映像 hdiutil verify 通过；只读挂载包内 Node 启动和两个关键依赖导入通过，挂载资源执行 host-process 会话恢复测试 1/1 通过，未使用开发模块补齐；已卸载映像。
+- 交付路径 `target/installers/20261115/GitMaster_0.1.0_aarch64.dmg`，SHA-256 `6856294780a15e7930fb65e44a1507175c5135f619f43b8fbb84cdce012853d9`。
+- 日志：`/tmp/gitmaster-installer-macos-20261115.log`、`/tmp/gitmaster-installer-dmg-signed-20261115.log`、`/tmp/gitmaster-dmg-verify-20261115.log`、`/tmp/gitmaster-dmg-host-test-20261115.log`。
+
+### Windows x64
+
+原生 Windows 2022 runner 构建成功，运行链接 https://github.com/C-h-i-M-o/GitMaster/actions/runs/43616805678 。锁文件依赖安装、格式/类型/Rust 格式、NSIS EXE 构建、独立 Agent 测试及产物上传均通过。构建步骤约 13 分半，独立资源验证约 5 秒；artifact 274,511,226 字节，ID 14121974692，内含 NSIS EXE 和 CI 生成的 SHA256SUMS.txt。下载地址 https://github.com/C-h-i-M-o/GitMaster/actions/runs/43616805678/artifacts/14121974692 。本地回传速度较慢，停止可选回传并直接交付远端产物链接；未声称已在本机核对 Windows 文件哈希或运行安装。仅上传 Actions artifact（保留 14 天），没有公开 Release。
+
+当前未完成干净系统安装、正式签名/公证和双平台完整人工交互验收，不发布 GitHub Release 或合并主分支。
+
 ## 2026-11-15 首次配置模型后新会话不可输入
 
 已保存模型但没有 defaultModel 时，旧 hook 将 chosen 推导为 null，导致配置提示和输入禁用。新增明确的模型选择推导：无明确/会话/默认选择的新会话使用首个可用模型；已有失效选择不静默替换，不改磁盘默认值，不自动请求模型。
