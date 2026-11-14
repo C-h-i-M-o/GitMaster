@@ -18,6 +18,7 @@ import type {
   AiSession,
 } from "../types/ai";
 import * as api from "../services/ai";
+import { chooseAiModel } from "../ui/aiModelSelection";
 import { useAiModels } from "./useAiModels";
 import { useNativeDialog } from "./useNativeDialog";
 import { buildAiTurns } from "../ui/aiTurns";
@@ -149,11 +150,12 @@ export function useAiWorkspace(w: Workbench) {
         } satisfies AiModelRef,
       })),
     ) ?? [];
-  const chosen =
-    modelChoice ??
-    session?.model ??
-    models.snapshot?.settings.defaultModel ??
-    null;
+  const chosen = chooseAiModel(
+    modelChoice,
+    session?.model,
+    models.snapshot?.settings.defaultModel,
+    options[0]?.model,
+  );
   const modelValue = chosen
     ? JSON.stringify([chosen.providerId, chosen.modelId])
     : "";

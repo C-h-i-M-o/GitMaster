@@ -89,13 +89,17 @@ if (cached)
   });
 if (!existsSync(join(runtimeDirectory, "dist/main.js")))
   throw new Error("缺少 AI 运行时构建入口。");
-const installedLicense = join(dirname(process.execPath), "LICENSE");
-const nodeLicense = existsSync(installedLicense)
-  ? installedLicense
-  : join(
-      root,
-      `services/agent-host/licenses/node-${process.versions.node}-LICENSE`,
-    );
+// Homebrew 将完整许可放在真实 Node 安装根，标准发行包仍优先检查可执行目录。
+const installedLicense = [
+  join(dirname(process.execPath), "LICENSE"),
+  join(dirname(dirname(realpathSync(process.execPath))), "LICENSE"),
+].find((candidate) => existsSync(candidate));
+const nodeLicense =
+  installedLicense ??
+  join(
+    root,
+    `services/agent-host/licenses/node-${process.versions.node}-LICENSE`,
+  );
 if (!existsSync(nodeLicense))
   throw new Error(
     `缺少 Node ${process.versions.node} 对应的完整许可，请先补充构建资源。`,

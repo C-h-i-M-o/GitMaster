@@ -1,5 +1,47 @@
 # 分阶段验证记录
 
+## 2026-11-15 首次配置模型后新会话不可输入
+
+已保存模型但没有 defaultModel 时，旧 hook 将 chosen 推导为 null，导致配置提示和输入禁用。新增明确的模型选择推导：无明确/会话/默认选择的新会话使用首个可用模型；已有失效选择不静默替换，不改磁盘默认值，不自动请求模型。
+
+- 定向测试按旧选择链复现失败（null 而非首个模型），修正后 Agent 全套 34/34 通过；日志 `/tmp/gitmaster-model-selection-tests-20261115.log`。
+- 类型与全项目格式检查通过。
+- 既有真实 hook 合成页面新增 `?withoutDefault=1`，验证无默认模型时显示“测试模型”，textarea 启用、可聚焦及输入，requests/reads 均为 0；未发送消息或调用供应商。首次浏览器检查受 Vite 旧依赖优化缓存的 Invalid hook call 阻塞，以 `--force` 重启开发服务后通过；未修改生产依赖或配置。
+- 官方 Node 子进程 PATH 下 `pnpm tauri build --no-bundle` 通过，Release 编译 1 分 27 秒；日志 `/tmp/gitmaster-model-release-20261115.log`。保留既有 chunk 与未使用变量警告。
+
+未改用户提供商配置或密钥，未调用真实模型。浏览器合成验证不替代用户真实配置下的 Release 复测；本轮未提交或推送。
+
+## 2026-11-14 官方 Node 独立运行时与 Release 接续结果
+
+用户已明确授权下载并用于内置运行时。官方 `node-v24.16.0-darwin-arm64.tar.xz` 按同目录 `SHASUMS256.txt` 校验通过，SHA-256 为 `e28ad5531b2aafe0ea555a51b2412c42fdc0f91a6a53fbd03ac93e3847e91389`。下载中发生连接中断，断点续传后才校验、解包并运行。未修改系统 Node 或全局配置。
+
+- 使用官方 Node 子进程 PATH 的 `pnpm build` 通过（含类型检查与 Agent 资源准备），保留既有大 chunk 警告；内置 `NODE_LICENSE` 与官方发行包逐字节一致。旧 Homebrew 生成副本为只读，首次替换报 EACCES；仅对该生成文件增加用户写权限后重建成功。日志 `/tmp/gitmaster-agent-official-build-20261114.log`。
+- `pnpm test:agent:bundle`：1/1 通过，禁止从开发仓库补齐模块；日志 `/tmp/gitmaster-agent-official-bundle-20261114.log`。
+- `pnpm tauri build --no-bundle`：通过，Release 编译 1 分 30 秒；产物 `target/release/gitmaster-desktop` 与 `target/release/agent/`，未生成或更新 .app/安装器。日志 `/tmp/gitmaster-agent-official-release-20261114.log`。
+- Release 与源资源内置 Node SHA-256 均为 `1ee75375e33b94fc34b3b19aede049e11dae90efb63b374dc96d6bdace70c4b8`，两者一致。
+- 显式启用 `bundled_host_survives_native_bridge`：1/1 通过，1.14 秒；使用 Release 内置资源与 Rust 管道握手。日志 `/tmp/gitmaster-agent-native-bridge-20261114.log`。
+- 启动既有 `release-acceptance.ts` 本机服务后，显式运行 `release_tools_with_local_fixture`：1/1 通过，1.95 秒；真实终端、Git 查询、内置 Skill、先预览后确认暂存与租约交接，全程使用合成配置和临时仓库，无真实供应商请求。日志 `/tmp/gitmaster-agent-native-tools-20261114.log`。服务已停止。
+- GPT-6 Luna / Low 只读审查本轮许可路径与沙箱测试差异，未发现阻断问题；不代替运行验证。
+
+本轮两处修正已完成工程验证。仍未验证真实窗口交互（恢复、滚动、中文输入法等）、Windows 本轮复验、真实供应商、签名、安装器或干净系统；Rust 桥接测试不代表窗口 UI 通过。没有提交、推送、合并或发布。下方接续记录保留先前失败与恢复过程，本节覆盖其“等待下载授权/构建阻塞”状态。
+
+## 2026-11-14 agent 分支 macOS 接续验证
+
+基线 `c63a7bf`，当前分支 `agent` 跟踪 `origin/agent`。本轮以第三阶段交接续作；旧 `ai-agent` 分支仅曾快进，未用于本轮实现。
+
+- 偶发合并用例独占复测：1/1 通过（1.41 秒），不据此关闭历史 Windows 偶发问题。
+- `cargo test -p gitmaster-core --offline -- --test-threads=1 --nocapture`：293 通过、0 失败、4 忽略，127.59 秒；文档测试 0 项。日志 `/tmp/gitmaster-agent-core-20261114.log`。本机测试数量与历史 Windows 清单不同，忽略项不算通过。
+- `cargo fmt --all -- --check` 与 `git diff --check` 通过。
+- `TAURI_CONFIG='{"bundle":{"resources":[]}}' cargo check -p gitmaster-desktop --locked --offline` 通过；保留 `external.rs` 未使用变量警告。变量仅作用于该子进程，关闭资源复制的编译检查不证明运行包完整。日志 `/tmp/gitmaster-agent-desktop-20261114.log`。
+- 桌面 AI 定向测试 `cargo test -p gitmaster-desktop --locked --offline ai_ -- --test-threads=1`（同样仅对子进程关闭资源复制）：6 通过、0 失败、2 忽略，3.34 秒；实际 Git 桥接使用临时仓库。忽略项依赖完整 Release 资源和模拟服务，未自动启用。日志 `/tmp/gitmaster-agent-desktop-tests-20261114.log`。
+- 用户明确授权按锁文件安装依赖；安装遇到 registry 连接重置和下载重试，前端与运行包验证待安装完成。
+
+补充结果：类型检查通过；本轮文档格式修正后全项目格式通过。Agent 初轮 31/32，macOS 拒绝写入探针错误地位于允许写入的系统临时目录；按现有工作区/临时目录契约将探针改到独立随机用户目录并保留全部拒绝断言后，32/32 通过（3.50 秒）。日志 `/tmp/gitmaster-agent-tests-20261114.log`、`/tmp/gitmaster-agent-tests-fixed-20261114.log`。
+
+独立包构建先因 Homebrew Node 许可路径失败，补充真实安装根 LICENSE 查找后通过该步骤；随后内置 Node 启动因 `@rpath/libnode.137.dylib` 缺失失败。Homebrew 二进制不适合直接复制成独立运行时，未绕过 smoke 检查或将构建记为通过。日志 `/tmp/gitmaster-agent-full-build-20261114.log`。后续需官方独立发行包，已请求单独下载授权。
+
+尚无本轮 Agent 独立包、Release 原生交互、真实供应商、Windows、干净系统或签名验收结论；历史记录继续保留。不提交、推送或发布。
+
 ## 2026-11-13 AI 第三阶段实施验证（阶段收尾，验收未完成）
 
 老大已批准第三阶段 spec-plan，随后要求尽快结束开发、生成交接并全部推送 GitHub。基线 `debeebd6b744568928469945cf6590221ae2707d`；源码及文档交付到 `agent`，不合并主分支或发布。保留原有记录，不调用真实付费模型，不修改真实项目 ACL 或 Git 数据。剩余验收见 [开发交接](ai-agent-iteration-3-handoff.md)。

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
@@ -132,7 +132,8 @@ test(
   { timeout: 120000 },
   async () => {
     const root = await mkdtemp(join(tmpdir(), "gitmaster-sandbox-p0-"));
-    const outside = await mkdtemp(join(tmpdir(), "gitmaster-outside-p0-"));
+    // 系统临时区属于允许写入范围，拒绝探针须放在该范围之外。
+    const outside = await mkdtemp(join(homedir(), ".gitmaster-outside-p0-"));
     const runtime = await createRuntime({ workspaceRoot: root });
     try {
       const allowed = join(root, "allowed.txt");

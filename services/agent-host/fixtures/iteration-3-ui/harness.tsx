@@ -32,7 +32,9 @@ mockIPC(async (command, args) => {
       settings: {
         version: 1,
         revision: 1,
-        defaultModel: model,
+        defaultModel: new URLSearchParams(location.search).has("withoutDefault")
+          ? null
+          : model,
         defaultPermission: "workspace-write",
         providers: [
           {

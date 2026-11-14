@@ -143,3 +143,17 @@ M2/M3 初次交付复用上述 macOS 工具链和缓存，后续分支修复已�
 本轮从 fd821df 恢复，Node 24 LTS/pnpm 11.15.1；不新增依赖。--no-bundle 只更新可执行文件；验收 macOS .app 使用 pnpm tauri build --bundles app 并重启该产物。原生场景仅复用用户打开的同一临时目录，Windows专项本轮跳过。
 
 浏览器回归脚本通过 Playwright run-code 接收 async(page) 函数；exit-combined-check.js 是页内函数，需要在 page.evaluate 中执行。测试截图和 .playwright-cli 日志仅是本机产物，归档前清理；不能影响 pnpm format:check 或随源码上传。
+
+## macOS Agent 独立运行时构建（2026-11-14）
+
+Homebrew 的 Node 可用于开发，但其可执行文件依赖 Cellar 中的 libnode 等动态库，不能直接复制为 Agent 独立运行时。本轮经授权从 `https://nodejs.org/dist/v24.16.0/` 下载 `node-v24.16.0-darwin-arm64.tar.xz` 与官方 `SHASUMS256.txt`，校验 SHA-256 为 `e28ad5531b2aafe0ea555a51b2412c42fdc0f91a6a53fbd03ac93e3847e91389` 后解包。第三方产物保留在忽略目录 `target/node-official-24.16.0/`，不加入源码。
+
+在根目录为单条构建命令前置官方 Node，确保构建时的 process.execPath、内置可执行文件及 LICENSE 来自同一发行包：
+
+```sh
+PATH="$PWD/target/node-official-24.16.0/node-v24.16.0-darwin-arm64/bin:$PATH" pnpm tauri build --no-bundle
+```
+
+脚本从可执行目录、真实安装根或仓库对应版本查找完整许可，缺失仍拒绝构建。若此前 Homebrew 生成的 `src-tauri/resources/agent/node` 为只读，只调整该生成文件的用户写权限后重建；不修改系统 Node。若部署中断导致 pnpm 提示移除依赖目录无 TTY，可运行 `pnpm install --frozen-lockfile --prod=false --config.confirmModulesPurge=false` 恢复开发依赖，再串行构建。
+
+`pnpm test:agent:bundle` 验证包内依赖隔离；Rust 的 `bundled_host_survives_native_bridge` 和 `release_tools_with_local_fixture` 验证原生管道和模拟工具链。上述检查不代替真实窗口、签名及干净系统验收。
